@@ -34,6 +34,9 @@ const SpatialWarRoom = () => {
   const hardware = useWarRoomStore((s) => s.hardware);
   const anxBriefings = useWarRoomStore((s) => s.anxBriefings);
   const phaseEvents = useWarRoomStore((s) => s.phaseEvents);
+  const hookEvents = useWarRoomStore((s) => s.hookEvents);
+  const retryEvents = useWarRoomStore((s) => s.retryEvents);
+  const reconcileActions = useWarRoomStore((s) => s.reconcileActions);
   const agentRoster = useWarRoomStore((s) => s.agentRoster);
   const receiptsIssued = useWarRoomStore((s) => s.receiptsIssued);
   const onNodesChange = useWarRoomStore((s) => s.onNodesChange);
@@ -198,7 +201,12 @@ const SpatialWarRoom = () => {
         <AgentRosterPanel roster={agentRoster} hardware={hardware} rateLimits={rateLimits} />
       </div>
 
-      <PhaseFeed events={phaseEvents} />
+      <PhaseFeed
+        phaseEvents={phaseEvents}
+        hookEvents={hookEvents}
+        retryEvents={retryEvents}
+        reconcileActions={reconcileActions}
+      />
     </div>
   );
 };
