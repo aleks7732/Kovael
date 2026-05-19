@@ -1,4 +1,4 @@
-import { useEffect, useMemo } from 'react';
+import { useCallback, useEffect, useMemo, useRef } from 'react';
 import {
   ReactFlow,
   Controls,
@@ -58,8 +58,17 @@ const SpatialWarRoom = () => {
     return () => clearInterval(id);
   }, [flushPressureValve]);
 
+  const wsRef = useRef<WebSocket | null>(null);
+
+  const injectMission = useCallback((goal: string) => {
+    const ws = wsRef.current;
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    ws.send(JSON.stringify({ type: 'mission_inject', goal, origin: 'cockpit' }));
+  }, []);
+
   useEffect(() => {
     const ws = new WebSocket(ORCHESTRATOR_URL);
+    wsRef.current = ws;
 
     ws.onmessage = (event) => {
       try {
@@ -93,7 +102,10 @@ const SpatialWarRoom = () => {
       }
     };
 
-    return () => ws.close();
+    return () => {
+      wsRef.current = null;
+      ws.close();
+    };
   }, [enqueueTelemetry, enqueueHardware, addTask, addVerificationReceipt, upsertAgentNode, addANXBriefing, recordPhaseEvent]);
 
   return (
@@ -104,6 +116,7 @@ const SpatialWarRoom = () => {
         receiptsIssued={receiptsIssued}
         activeAgents={agentRoster.length}
         nodeCount={nodes.length}
+        onInjectMission={injectMission}
       />
 
       <div className="flex flex-1 min-h-0">

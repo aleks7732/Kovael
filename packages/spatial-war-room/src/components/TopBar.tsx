@@ -1,4 +1,5 @@
 import { memo, useEffect, useState } from 'react';
+import { MissionConsole } from './MissionConsole';
 
 interface TopBarProps {
   meshStatus: 'live' | 'syncing' | 'offline';
@@ -6,6 +7,7 @@ interface TopBarProps {
   receiptsIssued: number;
   activeAgents: number;
   nodeCount: number;
+  onInjectMission: (goal: string) => void;
 }
 
 const STATUS_STYLES: Record<TopBarProps['meshStatus'], { dot: string; label: string }> = {
@@ -24,7 +26,7 @@ const Stat = memo(({ label, value, accent = false }: { label: string; value: str
 ));
 Stat.displayName = 'TopBar.Stat';
 
-export const TopBar = memo(({ meshStatus, connectedClients = 0, receiptsIssued, activeAgents, nodeCount }: TopBarProps) => {
+export const TopBar = memo(({ meshStatus, connectedClients = 0, receiptsIssued, activeAgents, nodeCount, onInjectMission }: TopBarProps) => {
   const [now, setNow] = useState(() => new Date());
   useEffect(() => {
     const id = setInterval(() => setNow(new Date()), 1000);
@@ -48,6 +50,10 @@ export const TopBar = memo(({ meshStatus, connectedClients = 0, receiptsIssued, 
           <div className={`w-1.5 h-1.5 rounded-full ${status.dot}`} />
           <span className="t-mono text-[10px] tracking-widest text-command-warm-white/70 uppercase">{status.label}</span>
         </div>
+      </div>
+
+      <div className="flex-1 flex justify-center px-6">
+        <MissionConsole onInject={onInjectMission} disabled={meshStatus === 'offline'} />
       </div>
 
       <div className="flex items-center gap-7">

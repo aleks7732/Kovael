@@ -174,7 +174,20 @@ export class MeshOrchestrator extends EventEmitter {
             }
 
             ws.on('message', async (data: string) => {
-                const payload = JSON.parse(data);
+                let payload: any;
+                try { payload = JSON.parse(data); }
+                catch { return; }
+
+                if (payload && payload.type === 'mission_inject' && typeof payload.goal === 'string') {
+                    const goal = payload.goal.trim();
+                    if (!goal) return;
+                    console.log(`[MeshOrchestrator] Mission injected from cockpit (${nodeId}): ${goal}`);
+                    this.injectTask(goal).catch((err) =>
+                        console.error('[MeshOrchestrator] Injection failure:', err)
+                    );
+                    return;
+                }
+
                 await this.handleTelemetry(nodeId, payload);
             });
         });
