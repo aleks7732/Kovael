@@ -6,8 +6,9 @@ describe('MeshOrchestrator', () => {
     let orchestrator: MeshOrchestrator;
     const PORT = 8081;
 
-    beforeAll(() => {
+    beforeAll(async () => {
         orchestrator = new MeshOrchestrator(PORT);
+        await orchestrator.ready();
     });
 
     afterAll(() => {

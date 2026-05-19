@@ -391,7 +391,7 @@ export class MeshOrchestrator extends EventEmitter {
     }
 
     private triggerIngest() {
-        const rootPath = path.resolve(process.cwd(), '..');
+        const rootPath = process.cwd();
         this.ingestor.ingest(rootPath);
     }
 
@@ -622,20 +622,17 @@ export class MeshOrchestrator extends EventEmitter {
         }
 
         this.emit('task_routed', { goal, receipt });
-        
-        // Broadcast to all connected WS clients
-        this.wss.clients.forEach(client => {
-            if (client.readyState === WebSocket.OPEN) {
-                client.send(JSON.stringify({
-                    type: 'new_task',
-                    task: {
-                        id: receipt.id,
-                        name: goal,
-                        status: receipt.status,
-                        receipt: receipt
-                    }
-                }));
-            }
+
+        // Route through broadcast() so the new_task frame is cached and
+        // replayed to late-joining WebSocket clients during initial sync.
+        this.broadcast({
+            type: 'new_task',
+            task: {
+                id: receipt.id,
+                name: goal,
+                status: receipt.status,
+                receipt: receipt,
+            },
         });
 
         return receipt;

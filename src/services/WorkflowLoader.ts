@@ -49,6 +49,7 @@ export class WorkflowLoader extends EventEmitter {
     private watching: boolean = false;
     private readonly sourcePath: string;
     private reloadDebounce: NodeJS.Timeout | null = null;
+    private fileWatchListener: (() => void) | null = null;
 
     constructor(sourcePath: string = path.resolve(process.cwd(), 'WORKFLOW.md')) {
         super();
@@ -59,7 +60,8 @@ export class WorkflowLoader extends EventEmitter {
         this.reload();
         if (!this.watching) {
             try {
-                fs.watchFile(this.sourcePath, { interval: 1000 }, () => this.scheduleReload());
+                this.fileWatchListener = () => this.scheduleReload();
+                fs.watchFile(this.sourcePath, { interval: 1000 }, this.fileWatchListener);
                 this.watching = true;
             } catch (err) {
                 console.warn(`[WorkflowLoader] fs.watchFile failed (${(err as Error).message}); hot reload disabled.`);
@@ -72,7 +74,10 @@ export class WorkflowLoader extends EventEmitter {
         this.reloadDebounce = null;
         if (this.watching) {
             try {
-                fs.unwatchFile(this.sourcePath);
+                if (this.fileWatchListener) {
+                    fs.unwatchFile(this.sourcePath, this.fileWatchListener);
+                    this.fileWatchListener = null;
+                }
             } catch (err) {
                 console.warn(`[WorkflowLoader] fs.unwatchFile failed (${(err as Error).message}).`);
             }

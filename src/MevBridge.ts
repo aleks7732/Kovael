@@ -70,8 +70,8 @@ export class MevBridge extends EventEmitter {
     private vramKnown: boolean = false;
     private rateLimits: RateLimitTracker | null = null;
     private vramFloorMb: number = 8192;
-    private primaryArchitect: string = 'shaev';
-    private fallbackAgent: string = 'nyx-cli';
+    private primaryArchitect: string = SHAEV_AGENT;
+    private fallbackAgent: string = NYX_CLI_AGENT;
     private keepRecentTurns: number = 3;
 
     constructor(dbPath: string = 'mev_bridge.db') {

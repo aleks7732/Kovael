@@ -79,18 +79,14 @@ export class SemanticIngestor {
 
     /**
      * Sanitizes absolute paths to relative ones to protect system privacy in logs and DB.
+     * Uses path.relative() from process.cwd() so the result is portable regardless of
+     * the parent directory name.
      */
     private sanitizePath(filePath: string): string {
-        // Find 'VantagePoint' in the path to create a clean relative root
-        const vpMarker = 'VantagePoint';
-        const vpIndex = filePath.indexOf(vpMarker);
-        
-        if (vpIndex !== -1) {
-            // Return path starting from VantagePoint
-            return './' + filePath.substring(vpIndex + vpMarker.length).replace(/\\/g, '/').replace(/^\//, '');
+        const rel = path.relative(process.cwd(), filePath);
+        if (rel && !rel.startsWith('..')) {
+            return './' + rel.replace(/\\/g, '/');
         }
-        
-        // Fallback: use basename or a simple replacement if marker not found
         return path.basename(filePath);
     }
 }
