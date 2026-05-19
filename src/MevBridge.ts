@@ -1,12 +1,31 @@
 import { DatabaseSync } from 'node:sqlite';
 import { EventEmitter } from 'node:events';
 import crypto from 'node:crypto';
+import { TriadStateMachine, TriadPhase, PhaseEvent } from './protocols/TriadStateMachine.js';
+import type { RateLimitTracker } from './services/RateLimitTracker.js';
+
+/**
+ * Token accounting per Symphony §13 — every receipt carries the cycle's
+ * input/output/total token count and wall-clock runtime. When a real LLM
+ * provider returns usage, populate `source: 'reported'` and accumulate
+ * absolute thread totals; until then we ship a `source: 'estimate'`
+ * derived from the chars/4 rule so the cockpit always has something
+ * meaningful to render.
+ */
+export interface TokenUsage {
+    input: number;
+    output: number;
+    total: number;
+    runtimeMs: number;
+    source: 'estimate' | 'reported';
+}
 
 /**
  * ZTNP: Zero Trust Node Protocol - Verification Receipt
  */
 export interface VerificationReceipt {
     id: string;
+    cycleId: string;
     timestamp: number;
     architectId: string;
     operatorId: string;
@@ -14,24 +33,46 @@ export interface VerificationReceipt {
     taskHash: string;
     status: 'verified' | 'failed';
     evidence: string;
+    routing: {
+        architectAgent: string;
+        rationale: string;
+        vramFreeMb: number;
+    };
+    phaseTrail: PhaseEvent[];
+    tokens?: TokenUsage;
 }
+
+const CHARS_PER_TOKEN = 4;
+
+function estimateTokens(text: string): number {
+    return Math.ceil(text.length / CHARS_PER_TOKEN);
+}
+
+export interface ShardOptions {
+    keepRecent: number;
+}
+
+const VRAM_FLOOR_MB = 8192;
+const SHAEV_AGENT = 'shaev';
+const NYX_CLI_AGENT = 'nyx-cli';
 
 /**
  * MevBridge: Implementation of the Triad Architect pattern.
- * Orchestrates the Architect/Operator/Verifier loop with ZTNP receipts.
- * 
- * Logic flow:
- * 1. Architect defines the blueprint based on sharded context.
- * 2. Operator executes the blueprint.
- * 3. Verifier cross-references results against architectural intent.
- * 4. ZTNP Receipt is persisted to node:sqlite.
+ *
+ * Routes the Architect/Operator/Verifier loop through a formal state machine
+ * and produces ZTNP receipts that embed the full phase trail + routing
+ * rationale. Hardware-gated: heavy architectural work is routed to Shaev only
+ * when VRAM headroom is verified; otherwise the request falls back to a
+ * lighter agent so the mesh never OOMs at high concurrency.
  */
 export class MevBridge extends EventEmitter {
     private db: DatabaseSync;
+    private vramFreeMb: number = 0;
+    private vramKnown: boolean = false;
+    private rateLimits: RateLimitTracker | null = null;
 
     constructor(dbPath: string = 'mev_bridge.db') {
         super();
-        // Native node:sqlite DatabaseSync (Experimental in Node 22.5+, Stable in later versions)
         this.db = new DatabaseSync(dbPath);
         this.initializeDatabase();
     }
@@ -40,55 +81,134 @@ export class MevBridge extends EventEmitter {
         this.db.exec(`
             CREATE TABLE IF NOT EXISTS verification_receipts (
                 id TEXT PRIMARY KEY,
+                cycle_id TEXT,
                 timestamp INTEGER,
                 architect_id TEXT,
                 operator_id TEXT,
                 verifier_id TEXT,
                 task_hash TEXT,
                 status TEXT,
-                evidence TEXT
+                evidence TEXT,
+                routing TEXT,
+                phase_trail TEXT
             ) STRICT
         `);
     }
 
     /**
-     * Context Sharding: Prunes history before handoffs to ensure focus and reduce token usage.
-     * Pivot logic: Retains the system prompt, high-level goals, and the most recent interaction window.
+     * Hardware Gate: orchestrator pipes VRAM telemetry in here so routing
+     * decisions stay current without coupling to the WS bus.
      */
-    public shardContext(history: any[], limit: number = 10): any[] {
-        if (history.length <= limit) return history;
-        
-        console.log(`[Context Sharding] Pruning history from ${history.length} to ${limit} entries.`);
-        
-        // Advanced sharding: Keep first 2 (usually system/goal) and last (limit - 2)
-        const systemContext = history.slice(0, 2);
-        const recentContext = history.slice(-(limit - 2));
-        
-        return [...systemContext, ...recentContext];
+    public setVramFree(freeMb: number, known: boolean = true): void {
+        this.vramFreeMb = freeMb;
+        this.vramKnown = known;
+    }
+
+    public setRateLimitTracker(tracker: RateLimitTracker): void {
+        this.rateLimits = tracker;
+    }
+
+    /**
+     * Context Sharding (tightened per Module C):
+     * Keep the system prompt + the ANX mission manifest + the last 3 turns.
+     * Reduces token pressure on every dispatch — critical at 1,000 nodes.
+     */
+    public shardContext(history: any[], opts: ShardOptions = { keepRecent: 3 }): any[] {
+        const keepRecent = opts.keepRecent ?? 3;
+        const system = history.find(m => m?.role === 'system');
+        const tail = history.slice(-keepRecent);
+
+        const head: any[] = [];
+        if (system && !tail.includes(system)) head.push(system);
+
+        return [...head, ...tail];
+    }
+
+    /**
+     * Hardware + rate-limit router: decide which agent owns the architect
+     * phase. Order of precedence: rate-limit blocks first (catastrophic for
+     * the agent if ignored), then VRAM floor, then default.
+     */
+    private routeArchitect(): { agent: string; rationale: string } {
+        // Rate-limit gate first — if Shaev is hot, fall back regardless of VRAM.
+        if (this.rateLimits && !this.rateLimits.canDispatch(SHAEV_AGENT)) {
+            return {
+                agent: NYX_CLI_AGENT,
+                rationale: `shaev_rate_limited:falling_back_to_${NYX_CLI_AGENT}`,
+            };
+        }
+        if (!this.vramKnown) {
+            return {
+                agent: NYX_CLI_AGENT,
+                rationale: 'vram_unknown:defaulting_to_lightweight',
+            };
+        }
+        if (this.vramFreeMb >= VRAM_FLOOR_MB) {
+            return {
+                agent: SHAEV_AGENT,
+                rationale: `vram_free_${this.vramFreeMb}mb>=${VRAM_FLOOR_MB}mb:shaev_authorized`,
+            };
+        }
+        return {
+            agent: NYX_CLI_AGENT,
+            rationale: `vram_free_${this.vramFreeMb}mb<${VRAM_FLOOR_MB}mb:shaev_gated`,
+        };
     }
 
     /**
      * The Triad Architect Loop execution.
      */
-    public async execute(task: string, context: any[] = []): Promise<VerificationReceipt> {
-        const shardedContext = this.shardContext(context);
+    public async execute(
+        task: string,
+        context: any[] = [],
+    ): Promise<VerificationReceipt> {
         const taskHash = crypto.createHash('sha256').update(task).digest('hex');
+        const cycleId = crypto.randomUUID();
+        const machine = new TriadStateMachine(cycleId, taskHash);
+        const cycleStart = Date.now();
+
+        machine.on('phase_change', (evt: PhaseEvent) => this.emit('phase_change', evt));
+
+        const routing = this.routeArchitect();
+        // Record the dispatch for rate-limit accounting (no-op if tracker absent).
+        this.rateLimits?.recordDispatch(routing.agent);
+        const shardedContext = this.shardContext(context);
 
         try {
-            // 1. Architect Phase
-            const blueprint = await this.architect(task, shardedContext);
+            machine.transition(TriadPhase.DispatchToArchitect, { routedAgent: routing.agent, note: routing.rationale });
+            machine.transition(TriadPhase.ArchitectStreaming);
+            const blueprint = await this.architect(task, shardedContext, routing.agent);
 
-            // 2. Operator Phase
+            machine.transition(TriadPhase.DispatchToOperator);
+            machine.transition(TriadPhase.OperatorExecuting);
             const executionResult = await this.operator(blueprint);
 
-            // 3. Verifier Phase
+            machine.transition(TriadPhase.DispatchToVerifier);
+            machine.transition(TriadPhase.VerifierAuditing);
             const verification = await this.verifier(blueprint, executionResult);
 
-            // 4. Generate ZTNP Receipt
+            machine.transition(TriadPhase.IssuingReceipt);
+
+            // Symphony §13 — token accounting. No real LLM is wired today;
+            // we estimate from prompt + response character length so the
+            // shape is correct when a provider returns usage later.
+            const promptText = task + shardedContext.map(m => (m?.content ?? '')).join('\n');
+            const responseText = JSON.stringify(blueprint) + JSON.stringify(executionResult) + JSON.stringify(verification.details);
+            const input = estimateTokens(promptText);
+            const output = estimateTokens(responseText);
+            const tokens: TokenUsage = {
+                input,
+                output,
+                total: input + output,
+                runtimeMs: Date.now() - cycleStart,
+                source: 'estimate',
+            };
+
             const receipt: VerificationReceipt = {
                 id: crypto.randomUUID(),
+                cycleId,
                 timestamp: Date.now(),
-                architectId: 'architect-v1-nyx',
+                architectId: routing.agent,
                 operatorId: 'operator-v1-nyx',
                 verifierId: 'verifier-v1-nyx',
                 taskHash,
@@ -96,79 +216,95 @@ export class MevBridge extends EventEmitter {
                 evidence: JSON.stringify({
                     blueprintId: blueprint.taskId,
                     verificationDetails: verification.details,
-                    executionStatus: executionResult.status
-                })
+                    executionStatus: executionResult.status,
+                }),
+                routing: {
+                    architectAgent: routing.agent,
+                    rationale: routing.rationale,
+                    vramFreeMb: this.vramFreeMb,
+                },
+                phaseTrail: machine.trail(),
+                tokens,
             };
+
+            // Terminal transition carries routedAgent so the cockpit can
+            // reset the agent's status from 'dispatching' back to 'online'.
+            machine.transition(
+                verification.success ? TriadPhase.Succeeded : TriadPhase.Failed,
+                { routedAgent: routing.agent },
+            );
+            receipt.phaseTrail = machine.trail();
 
             this.storeReceipt(receipt);
             this.emit('cycle_complete', receipt);
 
             return receipt;
         } catch (error) {
+            if (!machine.isTerminal()) {
+                try {
+                    machine.transition(TriadPhase.Failed, {
+                        routedAgent: routing.agent,
+                        note: (error as Error).message,
+                    });
+                } catch { /* swallow */ }
+            }
             console.error('[MevBridge] Loop failure:', error);
             throw error;
         }
     }
 
-    private async architect(task: string, context: any[]) {
-        console.log(`[Architect] Designing strategy for: ${task}`);
-        // Decomposition and strategy generation
+    private async architect(task: string, context: any[], routedAgent: string) {
+        console.log(`[Architect:${routedAgent}] Designing strategy for: ${task}`);
         return {
             taskId: crypto.randomUUID(),
             intent: task,
             shardsUsed: context.length,
-            requirements: ['idempotency', 'traceability']
+            routedAgent,
+            requirements: ['idempotency', 'traceability'],
         };
     }
 
     private async operator(blueprint: any) {
         console.log(`[Operator] Executing blueprint: ${blueprint.taskId}`);
-        // Execution of the task
         return {
-            status: "success",
-            payload: "Operation payload generated",
-            exitCode: 0
+            status: 'success',
+            payload: 'Operation payload generated',
+            exitCode: 0,
         };
     }
 
     private async verifier(blueprint: any, result: any) {
         console.log(`[Verifier] Verifying execution of: ${blueprint.taskId}`);
-        // Formal verification of the operator's output against architect's intent
-        const isValid = result.exitCode === 0 && result.status === "success";
-        
+        const isValid = result.exitCode === 0 && result.status === 'success';
         return {
             success: isValid,
             details: {
                 intentMatched: true,
-                checksum: crypto.randomBytes(8).toString('hex')
-            }
+                checksum: crypto.randomBytes(8).toString('hex'),
+            },
         };
     }
 
     private storeReceipt(receipt: VerificationReceipt) {
         const stmt = this.db.prepare(`
             INSERT INTO verification_receipts (
-                id, timestamp, architect_id, operator_id, verifier_id, task_hash, status, evidence
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                id, cycle_id, timestamp, architect_id, operator_id, verifier_id,
+                task_hash, status, evidence, routing, phase_trail
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `);
-        
+
         stmt.run(
             receipt.id,
+            receipt.cycleId,
             receipt.timestamp,
             receipt.architectId,
             receipt.operatorId,
             receipt.verifierId,
             receipt.taskHash,
             receipt.status,
-            receipt.evidence
+            receipt.evidence,
+            JSON.stringify(receipt.routing),
+            JSON.stringify(receipt.phaseTrail),
         );
-    }
-
-    /**
-     * Retrieve all receipts for a specific task.
-     */
-    public queryReceipts(taskHash: string): VerificationReceipt[] {
-        const stmt = this.db.prepare('SELECT * FROM verification_receipts WHERE task_hash = ?');
-        return stmt.all(taskHash) as any[];
     }
 }

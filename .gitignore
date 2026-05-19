@@ -37,9 +37,20 @@ temp/
 dist/
 build/
 
+# Per-cycle workspaces (Symphony §9)
+.kovael/workspaces/
+
 # Gemini Metadata
 .gemini/
 .geminiignore
 MEMORY.md
 GEMINI.md
 *.metadata.json
+
+# Local agent notes — kept out of public repo by design
+.notes/
+.secrets.baseline.local
+
+# PII forbidden patterns — kept out of the public repo by design.
+# Each contributor configures their own local copy (see SECURITY.md §PII-Guard).
+.kovael-forbidden-patterns.txt

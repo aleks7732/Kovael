@@ -1,0 +1,78 @@
+# CodeRabbit configuration for Kovael · Sovereign Agentic Mesh
+# Free unlimited reviews for open-source maintainers (May 2026 plan).
+# Docs: https://docs.coderabbit.ai/
+
+language: en-US
+early_access: false
+tone_instructions: >
+  You are reviewing a TypeScript codebase that implements a sovereign agentic
+  mesh inspired by OpenAI Symphony (Apache-2.0). Treat the architecture
+  as deliberate — do not flag the Triad pattern (Architect/Operator/Verifier)
+  as redundant. Prefer concise, actionable feedback. Surface real defects;
+  ignore style nits that the existing codebase already accepts. Be direct,
+  not deferential.
+
+reviews:
+  profile: assertive
+  request_changes_workflow: true
+  high_level_summary: true
+  poem: false
+  review_status: true
+  collapse_walkthrough: false
+  changed_files_summary: true
+  sequence_diagrams: true
+  auto_review:
+    enabled: true
+    auto_incremental_review: true
+    drafts: false
+    base_branches:
+      - main
+      - 'claude/.*'
+  path_filters:
+    - '!**/package-lock.json'
+    - '!**/node_modules/**'
+    - '!**/dist/**'
+    - '!.notes/**'
+  path_instructions:
+    - path: 'src/protocols/**'
+      instructions: >
+        Protocol files define wire contracts and state machines. Flag any
+        transition that bypasses the canonical state graph, any field that
+        could leak across cycles, and any change that breaks backward
+        compatibility with shipped receipts.
+    - path: 'src/services/**'
+      instructions: >
+        Service files are long-running background workers. Look for unclean
+        shutdown paths, unhandled promise rejections, and resource leaks
+        (sockets, intervals, child processes).
+    - path: 'packages/spatial-war-room/src/components/**'
+      instructions: >
+        React 19 components. Verify every list has a stable key, every
+        derived value uses useMemo when computed from props, every callback
+        passed to ReactFlow uses useCallback, and every node template is
+        wrapped in memo. Aggressive memoization is a hard requirement —
+        we render up to 1,000 nodes.
+    - path: 'packages/spatial-war-room/src/store/**'
+      instructions: >
+        Zustand store. Verify selectors are shallow; flag any handler that
+        calls `set()` inside a high-frequency loop without coalescing.
+    - path: '.github/workflows/**'
+      instructions: >
+        GitHub Actions workflows. Confirm SHA pinning is at least planned
+        (TODO comment is acceptable as a transition step). Flag any
+        workflow that interpolates untrusted input into shell commands,
+        grants more than least-privilege permissions, or runs untrusted
+        code with secrets in scope.
+
+  abort_on_close: true
+
+chat:
+  auto_reply: true
+
+knowledge_base:
+  learnings:
+    scope: auto
+  issues:
+    scope: auto
+  pull_requests:
+    scope: auto

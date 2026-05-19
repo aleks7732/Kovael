@@ -1,0 +1,47 @@
+# Pre-commit configuration for Kovael.
+# Layer 1 of the Three-Layer Defense (see Kovael-Security-Audit.md §3).
+#
+# Install:
+#   pip install pre-commit && pre-commit install
+#
+# Local PII patterns are NOT in this file — they live in a gitignored
+# config at .kovael-forbidden-patterns.txt (one regex per line). Each
+# contributor creates their own copy; setup instructions are in
+# SECURITY.md §PII-Guard.
+
+repos:
+  - repo: local
+    hooks:
+      - id: pii-forbidden-strings
+        name: PII forbidden-string scan (Kovael)
+        entry: bash -c 'CFG=".kovael-forbidden-patterns.txt"; if [ ! -f "$CFG" ]; then echo "[pre-commit] WARN: $CFG missing — running generic email/MAC/path fallback only"; PATTERNS="[a-z0-9._%+-]+@[a-z0-9.-]+\\.[a-z]{2,}|([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}"; else PATTERNS=$(grep -v "^#" "$CFG" | grep -v "^$" | paste -sd"|" -); fi; HITS=$(git diff --cached -- . ":(exclude)package-lock.json" ":(exclude)**/package-lock.json" ":(exclude).notes/**" ":(exclude)PII-Audit-Report.md" | grep -E "^\\+[^+]" | grep -iE "$PATTERNS" || true); if [ -n "$HITS" ]; then echo "[pre-commit] PII forbidden strings detected in staged diff:"; echo "$HITS" | head; exit 1; fi'
+        language: system
+        pass_filenames: false
+        stages: [commit]
+
+  - repo: https://github.com/Yelp/detect-secrets
+    rev: v1.5.0
+    hooks:
+      - id: detect-secrets
+        args: ['--baseline', '.secrets.baseline']
+        exclude: '(?x)^(package-lock\.json|.*/package-lock\.json|\.notes/.*)$'
+
+  - repo: https://github.com/trufflesecurity/trufflehog
+    rev: v3.85.0
+    hooks:
+      - id: trufflehog
+        name: trufflehog verified secrets scan
+        entry: bash -c 'trufflehog git file://. --since-commit HEAD --only-verified --fail'
+        language: system
+        stages: [commit, push]
+
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-json
+      - id: check-merge-conflict
+      - id: check-added-large-files
+        args: ['--maxkb=500']
