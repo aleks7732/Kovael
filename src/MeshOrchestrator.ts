@@ -13,6 +13,7 @@ import { WorkspaceManager } from './services/WorkspaceManager.js';
 import { HookRunner, HookResult } from './services/HookRunner.js';
 import { WorkflowLoader, WorkflowDocument } from './services/WorkflowLoader.js';
 import { RateLimitTracker, AgentRateSnapshot } from './services/RateLimitTracker.js';
+import { Logger, rootLogger } from './services/Logger.js';
 import crypto from 'node:crypto';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -39,6 +40,7 @@ export class MeshOrchestrator extends EventEmitter {
     private hooks: HookRunner;
     private workflowLoader: WorkflowLoader;
     private rateLimits: RateLimitTracker;
+    private log: Logger = rootLogger;
     private agentCards: any[] = [];
     private nodeCache: Map<string, any> = new Map();
     private taskCache: any[] = [];
@@ -94,7 +96,7 @@ export class MeshOrchestrator extends EventEmitter {
         this.workflowLoader.start();
 
         this.server.listen(port, () => {
-            console.log(`[MeshOrchestrator] Server listening on port ${port} (WS + SSE + /api/v1/state)`);
+            this.log.info('orchestrator_listening', { port, surfaces: ['ws', 'sse', '/api/v1/state'] });
         });
 
         this.hardware.start();
@@ -135,7 +137,11 @@ export class MeshOrchestrator extends EventEmitter {
 
     private wireWorkflowLoader() {
         this.workflowLoader.on('workflow_loaded', ({ document, firstLoad }: { document: WorkflowDocument; firstLoad: boolean }) => {
-            console.log(`[WorkflowLoader] ${firstLoad ? 'loaded' : 'reloaded'} v${document.frontMatter.version}`);
+            this.log.info('workflow_loaded', {
+                version: document.frontMatter.version,
+                first_load: firstLoad,
+                loaded_at: document.loadedAt,
+            });
             this.broadcast({
                 type: 'workflow_loaded',
                 nodeId: 'workflow-loader',
@@ -143,7 +149,10 @@ export class MeshOrchestrator extends EventEmitter {
             });
         });
         this.workflowLoader.on('workflow_error', (payload: { error: string; keptKnownGood: boolean }) => {
-            console.warn(`[WorkflowLoader] reload error (kept_known_good=${payload.keptKnownGood}): ${payload.error}`);
+            this.log.warn('workflow_reload_failed', {
+                error: payload.error,
+                kept_known_good: payload.keptKnownGood,
+            });
             this.broadcast({
                 type: 'workflow_error',
                 nodeId: 'workflow-loader',
@@ -154,26 +163,37 @@ export class MeshOrchestrator extends EventEmitter {
 
     private registerDefaultHooks() {
         // Sentinel logging hooks — purely observational, never abort. They
-        // make the §10.1 lifecycle visible in the cockpit feed from the
-        // moment the orchestrator boots, even before WORKFLOW.md adds more.
-        const log = (event: 'after_create' | 'before_run' | 'after_run' | 'before_remove') => ({
+        // make the §10.1 lifecycle visible in the structured log feed from
+        // the moment the orchestrator boots.
+        const orchestratorLog = this.log;
+        const sentinel = (event: 'after_create' | 'before_run' | 'after_run' | 'before_remove') => ({
             name: `kovael.sentinel.${event}`,
             event,
-            fn: (ctx: { cycleId: string }) => {
-                console.log(`[Hook ${event}] cycle=${ctx.cycleId.slice(0, 8)}`);
+            fn: (ctx: { cycleId: string; taskHash?: string }) => {
+                orchestratorLog.info('hook_sentinel', {
+                    hook_event: event,
+                    cycle_id: ctx.cycleId,
+                    task_hash: ctx.taskHash,
+                });
             },
             timeoutMs: 5000,
         });
-        this.hooks.register(log('after_create'));
-        this.hooks.register(log('before_run'));
-        this.hooks.register(log('after_run'));
-        this.hooks.register(log('before_remove'));
+        this.hooks.register(sentinel('after_create'));
+        this.hooks.register(sentinel('before_run'));
+        this.hooks.register(sentinel('after_run'));
+        this.hooks.register(sentinel('before_remove'));
     }
 
     private wireHooks() {
         this.hooks.on('hook_event', (r: HookResult) => {
             if (!r.success) {
-                console.warn(`[Hook ${r.event}/${r.name}] FAILED in ${r.durationMs}ms (${r.timedOut ? 'timeout' : 'error'}): ${r.error}`);
+                this.log.warn('hook_failed', {
+                    hook: r.name,
+                    event: r.event,
+                    duration_ms: r.durationMs,
+                    timed_out: r.timedOut,
+                    error: r.error,
+                });
             }
             this.broadcast({ type: 'hook_event', nodeId: 'hook-runner', data: r });
         });
@@ -182,7 +202,11 @@ export class MeshOrchestrator extends EventEmitter {
     private wireReconciler() {
         this.reconciler.on('reconcile_action', (action: ReconcileAction) => {
             if (action.kind === 'stall_detected') {
-                console.warn(`[Reconciler] stall released: ${action.taskHash.slice(0, 12)} was ${action.previousState} for ${action.ageMs}ms`);
+                this.log.warn('stall_released', {
+                    task_hash: action.taskHash,
+                    previous_state: action.previousState,
+                    age_ms: action.ageMs,
+                });
             }
             this.broadcast({
                 type: 'reconcile_event',
@@ -194,14 +218,23 @@ export class MeshOrchestrator extends EventEmitter {
 
     private wireRetryQueue() {
         this.retryQueue.on('retry_scheduled', (d: RetryDispatch) => {
-            console.log(`[RetryQueue] scheduled attempt ${d.attempt} for ${d.taskHash.slice(0, 12)} in ${d.backoffMs}ms (reason: ${d.reason})`);
+            this.log.info('retry_scheduled', {
+                task_hash: d.taskHash,
+                attempt: d.attempt,
+                backoff_ms: d.backoffMs,
+                reason: d.reason,
+            });
             this.broadcast({ type: 'retry_event', nodeId: 'retry-queue', data: { kind: 'scheduled', dispatch: d } });
         });
         this.retryQueue.on('retry_dispatching', (d: RetryDispatch) => {
             this.broadcast({ type: 'retry_event', nodeId: 'retry-queue', data: { kind: 'dispatching', dispatch: d } });
         });
         this.retryQueue.on('retry_exhausted', (info: { taskHash: string; attempts: number; reason: string }) => {
-            console.warn(`[RetryQueue] exhausted ${info.taskHash.slice(0, 12)} after ${info.attempts} attempts (last: ${info.reason})`);
+            this.log.warn('retry_exhausted', {
+                task_hash: info.taskHash,
+                attempts: info.attempts,
+                reason: info.reason,
+            });
             this.broadcast({ type: 'retry_event', nodeId: 'retry-queue', data: { kind: 'exhausted', ...info } });
         });
     }
@@ -296,7 +329,7 @@ export class MeshOrchestrator extends EventEmitter {
                     const content = fs.readFileSync(path.join(cardsDir, f), 'utf-8');
                     return JSON.parse(content);
                 });
-            console.log(`[MeshOrchestrator] Loaded ${this.agentCards.length} AgentCards.`);
+            this.log.info('agent_cards_loaded', { count: this.agentCards.length });
         }
     }
 
@@ -351,9 +384,9 @@ export class MeshOrchestrator extends EventEmitter {
                 if (payload && payload.type === 'mission_inject' && typeof payload.goal === 'string') {
                     const goal = payload.goal.trim();
                     if (!goal) return;
-                    console.log(`[MeshOrchestrator] Mission injected from cockpit (${nodeId}): ${goal}`);
+                    this.log.info('mission_inject', { source: nodeId, goal_preview: goal.slice(0, 80) });
                     this.injectTask(goal).catch((err) =>
-                        console.error('[MeshOrchestrator] Injection failure:', err)
+                        this.log.error('injection_failure', { source: nodeId, error: (err as Error).message })
                     );
                     return;
                 }
@@ -402,16 +435,17 @@ export class MeshOrchestrator extends EventEmitter {
     public async injectTask(goal: string): Promise<VerificationReceipt> {
         const taskHash = crypto.createHash('sha256').update(goal).digest('hex');
         const cycleId = crypto.randomUUID();
+        const cycleLog = this.log.scope({ cycle_id: cycleId, task_hash: taskHash });
 
         this.claims.register(taskHash, `inject:${goal.slice(0, 60)}`);
         const claimed = this.claims.tryClaim(taskHash, cycleId, 'orchestrator_inject');
         if (!claimed) {
             const current = this.claims.get(taskHash);
-            console.warn(`[MeshOrchestrator] Refusing duplicate dispatch (taskHash=${taskHash.slice(0, 12)} state=${current?.state})`);
+            cycleLog.warn('duplicate_dispatch_refused', { current_state: current?.state });
             throw new Error(`Task already in flight (state=${current?.state}); refusing duplicate dispatch.`);
         }
 
-        console.log(`[MeshOrchestrator] Claim acquired (taskHash=${taskHash.slice(0, 12)} cycle=${cycleId.slice(0, 8)}): ${goal}`);
+        cycleLog.info('claim_acquired', { goal_preview: goal.slice(0, 80) });
         this.claims.markRunning(taskHash, cycleId);
 
         // Symphony §9 — every cycle gets an isolated workspace directory.
@@ -419,7 +453,7 @@ export class MeshOrchestrator extends EventEmitter {
         try {
             workspacePath = this.workspaces.acquire(cycleId);
         } catch (err) {
-            console.warn(`[MeshOrchestrator] workspace acquire failed for ${cycleId}: ${(err as Error).message}`);
+            cycleLog.warn('workspace_acquire_failed', { error: (err as Error).message });
         }
 
         const hookCtx = { cycleId, taskHash, workspacePath, goal };
