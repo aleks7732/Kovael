@@ -1,5 +1,5 @@
 import { EventEmitter } from 'node:events';
-import { TaskClaimMachine } from '../protocols/TaskClaimMachine.js';
+import { TaskClaimMachine, ClaimState } from '../protocols/TaskClaimMachine.js';
 
 export interface RetryConfig {
     maxAttempts: number;
@@ -39,7 +39,7 @@ export interface RetryDispatch {
  * has elapsed are dispatched back to the supplied dispatcher.
  */
 export class RetryQueue extends EventEmitter {
-    private readonly cfg: RetryConfig;
+    private cfg: RetryConfig;
     private readonly claims: TaskClaimMachine;
     private readonly pending: Map<string, { goal: string; dispatch: RetryDispatch }> = new Map();
     private timer: NodeJS.Timeout | null = null;
@@ -62,6 +62,15 @@ export class RetryQueue extends EventEmitter {
 
     public stop(): void {
         if (this.timer) { clearInterval(this.timer); this.timer = null; }
+    }
+
+    public updateConfig(cfg: Partial<RetryConfig>): void {
+        const oldInterval = this.cfg.sweepIntervalMs;
+        this.cfg = { ...this.cfg, ...cfg };
+        if (this.timer && cfg.sweepIntervalMs !== undefined && this.cfg.sweepIntervalMs !== oldInterval) {
+            this.stop();
+            this.start();
+        }
     }
 
     public pendingCount(): number {
@@ -113,6 +122,15 @@ export class RetryQueue extends EventEmitter {
 
     private sweep(): void {
         if (!this.dispatcher) return;
+
+        // Defensive Map cleanup: prune pending tasks whose claims are no longer RetryQueued
+        for (const [taskHash] of Array.from(this.pending.entries())) {
+            const record = this.claims.get(taskHash);
+            if (!record || record.state !== ClaimState.RetryQueued) {
+                this.pending.delete(taskHash);
+            }
+        }
+
         const due = this.claims.dueForRetry();
         if (due.length === 0) return;
 

@@ -149,6 +149,41 @@ export class MeshOrchestrator extends EventEmitter {
                 first_load: firstLoad,
                 loaded_at: document.loadedAt,
             });
+
+            const floor = document.frontMatter.routing?.vram_floor_mb;
+            if (typeof floor === 'number') {
+                this.mevBridge.setVramFloor(floor);
+            }
+
+            const primary = document.frontMatter.routing?.primary_architect;
+            if (typeof primary === 'string') {
+                this.mevBridge.setPrimaryArchitect(primary);
+            }
+
+            const fallback = document.frontMatter.routing?.fallback_agent;
+            if (typeof fallback === 'string') {
+                this.mevBridge.setFallbackAgent(fallback);
+            }
+
+            const turns = document.frontMatter.sharding?.keep_recent_turns;
+            if (typeof turns === 'number') {
+                this.mevBridge.setKeepRecentTurns(turns);
+            }
+
+            const retryCfg: Partial<RetryConfig> = {};
+            if (typeof document.frontMatter.retry?.max_attempts === 'number') {
+                retryCfg.maxAttempts = document.frontMatter.retry.max_attempts;
+            }
+            if (typeof document.frontMatter.retry?.backoff_base_ms === 'number') {
+                retryCfg.baseMs = document.frontMatter.retry.backoff_base_ms;
+            }
+            if (typeof document.frontMatter.retry?.backoff_factor === 'number') {
+                retryCfg.factor = document.frontMatter.retry.backoff_factor;
+            }
+            if (Object.keys(retryCfg).length > 0) {
+                this.retryQueue.updateConfig(retryCfg);
+            }
+
             this.broadcast({
                 type: 'workflow_loaded',
                 nodeId: 'workflow-loader',

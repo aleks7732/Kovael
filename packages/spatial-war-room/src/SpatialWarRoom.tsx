@@ -81,62 +81,87 @@ const SpatialWarRoom = () => {
   }, []);
 
   useEffect(() => {
-    const ws = new WebSocket(ORCHESTRATOR_URL);
-    wsRef.current = ws;
+    let active = true;
+    let reconnectTimeout: any = null;
 
-    ws.onmessage = (event) => {
-      try {
-        const message = JSON.parse(event.data);
+    const connect = () => {
+      console.log('Connecting to WebSocket...');
+      const ws = new WebSocket(ORCHESTRATOR_URL);
+      wsRef.current = ws;
 
-        switch (message.type) {
-          case 'telemetry':
-            enqueueTelemetry(message.nodeId, message.data);
-            break;
-          case 'hardware_telemetry':
-            enqueueHardware(message.data);
-            break;
-          case 'new_task':
-            addTask(message.task);
-            break;
-          case 'agent_card':
-            upsertAgentNode(message.data);
-            break;
-          case 'verification_receipt':
-            addVerificationReceipt(message.nodeId, message.data);
-            break;
-          case 'anx_briefing':
-            if (typeof message.data === 'string') addANXBriefing(message.data);
-            break;
-          case 'phase_change':
-            recordPhaseEvent(message.data);
-            break;
-          case 'claim_event':
-            recordClaimEvent(message.data);
-            break;
-          case 'retry_event':
-            recordRetryEvent(message.data);
-            break;
-          case 'reconcile_event':
-            recordReconcileAction(message.data);
-            break;
-          case 'hook_event':
-            recordHookEvent(message.data);
-            break;
-          case 'token_update':
-            if (message.data?.totals) recordTokenUpdate(message.data.totals);
-            break;
-          case 'rate_limit_update':
-            if (message.data?.agentId) recordRateLimit(message.data);
-            break;
+      ws.onmessage = (event) => {
+        if (!active) return;
+        try {
+          const message = JSON.parse(event.data);
+
+          switch (message.type) {
+            case 'telemetry':
+              enqueueTelemetry(message.nodeId, message.data);
+              break;
+            case 'hardware_telemetry':
+              enqueueHardware(message.data);
+              break;
+            case 'new_task':
+              addTask(message.task);
+              break;
+            case 'agent_card':
+              upsertAgentNode(message.data);
+              break;
+            case 'verification_receipt':
+              addVerificationReceipt(message.nodeId, message.data);
+              break;
+            case 'anx_briefing':
+              if (typeof message.data === 'string') addANXBriefing(message.data);
+              break;
+            case 'phase_change':
+              recordPhaseEvent(message.data);
+              break;
+            case 'claim_event':
+              recordClaimEvent(message.data);
+              break;
+            case 'retry_event':
+              recordRetryEvent(message.data);
+              break;
+            case 'reconcile_event':
+              recordReconcileAction(message.data);
+              break;
+            case 'hook_event':
+              recordHookEvent(message.data);
+              break;
+            case 'token_update':
+              if (message.data?.totals) recordTokenUpdate(message.data.totals);
+              break;
+            case 'rate_limit_update':
+              if (message.data?.agentId) recordRateLimit(message.data);
+              break;
+          }
+        } catch (err) {
+          console.error('Failed to parse WS message', err);
         }
-      } catch (err) {
-        console.error('Failed to parse WS message', err);
-      }
+      };
+
+      ws.onclose = () => {
+        wsRef.current = null;
+        if (active) {
+          console.log('WebSocket closed. Reconnecting in 3 seconds...');
+          reconnectTimeout = setTimeout(connect, 3000);
+        }
+      };
+
+      ws.onerror = () => {
+        ws.close();
+      };
     };
 
+    connect();
+
     return () => {
-      wsRef.current = null;
-      ws.close();
+      active = false;
+      if (reconnectTimeout) clearTimeout(reconnectTimeout);
+      if (wsRef.current) {
+        wsRef.current.close();
+        wsRef.current = null;
+      }
     };
   }, [enqueueTelemetry, enqueueHardware, addTask, addVerificationReceipt, upsertAgentNode, addANXBriefing, recordPhaseEvent, recordClaimEvent, recordRetryEvent, recordReconcileAction, recordHookEvent, recordTokenUpdate, recordRateLimit]);
 

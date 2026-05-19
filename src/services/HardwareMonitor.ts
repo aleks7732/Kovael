@@ -27,6 +27,7 @@ export class HardwareMonitor extends EventEmitter {
     private timer: NodeJS.Timeout | null = null;
     private latest: VramMetrics;
     private readonly intervalMs: number;
+    private inFlight: boolean = false;
 
     constructor(intervalMs: number = 2000) {
         super();
@@ -60,6 +61,9 @@ export class HardwareMonitor extends EventEmitter {
     }
 
     private poll(): void {
+        if (this.inFlight) return;
+        this.inFlight = true;
+
         let stdout = '';
         let stderr = '';
         let child;
@@ -67,6 +71,7 @@ export class HardwareMonitor extends EventEmitter {
         try {
             child = spawn('nvidia-smi', SMI_ARGS, { stdio: ['ignore', 'pipe', 'pipe'] });
         } catch {
+            this.inFlight = false;
             this.publishUnavailable('spawn_failed');
             return;
         }
@@ -75,10 +80,12 @@ export class HardwareMonitor extends EventEmitter {
         child.stderr.on('data', (chunk) => { stderr += chunk.toString(); });
 
         child.on('error', () => {
+            this.inFlight = false;
             this.publishUnavailable('nvidia-smi_missing');
         });
 
         child.on('close', (code) => {
+            this.inFlight = false;
             if (code !== 0) {
                 this.publishUnavailable(stderr.trim().split('\n')[0] || `exit_${code}`);
                 return;

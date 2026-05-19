@@ -46,7 +46,7 @@ const FRONT_MATTER_RE = /^---\s*\n([\s\S]*?)\n---\s*\n([\s\S]*)$/;
 export class WorkflowLoader extends EventEmitter {
     private current: WorkflowDocument | null = null;
     private lastError: string | null = null;
-    private watcher: fs.FSWatcher | null = null;
+    private watching: boolean = false;
     private readonly sourcePath: string;
     private reloadDebounce: NodeJS.Timeout | null = null;
 
@@ -57,11 +57,12 @@ export class WorkflowLoader extends EventEmitter {
 
     public start(): void {
         this.reload();
-        if (!this.watcher) {
+        if (!this.watching) {
             try {
-                this.watcher = fs.watch(this.sourcePath, () => this.scheduleReload());
+                fs.watchFile(this.sourcePath, { interval: 1000 }, () => this.scheduleReload());
+                this.watching = true;
             } catch (err) {
-                console.warn(`[WorkflowLoader] fs.watch failed (${(err as Error).message}); hot reload disabled.`);
+                console.warn(`[WorkflowLoader] fs.watchFile failed (${(err as Error).message}); hot reload disabled.`);
             }
         }
     }
@@ -69,7 +70,14 @@ export class WorkflowLoader extends EventEmitter {
     public stop(): void {
         if (this.reloadDebounce) clearTimeout(this.reloadDebounce);
         this.reloadDebounce = null;
-        if (this.watcher) { this.watcher.close(); this.watcher = null; }
+        if (this.watching) {
+            try {
+                fs.unwatchFile(this.sourcePath);
+            } catch (err) {
+                console.warn(`[WorkflowLoader] fs.unwatchFile failed (${(err as Error).message}).`);
+            }
+            this.watching = false;
+        }
     }
 
     public document(): WorkflowDocument | null { return this.current; }

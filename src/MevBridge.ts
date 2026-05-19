@@ -52,7 +52,6 @@ export interface ShardOptions {
     keepRecent: number;
 }
 
-const VRAM_FLOOR_MB = 8192;
 const SHAEV_AGENT = 'shaev';
 const NYX_CLI_AGENT = 'nyx-cli';
 
@@ -70,6 +69,10 @@ export class MevBridge extends EventEmitter {
     private vramFreeMb: number = 0;
     private vramKnown: boolean = false;
     private rateLimits: RateLimitTracker | null = null;
+    private vramFloorMb: number = 8192;
+    private primaryArchitect: string = 'shaev';
+    private fallbackAgent: string = 'nyx-cli';
+    private keepRecentTurns: number = 3;
 
     constructor(dbPath: string = 'mev_bridge.db') {
         super();
@@ -104,8 +107,24 @@ export class MevBridge extends EventEmitter {
         this.vramKnown = known;
     }
 
+    public setVramFloor(floorMb: number): void {
+        this.vramFloorMb = floorMb;
+    }
+
     public setRateLimitTracker(tracker: RateLimitTracker): void {
         this.rateLimits = tracker;
+    }
+
+    public setPrimaryArchitect(agent: string): void {
+        this.primaryArchitect = agent;
+    }
+
+    public setFallbackAgent(agent: string): void {
+        this.fallbackAgent = agent;
+    }
+
+    public setKeepRecentTurns(turns: number): void {
+        this.keepRecentTurns = turns;
     }
 
     /**
@@ -130,28 +149,28 @@ export class MevBridge extends EventEmitter {
      * the agent if ignored), then VRAM floor, then default.
      */
     private routeArchitect(): { agent: string; rationale: string } {
-        // Rate-limit gate first — if Shaev is hot, fall back regardless of VRAM.
-        if (this.rateLimits && !this.rateLimits.canDispatch(SHAEV_AGENT)) {
+        // Rate-limit gate first — if primary is hot, fall back regardless of VRAM.
+        if (this.rateLimits && !this.rateLimits.canDispatch(this.primaryArchitect)) {
             return {
-                agent: NYX_CLI_AGENT,
-                rationale: `shaev_rate_limited:falling_back_to_${NYX_CLI_AGENT}`,
+                agent: this.fallbackAgent,
+                rationale: `${this.primaryArchitect}_rate_limited:falling_back_to_${this.fallbackAgent}`,
             };
         }
         if (!this.vramKnown) {
             return {
-                agent: NYX_CLI_AGENT,
+                agent: this.fallbackAgent,
                 rationale: 'vram_unknown:defaulting_to_lightweight',
             };
         }
-        if (this.vramFreeMb >= VRAM_FLOOR_MB) {
+        if (this.vramFreeMb >= this.vramFloorMb) {
             return {
-                agent: SHAEV_AGENT,
-                rationale: `vram_free_${this.vramFreeMb}mb>=${VRAM_FLOOR_MB}mb:shaev_authorized`,
+                agent: this.primaryArchitect,
+                rationale: `vram_free_${this.vramFreeMb}mb>=${this.vramFloorMb}mb:${this.primaryArchitect}_authorized`,
             };
         }
         return {
-            agent: NYX_CLI_AGENT,
-            rationale: `vram_free_${this.vramFreeMb}mb<${VRAM_FLOOR_MB}mb:shaev_gated`,
+            agent: this.fallbackAgent,
+            rationale: `vram_free_${this.vramFreeMb}mb<${this.vramFloorMb}mb:${this.primaryArchitect}_gated`,
         };
     }
 
@@ -172,7 +191,7 @@ export class MevBridge extends EventEmitter {
         const routing = this.routeArchitect();
         // Record the dispatch for rate-limit accounting (no-op if tracker absent).
         this.rateLimits?.recordDispatch(routing.agent);
-        const shardedContext = this.shardContext(context);
+        const shardedContext = this.shardContext(context, { keepRecent: this.keepRecentTurns });
 
         try {
             machine.transition(TriadPhase.DispatchToArchitect, { routedAgent: routing.agent, note: routing.rationale });

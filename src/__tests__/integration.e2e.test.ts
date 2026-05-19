@@ -281,6 +281,7 @@ describe('Retry + reconcile interaction', () => {
         const stub = vi.spyOn(mevBridge, 'execute').mockRejectedValue(new Error('stub_failure'));
 
         const retryQueue = (orchestrator as any).retryQueue;
+        retryQueue.updateConfig({ baseMs: 50, factor: 2, maxAttempts: 2, sweepIntervalMs: 25 });
         retryQueue.on('retry_scheduled', () => events.push('retry_scheduled'));
         retryQueue.on('retry_exhausted', () => events.push('retry_exhausted'));
 
