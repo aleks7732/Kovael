@@ -28,19 +28,25 @@ describe('MeshOrchestrator', () => {
         expect(isConnected).toBe(true);
     });
 
-    it('should emit the correct number of sub-tasks when injectTask is called', async () => {
+    it('should emit task_routed and return a VerificationReceipt when injectTask is called', async () => {
         const taskRoutedSpy = vi.fn();
         orchestrator.on('task_routed', taskRoutedSpy);
 
         const goal = 'Build a sovereign mesh';
-        const subTaskIds = await orchestrator.injectTask(goal);
+        const receipt = await orchestrator.injectTask(goal);
 
-        // Based on the mock implementation in MeshOrchestrator.ts
-        expect(subTaskIds).toHaveLength(2);
-        expect(taskRoutedSpy).toHaveBeenCalledTimes(2);
-        expect(taskRoutedSpy).toHaveBeenCalledWith(expect.objectContaining({
-            id: '1',
-            title: expect.stringContaining(goal)
-        }));
+        // injectTask returns a single VerificationReceipt, not an array
+        expect(receipt).toMatchObject({
+            id: expect.any(String),
+            taskHash: expect.any(String),
+            status: expect.stringMatching(/^(verified|failed)$/),
+            architectId: expect.any(String),
+            operatorId: expect.any(String),
+            verifierId: expect.any(String),
+        });
+
+        // task_routed fires exactly once per injectTask call
+        expect(taskRoutedSpy).toHaveBeenCalledTimes(1);
+        expect(taskRoutedSpy).toHaveBeenCalledWith(expect.objectContaining({ goal, receipt }));
     });
 });

@@ -1,5 +1,4 @@
 import { MeshOrchestrator } from './src/MeshOrchestrator.js';
-import { AgentHeartbeatNode } from './packages/spatial-war-room/src/components/CustomNodes.js';
 
 async function bootstrap() {
     console.log('🚀 IGNITING KOVAEL SOVEREIGN MESH...');

@@ -75,7 +75,6 @@ export class MeshOrchestrator extends EventEmitter {
 
         this.loadAgentCards();
         this.initializeBus();
-        this.initializeMemory();
         this.wireHardware();
         this.wireMevBridge();
         this.wireClaims();
@@ -285,17 +284,18 @@ export class MeshOrchestrator extends EventEmitter {
         }
     }
 
-    private initializeMemory() {
-        this.memoryDb.exec(`
-            CREATE TABLE semantic_memory(
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                vector_blob BLOB,
-                relevance_weight REAL
-            ) STRICT
-        `);
-    }
-
     private initializeBus() {
+        // Register once here — not per-connection — to avoid listener accumulation.
+        // Broadcasts cycle_complete receipts to all currently open clients.
+        this.mevBridge.on('cycle_complete', (receipt: VerificationReceipt) => {
+            const payload = {
+                type: 'verification_receipt',
+                nodeId: receipt.verifierId,
+                data: receipt
+            };
+            this.broadcast(payload);
+        });
+
         this.wss.on('connection', (ws: WebSocket, request) => {
             const nodeId = this.extractNodeId(request);
 
@@ -323,10 +323,14 @@ export class MeshOrchestrator extends EventEmitter {
                 }));
             }
 
-            ws.on('message', async (data: string) => {
+            // ws delivers Buffer (or ArrayBuffer / Buffer[]); normalise before JSON.parse.
+            ws.on('message', async (data: Buffer | ArrayBuffer | Buffer[]) => {
                 let payload: any;
-                try { payload = JSON.parse(data); }
-                catch { return; }
+                try {
+                    payload = JSON.parse(data.toString());
+                } catch {
+                    return;
+                }
 
                 if (payload && payload.type === 'mission_inject' && typeof payload.goal === 'string') {
                     const goal = payload.goal.trim();

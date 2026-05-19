@@ -42,6 +42,10 @@ export class MevHandshake extends EventEmitter {
                 this.clients.delete(res);
                 console.log(`[MevHandshake] Participant disconnected. Total: ${this.clients.size}`);
             });
+        } else {
+            // Return 404 so unmatched HTTP connections are not left hanging
+            res.writeHead(404, { 'Content-Type': 'text/plain' });
+            res.end('Not found');
         }
     }
 

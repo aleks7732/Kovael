@@ -102,7 +102,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       };
     } catch (error) {
       if (error instanceof z.ZodError) {
-        throw new Error(`Invalid arguments: ${error.errors.map(e => e.message).join(", ")}`);
+        throw new Error(`Invalid arguments: ${error.issues.map((e: { message: string }) => e.message).join(", ")}`);
       }
       throw error;
     }
