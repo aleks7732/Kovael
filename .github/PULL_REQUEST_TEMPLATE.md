@@ -1,37 +1,40 @@
-## Description
+## 🜂 KOVAEL SOVEREIGN MESH · PULL REQUEST
 
-Please include a summary of the changes and the related issue. Please also include relevant motivation and context. List any dependencies that are required for this change.
+### 1. Description
+* **Summary of Changes**: 
+* **Related Issue / Goal**: Fixes #
+* **Motivation & Architectural Impact**: 
 
-Fixes # (issue)
+---
 
-## Type of change
+### 2. Type of Change
+- [ ] 🐛 **Bug Fix** (non-breaking change resolving mesh, state, or scheduling issues)
+- [ ] 🚀 **New Feature** (addition of provider integrations, UI panels, or telemetry indicators)
+- [ ] ⚡ **Performance / Code Bloat Optimization** (caching improvements, package-size reduction)
+- [ ] ⚠️ **Breaking Change** (modifications to dispatch state machine or core state contract)
+- [ ] 📝 **Documentation Upgrade** (knowledge mapping, security audits, workflows)
 
-Please delete options that are not relevant.
+---
 
-- [ ] Bug fix (non-breaking change which fixes an issue)
-- [ ] New feature (non-breaking change which adds functionality)
-- [ ] Breaking change (fix or feature that would cause existing functionality to not work as expected)
-- [ ] This change requires a documentation update
+### 3. Mesh Verification Checklist
 
-## How Has This Been Tested?
+#### 🛡️ SECURITY & PII COMPLIANCE
+- [ ] **No Secrets Hardcoded**: Verified that zero API keys, auth headers, or dynamic secrets are introduced to code or workflows. All route through the secure vault.
+- [ ] **PII Scrubber Guard**: Confirmed that no raw local paths (`C:\Users\...`), emails, or personal user logs are contained within the git diff.
+- [ ] **File Protection Invariant**: Checked that no original media assets have been modified without correct `_v2` / `_upscaled` suffixes.
 
-Please describe the tests that you ran to verify your changes. Provide instructions so we can reproduce. Please also list any relevant details for your test configuration.
+#### ⚙️ TS TYPE SAFETY & COMPILATION
+- [ ] **Backend Compile**: Running `npx tsc --noEmit -p tsconfig.json` yields $0$ compiler errors.
+- [ ] **Frontend Compile**: Running `npx tsc -b` inside `packages/spatial-war-room/` yields $0$ compiler errors.
+- [ ] **Lint Compliance**: All code follows Kovael's strict clean-code standard with zero trailing console logs or orphan imports.
 
-- [ ] Test A
-- [ ] Test B
+#### 🧪 UNIT & INTEGRATION TESTING
+- [ ] **Vitest Suite**: All unit and integration tests under `src/__tests__/` execute and pass successfully.
+- [ ] **Test Coverage**: Added corresponding unit/integration tests for new dispatch pathways, gateways, or telemetry behaviors.
 
-**Test Configuration**:
-* Firmware version:
-* Hardware:
-* SDK:
+---
 
-## Checklist:
-
-- [ ] My code follows the style guidelines of this project
-- [ ] I have performed a self-review of my own code
-- [ ] I have commented my code, particularly in hard-to-understand areas
-- [ ] I have made corresponding changes to the documentation
-- [ ] My changes generate no new warnings
-- [ ] I have added tests that prove my fix is effective or that my feature works
-- [ ] New and existing unit tests pass locally with my changes
-- [ ] Any dependent changes have been merged and published in downstream modules
+### 4. Telemetry & Fleet Performance Impact
+* **VRAM footprint / GPU utilization change**: 
+* **Estimated latency / TTFB delta**: 
+* **Visual / UI update preview**: *(Optional: Attach screenshots/recordings of Spatial War Room changes)*
