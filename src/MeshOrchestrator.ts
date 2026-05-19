@@ -8,6 +8,7 @@ import { HardwareMonitor, VramMetrics } from './services/HardwareMonitor.js';
 import { PhaseEvent } from './protocols/TriadStateMachine.js';
 import { TaskClaimMachine, ClaimEvent, ClaimState } from './protocols/TaskClaimMachine.js';
 import { RetryQueue, RetryDispatch } from './services/RetryQueue.js';
+import { Reconciler, ReconcileAction } from './services/Reconciler.js';
 import crypto from 'node:crypto';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -29,6 +30,7 @@ export class MeshOrchestrator extends EventEmitter {
     private hardware: HardwareMonitor;
     private claims: TaskClaimMachine;
     private retryQueue: RetryQueue;
+    private reconciler: Reconciler;
     private agentCards: any[] = [];
     private nodeCache: Map<string, any> = new Map();
     private taskCache: any[] = [];
@@ -59,6 +61,7 @@ export class MeshOrchestrator extends EventEmitter {
         this.claims = new TaskClaimMachine();
         this.retryQueue = new RetryQueue(this.claims);
         this.retryQueue.bind((goal) => this.injectTask(goal));
+        this.reconciler = new Reconciler(this.claims);
 
         this.loadAgentCards();
         this.initializeBus();
@@ -67,8 +70,10 @@ export class MeshOrchestrator extends EventEmitter {
         this.wireMevBridge();
         this.wireClaims();
         this.wireRetryQueue();
+        this.wireReconciler();
 
         this.retryQueue.start();
+        this.reconciler.start();
 
         this.server.listen(port, () => {
             console.log(`[MeshOrchestrator] Server listening on port ${port} (WS + SSE + /api/v1/state)`);
@@ -96,6 +101,19 @@ export class MeshOrchestrator extends EventEmitter {
                 type: 'claim_event',
                 nodeId: 'task-claim-machine',
                 data: evt,
+            });
+        });
+    }
+
+    private wireReconciler() {
+        this.reconciler.on('reconcile_action', (action: ReconcileAction) => {
+            if (action.kind === 'stall_detected') {
+                console.warn(`[Reconciler] stall released: ${action.taskHash.slice(0, 12)} was ${action.previousState} for ${action.ageMs}ms`);
+            }
+            this.broadcast({
+                type: 'reconcile_event',
+                nodeId: 'reconciler',
+                data: action,
             });
         });
     }
@@ -151,6 +169,7 @@ export class MeshOrchestrator extends EventEmitter {
                 pendingCount: this.retryQueue.pendingCount(),
                 pending: this.retryQueue.snapshot(),
             },
+            reconciler: this.reconciler.stats(),
         };
         res.writeHead(200, {
             'Content-Type': 'application/json',
@@ -332,6 +351,7 @@ export class MeshOrchestrator extends EventEmitter {
     }
 
     public close() {
+        this.reconciler.stop();
         this.retryQueue.stop();
         this.hardware.stop();
         this.wss.close();

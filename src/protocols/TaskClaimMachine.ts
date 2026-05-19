@@ -136,6 +136,16 @@ export class TaskClaimMachine extends EventEmitter {
         return this.transition(taskHash, ClaimState.Released, { reason });
     }
 
+    /**
+     * Permanently remove a record from the ledger. Reconciler uses this to
+     * keep memory bounded after a Released claim has aged out. No event
+     * is emitted — pruning is silent, the ledger snapshot is the only
+     * source of truth.
+     */
+    public prune(taskHash: string): boolean {
+        return this.ledger.delete(taskHash);
+    }
+
     /** Tasks whose retryAfter has elapsed and that should be re-claimed. */
     public dueForRetry(): Readonly<ClaimRecord>[] {
         const now = Date.now();

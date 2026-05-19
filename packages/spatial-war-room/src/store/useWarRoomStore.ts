@@ -83,6 +83,14 @@ export interface ClaimStats {
   Released: number;
 }
 
+export interface ReconcileAction {
+  kind: 'stall_detected' | 'terminal_cleanup';
+  taskHash: string;
+  previousState: string;
+  ageMs: number;
+  timestamp: number;
+}
+
 export interface RetryEvent {
   kind: 'scheduled' | 'dispatching' | 'exhausted';
   taskHash?: string;
@@ -121,6 +129,7 @@ export interface WarRoomState {
   recentClaims: ClaimEvent[];
   retryEvents: RetryEvent[];
   retryPendingCount: number;
+  reconcileActions: ReconcileAction[];
   flushCount: number;
   receiptsIssued: number;
   onNodesChange: (changes: NodeChange[]) => void;
@@ -138,6 +147,7 @@ export interface WarRoomState {
   recordPhaseEvent: (evt: PhaseEvent) => void;
   recordClaimEvent: (evt: ClaimEvent) => void;
   recordRetryEvent: (evt: Omit<RetryEvent, 'receivedAt'>) => void;
+  recordReconcileAction: (action: ReconcileAction) => void;
 }
 
 /**
@@ -171,6 +181,7 @@ export const useWarRoomStore = create<WarRoomState>((set, get) => ({
   recentClaims: [],
   retryEvents: [],
   retryPendingCount: 0,
+  reconcileActions: [],
   flushCount: 0,
   receiptsIssued: 0,
 
@@ -326,6 +337,12 @@ export const useWarRoomStore = create<WarRoomState>((set, get) => ({
         agentRoster: nextRoster,
       };
     });
+  },
+
+  recordReconcileAction: (action) => {
+    set((state) => ({
+      reconcileActions: [action, ...state.reconcileActions].slice(0, 40),
+    }));
   },
 
   recordRetryEvent: (evt) => {
