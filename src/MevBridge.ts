@@ -2,6 +2,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { EventEmitter } from 'node:events';
 import crypto from 'node:crypto';
 import { TriadStateMachine, TriadPhase, PhaseEvent } from './protocols/TriadStateMachine.js';
+import type { RateLimitTracker } from './services/RateLimitTracker.js';
 
 /**
  * Token accounting per Symphony §13 — every receipt carries the cycle's
@@ -69,6 +70,7 @@ export class MevBridge extends EventEmitter {
     private db: DatabaseSync;
     private vramFreeMb: number = 0;
     private vramKnown: boolean = false;
+    private rateLimits: RateLimitTracker | null = null;
 
     constructor(dbPath: string = 'mev_bridge.db') {
         super();
@@ -107,6 +109,10 @@ export class MevBridge extends EventEmitter {
         return { freeMb: this.vramFreeMb, known: this.vramKnown };
     }
 
+    public setRateLimitTracker(tracker: RateLimitTracker): void {
+        this.rateLimits = tracker;
+    }
+
     /**
      * Context Sharding (tightened per Module C):
      * Keep the system prompt + the ANX mission manifest + the last 3 turns.
@@ -130,9 +136,18 @@ export class MevBridge extends EventEmitter {
     }
 
     /**
-     * Hardware-Gated Router: decide which agent owns the architect phase.
+     * Hardware + rate-limit router: decide which agent owns the architect
+     * phase. Order of precedence: rate-limit blocks first (catastrophic for
+     * the agent if ignored), then VRAM floor, then default.
      */
     private routeArchitect(): { agent: string; rationale: string } {
+        // Rate-limit gate first — if Shaev is hot, fall back regardless of VRAM.
+        if (this.rateLimits && !this.rateLimits.canDispatch(SHAEV_AGENT)) {
+            return {
+                agent: NYX_CLI_AGENT,
+                rationale: `shaev_rate_limited:falling_back_to_${NYX_CLI_AGENT}`,
+            };
+        }
         if (!this.vramKnown) {
             return {
                 agent: NYX_CLI_AGENT,
@@ -167,6 +182,8 @@ export class MevBridge extends EventEmitter {
         machine.on('phase_change', (evt: PhaseEvent) => this.emit('phase_change', evt));
 
         const routing = this.routeArchitect();
+        // Record the dispatch for rate-limit accounting (no-op if tracker absent).
+        this.rateLimits?.recordDispatch(routing.agent);
         const shardedContext = this.shardContext(context, {
             keepRecent: 3,
             anxManifest: opts.anxManifest,

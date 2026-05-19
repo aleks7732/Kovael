@@ -83,6 +83,15 @@ export interface ClaimStats {
   Released: number;
 }
 
+export interface RateLimitSnapshot {
+  agentId: string;
+  inWindow: number;
+  capacity: number;
+  windowMs: number;
+  blocked: boolean;
+  resetAtMs?: number;
+}
+
 export interface TokenTotals {
   input: number;
   output: number;
@@ -150,6 +159,7 @@ export interface WarRoomState {
   reconcileActions: ReconcileAction[];
   hookEvents: HookEvent[];
   tokenTotals: TokenTotals;
+  rateLimits: Record<string, RateLimitSnapshot>;
   flushCount: number;
   receiptsIssued: number;
   onNodesChange: (changes: NodeChange[]) => void;
@@ -170,6 +180,7 @@ export interface WarRoomState {
   recordReconcileAction: (action: ReconcileAction) => void;
   recordHookEvent: (evt: Omit<HookEvent, 'receivedAt'>) => void;
   recordTokenUpdate: (totals: TokenTotals) => void;
+  recordRateLimit: (snapshot: RateLimitSnapshot) => void;
 }
 
 /**
@@ -206,6 +217,7 @@ export const useWarRoomStore = create<WarRoomState>((set, get) => ({
   reconcileActions: [],
   hookEvents: [],
   tokenTotals: { input: 0, output: 0, total: 0, runtimeMs: 0, cycles: 0 },
+  rateLimits: {},
   flushCount: 0,
   receiptsIssued: 0,
 
@@ -377,6 +389,12 @@ export const useWarRoomStore = create<WarRoomState>((set, get) => ({
 
   recordTokenUpdate: (totals) => {
     set(() => ({ tokenTotals: { ...totals } }));
+  },
+
+  recordRateLimit: (snapshot) => {
+    set((state) => ({
+      rateLimits: { ...state.rateLimits, [snapshot.agentId]: snapshot },
+    }));
   },
 
   recordRetryEvent: (evt) => {

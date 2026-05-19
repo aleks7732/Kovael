@@ -1,9 +1,10 @@
 import { memo } from 'react';
-import type { AgentRosterCard, HardwareTelemetry } from '../store/useWarRoomStore';
+import type { AgentRosterCard, HardwareTelemetry, RateLimitSnapshot } from '../store/useWarRoomStore';
 
 interface AgentRosterPanelProps {
   roster: AgentRosterCard[];
   hardware: HardwareTelemetry | null;
+  rateLimits: Record<string, RateLimitSnapshot>;
 }
 
 const STATUS_DOT: Record<AgentRosterCard['status'], string> = {
@@ -19,18 +20,34 @@ const TRUST_LABEL: Record<number, string> = {
   3: 'TIER_3 / LOCAL',
 };
 
-const AgentCard = memo(({ card }: { card: AgentRosterCard }) => (
+const AgentCard = memo(({ card, rate }: { card: AgentRosterCard; rate?: RateLimitSnapshot }) => (
   <div className="glass-panel p-3">
     <div className="flex items-start justify-between mb-1.5">
       <div className="flex items-center gap-2">
         <div className={`w-1.5 h-1.5 rounded-full ${STATUS_DOT[card.status]}`} />
         <div className="font-display font-bold text-[13px] text-command-warm-white leading-none">{card.name}</div>
       </div>
-      {card.trust_tier !== undefined && (
-        <div className="t-mono text-[8px] text-command-accent/80 font-bold tracking-wider">
-          T{card.trust_tier}
-        </div>
-      )}
+      <div className="flex items-center gap-1.5">
+        {rate && (
+          <span
+            className={`t-mono text-[8px] font-bold uppercase tracking-wider px-1 py-0.5 rounded ${
+              rate.blocked
+                ? 'bg-red-500/15 text-red-300'
+                : rate.inWindow / rate.capacity > 0.7
+                  ? 'bg-amber-500/15 text-amber-300'
+                  : 'bg-emerald-500/10 text-emerald-300/80'
+            }`}
+            title={`${rate.inWindow}/${rate.capacity} in ${Math.round(rate.windowMs / 1000)}s`}
+          >
+            {rate.inWindow}/{rate.capacity}
+          </span>
+        )}
+        {card.trust_tier !== undefined && (
+          <div className="t-mono text-[8px] text-command-accent/80 font-bold tracking-wider">
+            T{card.trust_tier}
+          </div>
+        )}
+      </div>
     </div>
     <div className="t-mono text-[9px] text-command-warm-white/50 mb-2 truncate">{card.provider}</div>
     {card.description && (
@@ -124,7 +141,7 @@ const VramGauge = memo(({ hardware }: { hardware: HardwareTelemetry | null }) =>
 });
 VramGauge.displayName = 'AgentRosterPanel.VramGauge';
 
-export const AgentRosterPanel = memo(({ roster, hardware }: AgentRosterPanelProps) => (
+export const AgentRosterPanel = memo(({ roster, hardware, rateLimits }: AgentRosterPanelProps) => (
   <aside className="h-full w-[300px] shrink-0 border-l border-white/5 bg-black/20 backdrop-blur-xl flex flex-col">
     <div className="px-4 py-3 border-b border-white/5 flex items-center justify-between">
       <div>
@@ -144,7 +161,7 @@ export const AgentRosterPanel = memo(({ roster, hardware }: AgentRosterPanelProp
           NO_AGENTS_REGISTERED
         </div>
       ) : (
-        roster.map((card) => <AgentCard key={card.id} card={card} />)
+        roster.map((card) => <AgentCard key={card.id} card={card} rate={rateLimits[card.id]} />)
       )}
       <VramGauge hardware={hardware} />
     </div>

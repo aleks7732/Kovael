@@ -52,7 +52,9 @@ const SpatialWarRoom = () => {
   const recordReconcileAction = useWarRoomStore((s) => s.recordReconcileAction);
   const recordHookEvent = useWarRoomStore((s) => s.recordHookEvent);
   const recordTokenUpdate = useWarRoomStore((s) => s.recordTokenUpdate);
+  const recordRateLimit = useWarRoomStore((s) => s.recordRateLimit);
   const tokenTotals = useWarRoomStore((s) => s.tokenTotals);
+  const rateLimits = useWarRoomStore((s) => s.rateLimits);
   const claimStats = useWarRoomStore((s) => s.claimStats);
   const retryPendingCount = useWarRoomStore((s) => s.retryPendingCount);
 
@@ -119,6 +121,9 @@ const SpatialWarRoom = () => {
             break;
           case 'token_update':
             if (message.data?.totals) recordTokenUpdate(message.data.totals);
+            break;
+          case 'rate_limit_update':
+            if (message.data?.agentId) recordRateLimit(message.data);
             break;
         }
       } catch (err) {
@@ -190,7 +195,7 @@ const SpatialWarRoom = () => {
           </ReactFlow>
         </main>
 
-        <AgentRosterPanel roster={agentRoster} hardware={hardware} />
+        <AgentRosterPanel roster={agentRoster} hardware={hardware} rateLimits={rateLimits} />
       </div>
 
       <PhaseFeed events={phaseEvents} />

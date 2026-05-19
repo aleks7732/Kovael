@@ -12,6 +12,7 @@ import { Reconciler, ReconcileAction } from './services/Reconciler.js';
 import { WorkspaceManager } from './services/WorkspaceManager.js';
 import { HookRunner, HookResult } from './services/HookRunner.js';
 import { WorkflowLoader, WorkflowDocument } from './services/WorkflowLoader.js';
+import { RateLimitTracker, AgentRateSnapshot } from './services/RateLimitTracker.js';
 import crypto from 'node:crypto';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -37,6 +38,7 @@ export class MeshOrchestrator extends EventEmitter {
     private workspaces: WorkspaceManager;
     private hooks: HookRunner;
     private workflowLoader: WorkflowLoader;
+    private rateLimits: RateLimitTracker;
     private agentCards: any[] = [];
     private nodeCache: Map<string, any> = new Map();
     private taskCache: any[] = [];
@@ -72,6 +74,8 @@ export class MeshOrchestrator extends EventEmitter {
         this.workspaces = new WorkspaceManager();
         this.hooks = new HookRunner();
         this.workflowLoader = new WorkflowLoader();
+        this.rateLimits = new RateLimitTracker();
+        this.mevBridge.setRateLimitTracker(this.rateLimits);
 
         this.loadAgentCards();
         this.initializeBus();
@@ -86,6 +90,7 @@ export class MeshOrchestrator extends EventEmitter {
         this.reconciler.start();
         this.registerDefaultHooks();
         this.wireWorkflowLoader();
+        this.wireRateLimits();
         this.workflowLoader.start();
 
         this.server.listen(port, () => {
@@ -114,6 +119,16 @@ export class MeshOrchestrator extends EventEmitter {
                 type: 'claim_event',
                 nodeId: 'task-claim-machine',
                 data: evt,
+            });
+        });
+    }
+
+    private wireRateLimits() {
+        this.rateLimits.on('rate_limit_update', (snapshot: AgentRateSnapshot) => {
+            this.broadcast({
+                type: 'rate_limit_update',
+                nodeId: 'rate-limit-tracker',
+                data: snapshot,
             });
         });
     }
@@ -256,6 +271,7 @@ export class MeshOrchestrator extends EventEmitter {
                 loadedAt: this.workflowLoader.document()?.loadedAt ?? null,
             },
             tokens: { ...this.tokenTotals },
+            rateLimits: this.rateLimits.allSnapshots(),
         };
         res.writeHead(200, {
             'Content-Type': 'application/json',
