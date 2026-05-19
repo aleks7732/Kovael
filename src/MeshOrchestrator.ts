@@ -2,8 +2,11 @@ import { EventEmitter } from 'events';
 import { WebSocketServer, WebSocket } from 'ws';
 import { DatabaseSync } from 'node:sqlite';
 import { MevBridge, VerificationReceipt } from './MevBridge.js';
+import { MevHandshake } from './services/MevHandshake.js';
+import { SemanticIngestor } from './services/SemanticIngestor.js';
 import * as fs from 'fs';
 import * as path from 'path';
+import * as http from 'http';
 
 /**
  * Nyx-Orchestrator v2: Central bus for the Sovereign Agentic Mesh.
@@ -11,21 +14,45 @@ import * as path from 'path';
  */
 export class MeshOrchestrator extends EventEmitter {
     private wss: WebSocketServer;
+    private server: http.Server;
     private memoryDb: DatabaseSync;
     private mevBridge: MevBridge;
+    private handshake: MevHandshake;
+    private ingestor: SemanticIngestor;
     private agentCards: any[] = [];
     private nodeCache: Map<string, any> = new Map();
     private taskCache: any[] = [];
 
     constructor(port: number) {
         super();
-        this.wss = new WebSocketServer({ port });
+        this.handshake = new MevHandshake();
+        
+        // Host SSE Handshake endpoint on the same port as WS
+        this.server = http.createServer((req, res) => {
+            this.handshake.handleRequest(req, res);
+        });
+
+        this.wss = new WebSocketServer({ server: this.server });
+        
         // Native, zero-dependency, in-memory semantic storage
         this.memoryDb = new DatabaseSync(':memory:'); 
+        this.ingestor = new SemanticIngestor(this.memoryDb);
         this.mevBridge = new MevBridge(':memory:');
+        
         this.loadAgentCards();
         this.initializeBus();
         this.initializeMemory();
+
+        this.server.listen(port, () => {
+            console.log(`[MeshOrchestrator] Server listening on port ${port} (WS + SSE Handshake)`);
+        });
+
+        this.triggerIngest();
+    }
+
+    private triggerIngest() {
+        const rootPath = path.resolve(process.cwd(), '..');
+        this.ingestor.ingest(rootPath);
     }
 
     private loadAgentCards() {
@@ -151,5 +178,7 @@ export class MeshOrchestrator extends EventEmitter {
 
     public close() {
         this.wss.close();
+        this.server.close();
+        this.memoryDb.close();
     }
 }
