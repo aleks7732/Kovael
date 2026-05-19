@@ -1,0 +1,86 @@
+name: PII Guard
+
+# Public-repo invariant: PII identifiers must never land on the default
+# branch. The forbidden-pattern list is *not* committed to source — it is
+# stored as the GitHub repository variable `PII_FORBIDDEN_PATTERNS` (a
+# pipe-delimited regex alternation). An admin configures it once via
+# Settings → Secrets and variables → Actions → Variables.
+#
+# Fallback: if the variable is unset, the workflow runs a minimal generic
+# pattern (emails + MAC addresses + Windows user paths) so the guard
+# never silently passes.
+#
+# Setup instructions: see SECURITY.md §PII-Guard.
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: pii-guard-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  scan:
+    name: Scan diff for forbidden strings
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      PII_FORBIDDEN_PATTERNS: ${{ vars.PII_FORBIDDEN_PATTERNS }}
+    steps:
+      - uses: actions/checkout@v4 # TODO: pin to commit SHA via Dependabot
+        with:
+          fetch-depth: 0
+
+      - name: Compute diff range
+        id: range
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            echo "base=origin/${{ github.base_ref }}" >> "$GITHUB_OUTPUT"
+            echo "head=HEAD" >> "$GITHUB_OUTPUT"
+          else
+            echo "base=HEAD~1" >> "$GITHUB_OUTPUT"
+            echo "head=HEAD" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Run forbidden-string scan
+        run: |
+          set -e
+          BASE='${{ steps.range.outputs.base }}'
+          HEAD='${{ steps.range.outputs.head }}'
+
+          # Generic fallback if no admin-configured pattern: emails + MAC
+          # addresses + Windows user paths. Catches the most common PII
+          # categories so a misconfigured repo never ships unprotected.
+          GENERIC='[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}|([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}|C:\\\\Users\\\\[^\\\\]+\\\\'
+
+          if [ -n "$PII_FORBIDDEN_PATTERNS" ]; then
+            PATTERNS="$PII_FORBIDDEN_PATTERNS|$GENERIC"
+            SOURCE='admin-configured'
+          else
+            PATTERNS="$GENERIC"
+            SOURCE='generic-fallback'
+            echo "::warning::PII_FORBIDDEN_PATTERNS variable is unset; running generic fallback only."
+          fi
+
+          DIFF=$(git diff "$BASE...$HEAD" -- . \
+            ':(exclude)package-lock.json' \
+            ':(exclude)**/package-lock.json' \
+            ':(exclude).notes/**' \
+            ':(exclude)PII-Audit-Report.md')
+
+          HITS=$(echo "$DIFF" | grep -E '^\+[^+]' | grep -iE "$PATTERNS" || true)
+
+          if [ -n "$HITS" ]; then
+            echo "::error::PII Guard FAILED (pattern source: $SOURCE)"
+            echo "$HITS" | head -20
+            exit 1
+          fi
+          echo "PII Guard PASS — diff is clean (pattern source: $SOURCE)."

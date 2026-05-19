@@ -65,6 +65,24 @@ export interface AgentRosterCard {
   lastSeen?: number;
 }
 
+export interface ClaimEvent {
+  taskHash: string;
+  previous: string | null;
+  state: 'Unclaimed' | 'Claimed' | 'Running' | 'RetryQueued' | 'Released';
+  timestamp: number;
+  attempt: number;
+  reason?: string;
+  cycleId?: string;
+}
+
+export interface ClaimStats {
+  Unclaimed: number;
+  Claimed: number;
+  Running: number;
+  RetryQueued: number;
+  Released: number;
+}
+
 export interface WarRoomNodeData extends Record<string, unknown> {
   label: string;
   status?: string;
@@ -84,6 +102,8 @@ export interface WarRoomState {
   anxBriefings: ANXBriefing[];
   phaseEvents: PhaseEvent[];
   agentRoster: AgentRosterCard[];
+  claimStats: ClaimStats;
+  recentClaims: ClaimEvent[];
   flushCount: number;
   receiptsIssued: number;
   onNodesChange: (changes: NodeChange[]) => void;
@@ -99,6 +119,7 @@ export interface WarRoomState {
   addTask: (task: any) => void;
   addANXBriefing: (raw: string) => void;
   recordPhaseEvent: (evt: PhaseEvent) => void;
+  recordClaimEvent: (evt: ClaimEvent) => void;
 }
 
 /**
@@ -128,6 +149,8 @@ export const useWarRoomStore = create<WarRoomState>((set, get) => ({
   anxBriefings: [],
   phaseEvents: [],
   agentRoster: [],
+  claimStats: { Unclaimed: 0, Claimed: 0, Running: 0, RetryQueued: 0, Released: 0 },
+  recentClaims: [],
   flushCount: 0,
   receiptsIssued: 0,
 
@@ -281,6 +304,24 @@ export const useWarRoomStore = create<WarRoomState>((set, get) => ({
       return {
         phaseEvents: [evt, ...state.phaseEvents].slice(0, 80),
         agentRoster: nextRoster,
+      };
+    });
+  },
+
+  recordClaimEvent: (evt: ClaimEvent) => {
+    set((state) => {
+      // Stats are derived from the latest event per taskHash; we can't
+      // accumulate from deltas because we may miss reconnect events.
+      // Instead we adjust the bucket of the previous → current transition.
+      const stats = { ...state.claimStats };
+      if (evt.previous && stats[evt.previous as keyof ClaimStats] !== undefined) {
+        stats[evt.previous as keyof ClaimStats] = Math.max(0, stats[evt.previous as keyof ClaimStats] - 1);
+      }
+      stats[evt.state] = (stats[evt.state] ?? 0) + 1;
+
+      return {
+        claimStats: stats,
+        recentClaims: [evt, ...state.recentClaims].slice(0, 40),
       };
     });
   },

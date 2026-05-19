@@ -1,0 +1,18 @@
+# Kovael CODEOWNERS — the human Chair owns final review on everything.
+# CodeRabbit performs the first-pass automated review on every PR.
+#
+# Format: <pattern> <owner> [<owner>…]
+# Patterns are gitignore-style; matches are evaluated bottom-up (later wins).
+
+# Default owner — every file
+*       @aleks7732
+
+# Security-critical surfaces require explicit Chair attention
+/SECURITY.md            @aleks7732
+/PII-Audit-Report.md    @aleks7732
+/.github/               @aleks7732
+/.coderabbit.yaml       @aleks7732
+/.pre-commit-config.yaml @aleks7732
+
+# WORKFLOW.md changes the agent dispatch contract — never auto-merge
+/WORKFLOW.md            @aleks7732

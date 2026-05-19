@@ -1,0 +1,83 @@
+version: 2
+
+# Dependabot config — keeps GitHub Actions + npm deps fresh.
+# Note: Dependabot creates security alerts only for tagged actions, not for
+# SHA-pinned ones. The 2026-recommended workflow is:
+#   1. Pin to SHA  → renovate/dependabot auto-bumps via "rebase" PRs
+#   2. Tag-pin for low-risk official actions (this config)
+#   3. Manual SHA rotation for third-party actions
+#
+# Reviewers can override / mass-approve in batch on Mondays.
+
+updates:
+  # GitHub Actions in .github/workflows
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: '14:00'
+      timezone: Etc/UTC
+    open-pull-requests-limit: 5
+    labels:
+      - dependencies
+      - github-actions
+    commit-message:
+      prefix: ci
+      include: scope
+
+  # Root TypeScript / orchestrator deps
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: '14:00'
+      timezone: Etc/UTC
+    open-pull-requests-limit: 10
+    labels:
+      - dependencies
+      - backend
+    commit-message:
+      prefix: deps
+      include: scope
+    groups:
+      typescript:
+        patterns:
+          - 'typescript'
+          - '@types/*'
+      mcp:
+        patterns:
+          - '@modelcontextprotocol/*'
+
+  # Frontend / spatial-war-room
+  - package-ecosystem: npm
+    directory: /packages/spatial-war-room
+    schedule:
+      interval: weekly
+      day: monday
+      time: '14:00'
+      timezone: Etc/UTC
+    open-pull-requests-limit: 10
+    labels:
+      - dependencies
+      - frontend
+    commit-message:
+      prefix: deps(spatial)
+      include: scope
+    groups:
+      react:
+        patterns:
+          - 'react'
+          - 'react-dom'
+          - '@types/react*'
+      vite:
+        patterns:
+          - 'vite'
+          - '@vitejs/*'
+      tailwind:
+        patterns:
+          - 'tailwindcss'
+          - '@tailwindcss/*'
+          - 'autoprefixer'
+          - 'postcss'

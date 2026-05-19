@@ -17,6 +17,7 @@ import { TopBar } from './components/TopBar.js';
 import { MissionBriefPanel } from './components/MissionBriefPanel.js';
 import { AgentRosterPanel } from './components/AgentRosterPanel.js';
 import { PhaseFeed } from './components/PhaseFeed.js';
+import { ClaimsStrip } from './components/ClaimsStrip.js';
 
 const nodeTypes = {
   agentHeartbeat: AgentHeartbeatNode,
@@ -46,6 +47,8 @@ const SpatialWarRoom = () => {
   const addTask = useWarRoomStore((s) => s.addTask);
   const addANXBriefing = useWarRoomStore((s) => s.addANXBriefing);
   const recordPhaseEvent = useWarRoomStore((s) => s.recordPhaseEvent);
+  const recordClaimEvent = useWarRoomStore((s) => s.recordClaimEvent);
+  const claimStats = useWarRoomStore((s) => s.claimStats);
 
   const meshStatus = useMemo<'live' | 'syncing' | 'offline'>(() => {
     if (agentRoster.length === 0 && nodes.length <= 1) return 'syncing';
@@ -96,6 +99,9 @@ const SpatialWarRoom = () => {
           case 'phase_change':
             recordPhaseEvent(message.data);
             break;
+          case 'claim_event':
+            recordClaimEvent(message.data);
+            break;
         }
       } catch (err) {
         console.error('Failed to parse WS message', err);
@@ -106,7 +112,7 @@ const SpatialWarRoom = () => {
       wsRef.current = null;
       ws.close();
     };
-  }, [enqueueTelemetry, enqueueHardware, addTask, addVerificationReceipt, upsertAgentNode, addANXBriefing, recordPhaseEvent]);
+  }, [enqueueTelemetry, enqueueHardware, addTask, addVerificationReceipt, upsertAgentNode, addANXBriefing, recordPhaseEvent, recordClaimEvent]);
 
   return (
     <div className="cockpit-grid h-screen w-screen overflow-hidden text-command-warm-white">
@@ -118,6 +124,8 @@ const SpatialWarRoom = () => {
         nodeCount={nodes.length}
         onInjectMission={injectMission}
       />
+
+      <ClaimsStrip stats={claimStats} />
 
       <div className="flex flex-1 min-h-0">
         <MissionBriefPanel briefings={anxBriefings} />

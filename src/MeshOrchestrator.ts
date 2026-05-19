@@ -6,6 +6,8 @@ import { MevHandshake } from './services/MevHandshake.js';
 import { SemanticIngestor } from './services/SemanticIngestor.js';
 import { HardwareMonitor, VramMetrics } from './services/HardwareMonitor.js';
 import { PhaseEvent } from './protocols/TriadStateMachine.js';
+import { TaskClaimMachine, ClaimEvent, ClaimState } from './protocols/TaskClaimMachine.js';
+import crypto from 'node:crypto';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as http from 'http';
@@ -24,6 +26,7 @@ export class MeshOrchestrator extends EventEmitter {
     private handshake: MevHandshake;
     private ingestor: SemanticIngestor;
     private hardware: HardwareMonitor;
+    private claims: TaskClaimMachine;
     private agentCards: any[] = [];
     private nodeCache: Map<string, any> = new Map();
     private taskCache: any[] = [];
@@ -51,12 +54,14 @@ export class MeshOrchestrator extends EventEmitter {
         this.ingestor = new SemanticIngestor(this.memoryDb);
         this.mevBridge = new MevBridge(':memory:');
         this.hardware = new HardwareMonitor(2000);
+        this.claims = new TaskClaimMachine();
 
         this.loadAgentCards();
         this.initializeBus();
         this.initializeMemory();
         this.wireHardware();
         this.wireMevBridge();
+        this.wireClaims();
 
         this.server.listen(port, () => {
             console.log(`[MeshOrchestrator] Server listening on port ${port} (WS + SSE + /api/v1/state)`);
@@ -74,6 +79,16 @@ export class MeshOrchestrator extends EventEmitter {
                 type: 'hardware_telemetry',
                 nodeId: 'hardware-monitor',
                 data: metrics,
+            });
+        });
+    }
+
+    private wireClaims() {
+        this.claims.on('claim_event', (evt: ClaimEvent) => {
+            this.broadcast({
+                type: 'claim_event',
+                nodeId: 'task-claim-machine',
+                data: evt,
             });
         });
     }
@@ -107,6 +122,10 @@ export class MeshOrchestrator extends EventEmitter {
             receiptsIssued: this.receiptsIssued,
             activeCycles: Array.from(this.activeCycles.values()).slice(-20),
             hardware: this.hardwareCache,
+            claims: {
+                stats: this.claims.stats(),
+                pending: this.claims.snapshot().slice(-20),
+            },
         };
         res.writeHead(200, {
             'Content-Type': 'application/json',
@@ -224,15 +243,41 @@ export class MeshOrchestrator extends EventEmitter {
 
     /**
      * Injects a top-level task and triggers the Triad Architect loop via MevBridge.
+     *
+     * Symphony §7 invariant: each task is claimed exactly once at a time.
+     * Concurrent calls with the same goal are rejected with a
+     * `duplicate_claim` receipt rather than dispatched twice.
      */
     public async injectTask(goal: string): Promise<VerificationReceipt> {
-        console.log(`[MeshOrchestrator] Injecting Task: ${goal}`);
-        
-        // Execute the Triad Architect Loop (Architect -> Operator -> Verifier)
-        const receipt = await this.mevBridge.execute(goal, [
-            { role: 'system', content: 'You are Nyx, the Sovereign Intelligence.' },
-            { role: 'user', content: `Execute goal: ${goal}` }
-        ]);
+        const taskHash = crypto.createHash('sha256').update(goal).digest('hex');
+        const cycleId = crypto.randomUUID();
+
+        this.claims.register(taskHash, `inject:${goal.slice(0, 60)}`);
+        const claimed = this.claims.tryClaim(taskHash, cycleId, 'orchestrator_inject');
+        if (!claimed) {
+            const current = this.claims.get(taskHash);
+            console.warn(`[MeshOrchestrator] Refusing duplicate dispatch (taskHash=${taskHash.slice(0, 12)} state=${current?.state})`);
+            throw new Error(`Task already in flight (state=${current?.state}); refusing duplicate dispatch.`);
+        }
+
+        console.log(`[MeshOrchestrator] Claim acquired (taskHash=${taskHash.slice(0, 12)} cycle=${cycleId.slice(0, 8)}): ${goal}`);
+        this.claims.markRunning(taskHash, cycleId);
+
+        let receipt: VerificationReceipt;
+        try {
+            receipt = await this.mevBridge.execute(goal, [
+                { role: 'system', content: 'You are Nyx, the Sovereign Intelligence.' },
+                { role: 'user', content: `Execute goal: ${goal}` },
+            ]);
+        } catch (err) {
+            this.claims.release(taskHash, `execute_threw:${(err as Error).message}`);
+            throw err;
+        }
+
+        this.claims.release(
+            taskHash,
+            receipt.status === 'verified' ? 'cycle_succeeded' : 'cycle_failed'
+        );
 
         this.emit('task_routed', { goal, receipt });
         

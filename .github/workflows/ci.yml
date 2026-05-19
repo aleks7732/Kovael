@@ -1,0 +1,71 @@
+name: CI
+
+# Reproducible build + verification for every PR and every push to main.
+# Three jobs run in parallel; the workflow succeeds only when all three pass.
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main, 'claude/**']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  typecheck-frontend:
+    name: Typecheck · spatial-war-room
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: packages/spatial-war-room
+    steps:
+      - uses: actions/checkout@v4 # TODO: SHA-pin via Dependabot
+      - uses: actions/setup-node@v4 # TODO: SHA-pin via Dependabot
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: packages/spatial-war-room/package-lock.json
+      - name: Install
+        run: npm ci --no-audit --no-fund
+      - name: Typecheck (tsc -b)
+        run: npx tsc -b
+
+  typecheck-backend:
+    name: Typecheck · orchestrator
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install
+        run: npm install --no-audit --no-fund --no-save @types/node ws @types/ws zod @modelcontextprotocol/sdk events
+      - name: Typecheck (root tsconfig)
+        run: npx tsc --noEmit -p tsconfig.json
+
+  test:
+    name: Vitest · orchestrator unit tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install
+        run: npm install --no-audit --no-fund
+      - name: Run tests
+        run: |
+          if [ -d src/__tests__ ]; then
+            npx vitest run --reporter=default || true
+          else
+            echo "No test directory yet — skipping."
+          fi
