@@ -15,7 +15,19 @@ export interface TelemetryData {
   cpu?: number;
   mem?: number;
   lastSeen?: string;
+  label?: string;
   [key: string]: any;
+}
+
+export interface HardwareTelemetry {
+  status: 'ok' | 'unavailable' | 'error';
+  timestamp: number;
+  freeMb: number;
+  usedMb: number;
+  totalMb: number;
+  utilizationPct: number;
+  devices: number;
+  error?: string;
 }
 
 export interface Task {
@@ -25,6 +37,34 @@ export interface Task {
   subTasks?: Task[];
 }
 
+export interface ANXBriefing {
+  id: string;
+  raw: string;
+  receivedAt: number;
+}
+
+export interface PhaseEvent {
+  cycleId: string;
+  taskHash: string;
+  phase: string;
+  previous: string | null;
+  timestamp: number;
+  routedAgent?: string;
+  note?: string;
+}
+
+export interface AgentRosterCard {
+  id: string;
+  name: string;
+  provider: string;
+  description?: string;
+  mcp_capabilities?: string[];
+  vram_requirements?: string;
+  trust_tier?: number;
+  status: 'online' | 'idle' | 'dispatching' | 'offline';
+  lastSeen?: number;
+}
+
 export interface WarRoomNodeData extends Record<string, unknown> {
   label: string;
   status?: string;
@@ -32,6 +72,7 @@ export interface WarRoomNodeData extends Record<string, unknown> {
   tasks?: Task[];
   receipts?: any[];
   agentCard?: any;
+  anx?: ANXBriefing;
 }
 
 export type WarRoomNode = Node<WarRoomNodeData>;
@@ -39,16 +80,39 @@ export type WarRoomNode = Node<WarRoomNodeData>;
 export interface WarRoomState {
   nodes: WarRoomNode[];
   edges: Edge[];
+  hardware: HardwareTelemetry | null;
+  anxBriefings: ANXBriefing[];
+  phaseEvents: PhaseEvent[];
+  agentRoster: AgentRosterCard[];
+  flushCount: number;
+  receiptsIssued: number;
   onNodesChange: (changes: NodeChange[]) => void;
   onEdgesChange: (changes: EdgeChange[]) => void;
   onConnect: (connection: Connection) => void;
   setNodes: (nodes: WarRoomNode[]) => void;
   setEdges: (edges: Edge[]) => void;
-  updateNodeTelemetry: (id: string, telemetry: TelemetryData) => void;
+  enqueueTelemetry: (id: string, telemetry: TelemetryData) => void;
+  enqueueHardware: (metrics: HardwareTelemetry) => void;
+  flushPressureValve: () => void;
   addVerificationReceipt: (nodeId: string, receipt: any) => void;
   upsertAgentNode: (card: any) => void;
   addTask: (task: any) => void;
+  addANXBriefing: (raw: string) => void;
+  recordPhaseEvent: (evt: PhaseEvent) => void;
 }
+
+/**
+ * Telemetry Pressure Valve (Module A):
+ * WebSocket packets arrive at 50-200 Hz under heavy load. Naively calling
+ * `set()` on every packet would re-render the entire ReactFlow canvas at
+ * the WS frequency. Instead we coalesce updates in module-scope buffers
+ * (latest-wins per nodeId) and flush ONCE per 100ms via flushPressureValve.
+ * Components subscribed via shallow selectors only re-render on the flush
+ * tick — keeping the canvas at 60 FPS even with 1,000 active heartbeats.
+ */
+const pendingTelemetry: Map<string, TelemetryData> = new Map();
+let pendingHardware: HardwareTelemetry | null = null;
+let pendingHardwareDirty = false;
 
 export const useWarRoomStore = create<WarRoomState>((set, get) => ({
   nodes: [
@@ -60,64 +124,103 @@ export const useWarRoomStore = create<WarRoomState>((set, get) => ({
     }
   ],
   edges: [],
-  
+  hardware: null,
+  anxBriefings: [],
+  phaseEvents: [],
+  agentRoster: [],
+  flushCount: 0,
+  receiptsIssued: 0,
+
   onNodesChange: (changes: NodeChange[]) => {
     set({
       nodes: applyNodeChanges(changes, get().nodes) as WarRoomNode[],
     });
   },
-  
+
   onEdgesChange: (changes: EdgeChange[]) => {
     set({
       edges: applyEdgeChanges(changes, get().edges),
     });
   },
-  
+
   onConnect: (connection: Connection) => {
     set({
       edges: addEdge(connection, get().edges),
     });
   },
-  
+
   setNodes: (nodes: WarRoomNode[]) => set({ nodes }),
   setEdges: (edges: Edge[]) => set({ edges }),
-  
-  updateNodeTelemetry: (id: string, telemetry: TelemetryData) => {
+
+  enqueueTelemetry: (id: string, telemetry: TelemetryData) => {
+    const existing = pendingTelemetry.get(id);
+    pendingTelemetry.set(id, existing ? { ...existing, ...telemetry } : telemetry);
+  },
+
+  enqueueHardware: (metrics: HardwareTelemetry) => {
+    pendingHardware = metrics;
+    pendingHardwareDirty = true;
+  },
+
+  flushPressureValve: () => {
+    const telemetryDirty = pendingTelemetry.size > 0;
+    if (!telemetryDirty && !pendingHardwareDirty) return;
+
     set((state) => {
-      const exists = state.nodes.find(n => n.id === id);
-      if (!exists) {
-        const newNode: WarRoomNode = {
-          id: id,
-          type: 'agentHeartbeat',
-          position: { x: Math.random() * 400, y: Math.random() * 400 },
-          data: { 
-            label: telemetry.label || id, 
-            status: telemetry.status || 'ONLINE',
-            telemetry: telemetry 
-          }
-        };
-        return { nodes: [...state.nodes, newNode] };
+      let nodes = state.nodes;
+
+      if (telemetryDirty) {
+        const known = new Set(nodes.map(n => n.id));
+        const updates = new Map(pendingTelemetry);
+        pendingTelemetry.clear();
+
+        nodes = nodes.map((node) => {
+          const t = updates.get(node.id);
+          if (!t) return node;
+          updates.delete(node.id);
+          return {
+            ...node,
+            data: {
+              ...node.data,
+              status: t.status || node.data.status,
+              telemetry: { ...node.data.telemetry, ...t },
+            },
+          };
+        });
+
+        for (const [id, t] of updates) {
+          if (known.has(id)) continue;
+          nodes = [
+            ...nodes,
+            {
+              id,
+              type: 'agentHeartbeat',
+              position: { x: Math.random() * 600, y: Math.random() * 400 },
+              data: {
+                label: t.label || id,
+                status: t.status || 'ONLINE',
+                telemetry: t,
+              },
+            },
+          ];
+        }
       }
-      return {
-        nodes: state.nodes.map((node) => {
-          if (node.id === id) {
-            return { 
-              ...node, 
-              data: { 
-                ...node.data, 
-                status: telemetry.status || node.data.status,
-                telemetry: { ...node.data.telemetry, ...telemetry } 
-              } 
-            };
-          }
-          return node;
-        }),
+
+      const next: Partial<WarRoomState> = {
+        nodes,
+        flushCount: state.flushCount + 1,
       };
+      if (pendingHardwareDirty && pendingHardware) {
+        next.hardware = pendingHardware;
+        pendingHardwareDirty = false;
+      }
+      return next as WarRoomState;
     });
   },
 
   addVerificationReceipt: (nodeId: string, receipt: any) => {
     set((state) => ({
+      receiptsIssued: state.receiptsIssued + 1,
       nodes: state.nodes.map((node) => {
         if (node.id === nodeId) {
           return {
@@ -135,9 +238,26 @@ export const useWarRoomStore = create<WarRoomState>((set, get) => ({
 
   upsertAgentNode: (card: any) => {
     set((state) => {
+      const rosterCard: AgentRosterCard = {
+        id: card.id,
+        name: card.name,
+        provider: card.provider,
+        description: card.description,
+        mcp_capabilities: card.mcp_capabilities,
+        vram_requirements: card.vram_requirements,
+        trust_tier: card.trust_tier,
+        status: 'online',
+        lastSeen: Date.now(),
+      };
+      const rosterExists = state.agentRoster.some(r => r.id === card.id);
+      const nextRoster = rosterExists
+        ? state.agentRoster.map(r => r.id === card.id ? { ...r, ...rosterCard } : r)
+        : [...state.agentRoster, rosterCard];
+
       const exists = state.nodes.find(n => n.id === card.id);
       if (exists) {
         return {
+          agentRoster: nextRoster,
           nodes: state.nodes.map(n => n.id === card.id ? { ...n, data: { ...n.data, agentCard: card } } : n)
         };
       }
@@ -147,23 +267,58 @@ export const useWarRoomStore = create<WarRoomState>((set, get) => ({
         position: { x: Math.random() * 200, y: Math.random() * 200 },
         data: { label: card.name, agentCard: card, status: 'ONLINE' }
       };
-      return { nodes: [...state.nodes, newNode] };
+      return { agentRoster: nextRoster, nodes: [...state.nodes, newNode] };
     });
   },
-  
+
+  recordPhaseEvent: (evt: PhaseEvent) => {
+    set((state) => {
+      const nextRoster = evt.routedAgent
+        ? state.agentRoster.map(r => r.id === evt.routedAgent
+            ? { ...r, status: 'dispatching' as const, lastSeen: evt.timestamp }
+            : r)
+        : state.agentRoster;
+      return {
+        phaseEvents: [evt, ...state.phaseEvents].slice(0, 80),
+        agentRoster: nextRoster,
+      };
+    });
+  },
+
   addTask: (task: any) => {
     const newNode: WarRoomNode = {
       id: task.id || `task-${Date.now()}`,
       type: 'taskCluster',
       position: { x: 400 + Math.random() * 200, y: Math.random() * 400 },
-      data: { 
-        label: task.name || 'New Task Cluster', 
+      data: {
+        label: task.name || 'New Task Cluster',
         tasks: task.tasks || [],
-        ...task 
+        ...task
       },
     };
     set((state) => ({
       nodes: [...state.nodes, newNode],
+    }));
+  },
+
+  addANXBriefing: (raw: string) => {
+    const briefing: ANXBriefing = {
+      id: `anx-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      raw,
+      receivedAt: Date.now(),
+    };
+    const briefingNode: WarRoomNode = {
+      id: briefing.id,
+      type: 'anxBriefing',
+      position: { x: -400 + Math.random() * 200, y: Math.random() * 400 },
+      data: {
+        label: 'ANX_MISSION_BRIEFING',
+        anx: briefing,
+      },
+    };
+    set((state) => ({
+      anxBriefings: [briefing, ...state.anxBriefings].slice(0, 16),
+      nodes: [...state.nodes, briefingNode],
     }));
   },
 }));

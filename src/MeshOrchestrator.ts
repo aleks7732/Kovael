@@ -4,13 +4,17 @@ import { DatabaseSync } from 'node:sqlite';
 import { MevBridge, VerificationReceipt } from './MevBridge.js';
 import { MevHandshake } from './services/MevHandshake.js';
 import { SemanticIngestor } from './services/SemanticIngestor.js';
+import { HardwareMonitor, VramMetrics } from './services/HardwareMonitor.js';
+import { PhaseEvent } from './protocols/TriadStateMachine.js';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as http from 'http';
 
 /**
  * Nyx-Orchestrator v2: Central bus for the Sovereign Agentic Mesh.
- * Handles telemetry, task routing, and shared memory synchronization.
+ * Handles telemetry, task routing, hardware-aware dispatch, and shared
+ * memory synchronization. Exposes a Symphony-style /api/v1/state snapshot
+ * endpoint for observability at scale.
  */
 export class MeshOrchestrator extends EventEmitter {
     private wss: WebSocketServer;
@@ -19,35 +23,97 @@ export class MeshOrchestrator extends EventEmitter {
     private mevBridge: MevBridge;
     private handshake: MevHandshake;
     private ingestor: SemanticIngestor;
+    private hardware: HardwareMonitor;
     private agentCards: any[] = [];
     private nodeCache: Map<string, any> = new Map();
     private taskCache: any[] = [];
+    private hardwareCache: VramMetrics | null = null;
+    private receiptsIssued: number = 0;
+    private activeCycles: Map<string, PhaseEvent> = new Map();
 
     constructor(port: number) {
         super();
         this.handshake = new MevHandshake();
-        
-        // Host SSE Handshake endpoint on the same port as WS
+
+        // Host SSE Handshake + observability snapshot endpoint
         this.server = http.createServer((req, res) => {
+            if (req.url && req.url.startsWith('/api/v1/state')) {
+                this.handleStateSnapshot(req, res);
+                return;
+            }
             this.handshake.handleRequest(req, res);
         });
 
         this.wss = new WebSocketServer({ server: this.server });
-        
+
         // Native, zero-dependency, in-memory semantic storage
-        this.memoryDb = new DatabaseSync(':memory:'); 
+        this.memoryDb = new DatabaseSync(':memory:');
         this.ingestor = new SemanticIngestor(this.memoryDb);
         this.mevBridge = new MevBridge(':memory:');
-        
+        this.hardware = new HardwareMonitor(2000);
+
         this.loadAgentCards();
         this.initializeBus();
         this.initializeMemory();
+        this.wireHardware();
+        this.wireMevBridge();
 
         this.server.listen(port, () => {
-            console.log(`[MeshOrchestrator] Server listening on port ${port} (WS + SSE Handshake)`);
+            console.log(`[MeshOrchestrator] Server listening on port ${port} (WS + SSE + /api/v1/state)`);
         });
 
+        this.hardware.start();
         this.triggerIngest();
+    }
+
+    private wireHardware() {
+        this.hardware.on('vram_metrics', (metrics: VramMetrics) => {
+            this.hardwareCache = metrics;
+            this.mevBridge.setVramFree(metrics.freeMb, metrics.status === 'ok');
+            this.broadcast({
+                type: 'hardware_telemetry',
+                nodeId: 'hardware-monitor',
+                data: metrics,
+            });
+        });
+    }
+
+    private wireMevBridge() {
+        this.mevBridge.on('phase_change', (evt: PhaseEvent) => {
+            this.activeCycles.set(evt.cycleId, evt);
+            this.broadcast({
+                type: 'phase_change',
+                nodeId: evt.routedAgent || 'triad',
+                data: evt,
+            });
+        });
+        this.mevBridge.on('cycle_complete', (receipt: VerificationReceipt) => {
+            this.receiptsIssued += 1;
+            this.broadcast({
+                type: 'verification_receipt',
+                nodeId: receipt.architectId,
+                data: receipt,
+            });
+        });
+    }
+
+    private handleStateSnapshot(_req: http.IncomingMessage, res: http.ServerResponse): void {
+        const snapshot = {
+            timestamp: Date.now(),
+            agentCards: this.agentCards.length,
+            connectedClients: this.wss.clients.size,
+            nodes: this.nodeCache.size,
+            tasksTotal: this.taskCache.length,
+            receiptsIssued: this.receiptsIssued,
+            activeCycles: Array.from(this.activeCycles.values()).slice(-20),
+            hardware: this.hardwareCache,
+        };
+        res.writeHead(200, {
+            'Content-Type': 'application/json',
+            'Cache-Control': 'no-store',
+            'Access-Control-Allow-Origin': '*',
+        });
+        res.end(JSON.stringify(snapshot));
     }
 
     private triggerIngest() {
@@ -82,7 +148,7 @@ export class MeshOrchestrator extends EventEmitter {
     private initializeBus() {
         this.wss.on('connection', (ws: WebSocket, request) => {
             const nodeId = this.extractNodeId(request);
-            
+
             // 1. Send AgentCards
             this.agentCards.forEach(card => {
                 ws.send(JSON.stringify({ type: 'agent_card', data: card }));
@@ -98,19 +164,18 @@ export class MeshOrchestrator extends EventEmitter {
                 ws.send(JSON.stringify(taskData));
             });
 
+            // 4. Send last-known hardware snapshot
+            if (this.hardwareCache) {
+                ws.send(JSON.stringify({
+                    type: 'hardware_telemetry',
+                    nodeId: 'hardware-monitor',
+                    data: this.hardwareCache,
+                }));
+            }
+
             ws.on('message', async (data: string) => {
                 const payload = JSON.parse(data);
                 await this.handleTelemetry(nodeId, payload);
-            });
-
-            // Listen for MevBridge cycles and broadcast to telemetry
-            this.mevBridge.on('cycle_complete', (receipt: VerificationReceipt) => {
-                const payload = {
-                    type: 'verification_receipt',
-                    nodeId: receipt.verifierId,
-                    data: receipt
-                };
-                ws.send(JSON.stringify(payload));
             });
         });
     }
@@ -177,6 +242,7 @@ export class MeshOrchestrator extends EventEmitter {
     }
 
     public close() {
+        this.hardware.stop();
         this.wss.close();
         this.server.close();
         this.memoryDb.close();

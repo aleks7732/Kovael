@@ -1,46 +1,76 @@
-import React, { useEffect } from 'react';
+import { useEffect, useMemo } from 'react';
 import {
   ReactFlow,
   Controls,
   Background,
-  Panel,
   ReactFlowProvider,
+  MiniMap,
+  BackgroundVariant,
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 import './index.css';
 import './App.css';
 
 import { useWarRoomStore } from './store/useWarRoomStore.js';
-import { AgentHeartbeatNode, TaskClusterNode } from './components/CustomNodes.js';
+import { AgentHeartbeatNode, TaskClusterNode, ANXBriefingNode } from './components/CustomNodes.js';
+import { TopBar } from './components/TopBar.js';
+import { MissionBriefPanel } from './components/MissionBriefPanel.js';
+import { AgentRosterPanel } from './components/AgentRosterPanel.js';
+import { PhaseFeed } from './components/PhaseFeed.js';
 
 const nodeTypes = {
   agentHeartbeat: AgentHeartbeatNode,
   taskCluster: TaskClusterNode,
+  anxBriefing: ANXBriefingNode,
 };
 
+const PRESSURE_VALVE_INTERVAL_MS = 100;
+const ORCHESTRATOR_URL = 'ws://localhost:8080';
+
 const SpatialWarRoom = () => {
-  const { 
-    nodes, 
-    edges, 
-    onNodesChange, 
-    onEdgesChange, 
-    onConnect, 
-    updateNodeTelemetry, 
-    addVerificationReceipt,
-    upsertAgentNode,
-    addTask 
-  } = useWarRoomStore();
+  const nodes = useWarRoomStore((s) => s.nodes);
+  const edges = useWarRoomStore((s) => s.edges);
+  const hardware = useWarRoomStore((s) => s.hardware);
+  const anxBriefings = useWarRoomStore((s) => s.anxBriefings);
+  const phaseEvents = useWarRoomStore((s) => s.phaseEvents);
+  const agentRoster = useWarRoomStore((s) => s.agentRoster);
+  const receiptsIssued = useWarRoomStore((s) => s.receiptsIssued);
+  const onNodesChange = useWarRoomStore((s) => s.onNodesChange);
+  const onEdgesChange = useWarRoomStore((s) => s.onEdgesChange);
+  const onConnect = useWarRoomStore((s) => s.onConnect);
+  const enqueueTelemetry = useWarRoomStore((s) => s.enqueueTelemetry);
+  const enqueueHardware = useWarRoomStore((s) => s.enqueueHardware);
+  const flushPressureValve = useWarRoomStore((s) => s.flushPressureValve);
+  const addVerificationReceipt = useWarRoomStore((s) => s.addVerificationReceipt);
+  const upsertAgentNode = useWarRoomStore((s) => s.upsertAgentNode);
+  const addTask = useWarRoomStore((s) => s.addTask);
+  const addANXBriefing = useWarRoomStore((s) => s.addANXBriefing);
+  const recordPhaseEvent = useWarRoomStore((s) => s.recordPhaseEvent);
+
+  const meshStatus = useMemo<'live' | 'syncing' | 'offline'>(() => {
+    if (agentRoster.length === 0 && nodes.length <= 1) return 'syncing';
+    return 'live';
+  }, [agentRoster.length, nodes.length]);
+
+  // 100ms Telemetry Pressure Valve — Module A
+  useEffect(() => {
+    const id = setInterval(flushPressureValve, PRESSURE_VALVE_INTERVAL_MS);
+    return () => clearInterval(id);
+  }, [flushPressureValve]);
 
   useEffect(() => {
-    const ws = new WebSocket('ws://localhost:8080');
+    const ws = new WebSocket(ORCHESTRATOR_URL);
 
     ws.onmessage = (event) => {
       try {
         const message = JSON.parse(event.data);
-        
+
         switch (message.type) {
           case 'telemetry':
-            updateNodeTelemetry(message.nodeId, message.data);
+            enqueueTelemetry(message.nodeId, message.data);
+            break;
+          case 'hardware_telemetry':
+            enqueueHardware(message.data);
             break;
           case 'new_task':
             addTask(message.task);
@@ -51,6 +81,12 @@ const SpatialWarRoom = () => {
           case 'verification_receipt':
             addVerificationReceipt(message.nodeId, message.data);
             break;
+          case 'anx_briefing':
+            if (typeof message.data === 'string') addANXBriefing(message.data);
+            break;
+          case 'phase_change':
+            recordPhaseEvent(message.data);
+            break;
         }
       } catch (err) {
         console.error('Failed to parse WS message', err);
@@ -58,32 +94,66 @@ const SpatialWarRoom = () => {
     };
 
     return () => ws.close();
-  }, [updateNodeTelemetry, addTask, addVerificationReceipt, upsertAgentNode]);
+  }, [enqueueTelemetry, enqueueHardware, addTask, addVerificationReceipt, upsertAgentNode, addANXBriefing, recordPhaseEvent]);
 
   return (
-    <div className="war-room-container w-full h-full bg-[#0A0A0A] relative overflow-hidden">
-      <div className="grid-overlay" />
-      <div className="scanline" />
-      <ReactFlow
-        nodes={nodes}
-        edges={edges}
-        onNodesChange={onNodesChange}
-        onEdgesChange={onEdgesChange}
-        onConnect={onConnect}
-        nodeTypes={nodeTypes}
-        colorMode="dark"
-        fitView
-        onlyRenderVisibleElements={true}
-      >
-        <Background color="#1e293b" gap={20} />
-        <Controls />
-        <Panel position="top-right" className="glass-panel p-4 m-4">
-          <h2 className="text-blue-400 font-mono font-bold text-lg tracking-wider glow-text uppercase">Kovael War Room</h2>
-          <div className="text-slate-400 text-[10px] mt-1 font-mono uppercase tracking-widest">
-            Nodes: {nodes.length} | Mesh: <span className="text-blue-500 animate-pulse">Synchronized</span>
-          </div>
-        </Panel>
-      </ReactFlow>
+    <div className="cockpit-grid h-screen w-screen overflow-hidden text-command-warm-white">
+      <TopBar
+        meshStatus={meshStatus}
+        connectedClients={1}
+        receiptsIssued={receiptsIssued}
+        activeAgents={agentRoster.length}
+        nodeCount={nodes.length}
+      />
+
+      <div className="flex flex-1 min-h-0">
+        <MissionBriefPanel briefings={anxBriefings} />
+
+        <main className="flex-1 relative min-w-0">
+          <div className="grid-overlay pointer-events-none" />
+          <div className="ember-ambient pointer-events-none" />
+          <ReactFlow
+            nodes={nodes}
+            edges={edges}
+            onNodesChange={onNodesChange}
+            onEdgesChange={onEdgesChange}
+            onConnect={onConnect}
+            nodeTypes={nodeTypes}
+            colorMode="dark"
+            fitView
+            fitViewOptions={{ padding: 0.25 }}
+            onlyRenderVisibleElements
+            proOptions={{ hideAttribution: true }}
+          >
+            <Background
+              variant={BackgroundVariant.Dots}
+              gap={22}
+              size={1}
+              color="rgba(245,245,220,0.06)"
+            />
+            <Controls
+              className="!bg-black/40 !backdrop-blur-md !border !border-white/5 !shadow-none"
+              showInteractive={false}
+            />
+            <MiniMap
+              pannable
+              zoomable
+              className="!bg-black/30 !backdrop-blur-md !border !border-white/5"
+              maskColor="rgba(0,0,0,0.6)"
+              nodeColor={(n) => {
+                if (n.type === 'agentHeartbeat') return '#C15F3C';
+                if (n.type === 'taskCluster') return '#F5F5DC';
+                if (n.type === 'anxBriefing') return '#34d399';
+                return '#666';
+              }}
+            />
+          </ReactFlow>
+        </main>
+
+        <AgentRosterPanel roster={agentRoster} hardware={hardware} />
+      </div>
+
+      <PhaseFeed events={phaseEvents} />
     </div>
   );
 };
