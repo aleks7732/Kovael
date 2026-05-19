@@ -83,6 +83,21 @@ export interface ClaimStats {
   Released: number;
 }
 
+export interface RetryEvent {
+  kind: 'scheduled' | 'dispatching' | 'exhausted';
+  taskHash?: string;
+  attempts?: number;
+  reason?: string;
+  dispatch?: {
+    taskHash: string;
+    attempt: number;
+    backoffMs: number;
+    scheduledFor: number;
+    reason: string;
+  };
+  receivedAt: number;
+}
+
 export interface WarRoomNodeData extends Record<string, unknown> {
   label: string;
   status?: string;
@@ -104,6 +119,8 @@ export interface WarRoomState {
   agentRoster: AgentRosterCard[];
   claimStats: ClaimStats;
   recentClaims: ClaimEvent[];
+  retryEvents: RetryEvent[];
+  retryPendingCount: number;
   flushCount: number;
   receiptsIssued: number;
   onNodesChange: (changes: NodeChange[]) => void;
@@ -120,6 +137,7 @@ export interface WarRoomState {
   addANXBriefing: (raw: string) => void;
   recordPhaseEvent: (evt: PhaseEvent) => void;
   recordClaimEvent: (evt: ClaimEvent) => void;
+  recordRetryEvent: (evt: Omit<RetryEvent, 'receivedAt'>) => void;
 }
 
 /**
@@ -151,6 +169,8 @@ export const useWarRoomStore = create<WarRoomState>((set, get) => ({
   agentRoster: [],
   claimStats: { Unclaimed: 0, Claimed: 0, Running: 0, RetryQueued: 0, Released: 0 },
   recentClaims: [],
+  retryEvents: [],
+  retryPendingCount: 0,
   flushCount: 0,
   receiptsIssued: 0,
 
@@ -304,6 +324,20 @@ export const useWarRoomStore = create<WarRoomState>((set, get) => ({
       return {
         phaseEvents: [evt, ...state.phaseEvents].slice(0, 80),
         agentRoster: nextRoster,
+      };
+    });
+  },
+
+  recordRetryEvent: (evt) => {
+    set((state) => {
+      const enriched: RetryEvent = { ...evt, receivedAt: Date.now() };
+      // pending count: increment on scheduled, decrement on dispatching/exhausted
+      let pending = state.retryPendingCount;
+      if (evt.kind === 'scheduled') pending += 1;
+      else if (evt.kind === 'dispatching' || evt.kind === 'exhausted') pending = Math.max(0, pending - 1);
+      return {
+        retryEvents: [enriched, ...state.retryEvents].slice(0, 40),
+        retryPendingCount: pending,
       };
     });
   },

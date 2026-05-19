@@ -48,7 +48,9 @@ const SpatialWarRoom = () => {
   const addANXBriefing = useWarRoomStore((s) => s.addANXBriefing);
   const recordPhaseEvent = useWarRoomStore((s) => s.recordPhaseEvent);
   const recordClaimEvent = useWarRoomStore((s) => s.recordClaimEvent);
+  const recordRetryEvent = useWarRoomStore((s) => s.recordRetryEvent);
   const claimStats = useWarRoomStore((s) => s.claimStats);
+  const retryPendingCount = useWarRoomStore((s) => s.retryPendingCount);
 
   const meshStatus = useMemo<'live' | 'syncing' | 'offline'>(() => {
     if (agentRoster.length === 0 && nodes.length <= 1) return 'syncing';
@@ -102,6 +104,9 @@ const SpatialWarRoom = () => {
           case 'claim_event':
             recordClaimEvent(message.data);
             break;
+          case 'retry_event':
+            recordRetryEvent(message.data);
+            break;
         }
       } catch (err) {
         console.error('Failed to parse WS message', err);
@@ -112,7 +117,7 @@ const SpatialWarRoom = () => {
       wsRef.current = null;
       ws.close();
     };
-  }, [enqueueTelemetry, enqueueHardware, addTask, addVerificationReceipt, upsertAgentNode, addANXBriefing, recordPhaseEvent, recordClaimEvent]);
+  }, [enqueueTelemetry, enqueueHardware, addTask, addVerificationReceipt, upsertAgentNode, addANXBriefing, recordPhaseEvent, recordClaimEvent, recordRetryEvent]);
 
   return (
     <div className="cockpit-grid h-screen w-screen overflow-hidden text-command-warm-white">
@@ -125,7 +130,7 @@ const SpatialWarRoom = () => {
         onInjectMission={injectMission}
       />
 
-      <ClaimsStrip stats={claimStats} />
+      <ClaimsStrip stats={claimStats} retryPending={retryPendingCount} />
 
       <div className="flex flex-1 min-h-0">
         <MissionBriefPanel briefings={anxBriefings} />

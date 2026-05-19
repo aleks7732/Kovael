@@ -3,6 +3,7 @@ import type { ClaimStats } from '../store/useWarRoomStore';
 
 interface ClaimsStripProps {
   stats: ClaimStats;
+  retryPending: number;
 }
 
 /**
@@ -20,7 +21,7 @@ const BUCKET_META: Array<{ key: keyof ClaimStats; label: string; dot: string; to
   { key: 'Released',    label: 'RELEASED',    dot: 'bg-cyan-400/60',                           tone: 'text-cyan-300/80' },
 ];
 
-export const ClaimsStrip = memo(({ stats }: ClaimsStripProps) => {
+export const ClaimsStrip = memo(({ stats, retryPending }: ClaimsStripProps) => {
   const total = BUCKET_META.reduce((sum, b) => sum + (stats[b.key] ?? 0), 0);
 
   return (
@@ -46,8 +47,17 @@ export const ClaimsStrip = memo(({ stats }: ClaimsStripProps) => {
           );
         })}
       </div>
-      <div className="shrink-0 t-mono text-[9px] text-command-warm-white/50">
-        total <span className="text-command-warm-white font-bold">{total}</span>
+      <div className="shrink-0 flex items-center gap-3">
+        <div className="flex items-center gap-1.5 t-mono text-[9px] text-command-warm-white/55">
+          <span className="t-eyebrow !text-[7px]">RETRY_Q</span>
+          <span className={`t-mono text-[11px] font-bold ${retryPending > 0 ? 'text-amber-400 glow-text' : 'text-command-warm-white/40'}`}>
+            {retryPending}
+          </span>
+        </div>
+        <div className="h-5 w-px bg-white/5" />
+        <div className="t-mono text-[9px] text-command-warm-white/50">
+          total <span className="text-command-warm-white font-bold">{total}</span>
+        </div>
       </div>
     </div>
   );

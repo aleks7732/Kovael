@@ -7,6 +7,7 @@ import { SemanticIngestor } from './services/SemanticIngestor.js';
 import { HardwareMonitor, VramMetrics } from './services/HardwareMonitor.js';
 import { PhaseEvent } from './protocols/TriadStateMachine.js';
 import { TaskClaimMachine, ClaimEvent, ClaimState } from './protocols/TaskClaimMachine.js';
+import { RetryQueue, RetryDispatch } from './services/RetryQueue.js';
 import crypto from 'node:crypto';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -27,6 +28,7 @@ export class MeshOrchestrator extends EventEmitter {
     private ingestor: SemanticIngestor;
     private hardware: HardwareMonitor;
     private claims: TaskClaimMachine;
+    private retryQueue: RetryQueue;
     private agentCards: any[] = [];
     private nodeCache: Map<string, any> = new Map();
     private taskCache: any[] = [];
@@ -55,6 +57,8 @@ export class MeshOrchestrator extends EventEmitter {
         this.mevBridge = new MevBridge(':memory:');
         this.hardware = new HardwareMonitor(2000);
         this.claims = new TaskClaimMachine();
+        this.retryQueue = new RetryQueue(this.claims);
+        this.retryQueue.bind((goal) => this.injectTask(goal));
 
         this.loadAgentCards();
         this.initializeBus();
@@ -62,6 +66,9 @@ export class MeshOrchestrator extends EventEmitter {
         this.wireHardware();
         this.wireMevBridge();
         this.wireClaims();
+        this.wireRetryQueue();
+
+        this.retryQueue.start();
 
         this.server.listen(port, () => {
             console.log(`[MeshOrchestrator] Server listening on port ${port} (WS + SSE + /api/v1/state)`);
@@ -90,6 +97,20 @@ export class MeshOrchestrator extends EventEmitter {
                 nodeId: 'task-claim-machine',
                 data: evt,
             });
+        });
+    }
+
+    private wireRetryQueue() {
+        this.retryQueue.on('retry_scheduled', (d: RetryDispatch) => {
+            console.log(`[RetryQueue] scheduled attempt ${d.attempt} for ${d.taskHash.slice(0, 12)} in ${d.backoffMs}ms (reason: ${d.reason})`);
+            this.broadcast({ type: 'retry_event', nodeId: 'retry-queue', data: { kind: 'scheduled', dispatch: d } });
+        });
+        this.retryQueue.on('retry_dispatching', (d: RetryDispatch) => {
+            this.broadcast({ type: 'retry_event', nodeId: 'retry-queue', data: { kind: 'dispatching', dispatch: d } });
+        });
+        this.retryQueue.on('retry_exhausted', (info: { taskHash: string; attempts: number; reason: string }) => {
+            console.warn(`[RetryQueue] exhausted ${info.taskHash.slice(0, 12)} after ${info.attempts} attempts (last: ${info.reason})`);
+            this.broadcast({ type: 'retry_event', nodeId: 'retry-queue', data: { kind: 'exhausted', ...info } });
         });
     }
 
@@ -125,6 +146,10 @@ export class MeshOrchestrator extends EventEmitter {
             claims: {
                 stats: this.claims.stats(),
                 pending: this.claims.snapshot().slice(-20),
+            },
+            retryQueue: {
+                pendingCount: this.retryQueue.pendingCount(),
+                pending: this.retryQueue.snapshot(),
             },
         };
         res.writeHead(200, {
@@ -270,14 +295,21 @@ export class MeshOrchestrator extends EventEmitter {
                 { role: 'user', content: `Execute goal: ${goal}` },
             ]);
         } catch (err) {
-            this.claims.release(taskHash, `execute_threw:${(err as Error).message}`);
+            // The MevBridge loop threw before producing a receipt. Hand the
+            // task to the retry queue; it will either schedule a re-dispatch
+            // with exponential backoff or release the claim as exhausted.
+            const reason = `execute_threw:${(err as Error).message}`;
+            this.retryQueue.enqueueFailure(taskHash, goal, reason);
             throw err;
         }
 
-        this.claims.release(
-            taskHash,
-            receipt.status === 'verified' ? 'cycle_succeeded' : 'cycle_failed'
-        );
+        if (receipt.status === 'verified') {
+            this.claims.release(taskHash, 'cycle_succeeded');
+        } else {
+            // Cycle ran to completion but verification failed. Retry policy
+            // applies — Symphony §3.1.
+            this.retryQueue.enqueueFailure(taskHash, goal, `cycle_failed:${receipt.id}`);
+        }
 
         this.emit('task_routed', { goal, receipt });
         
@@ -300,6 +332,7 @@ export class MeshOrchestrator extends EventEmitter {
     }
 
     public close() {
+        this.retryQueue.stop();
         this.hardware.stop();
         this.wss.close();
         this.server.close();
