@@ -3,7 +3,11 @@
 @tailwind utilities;
 
 :root {
-  background-color: #0A0A0A;
+  --bg: #0A0A09;
+  --fg: #F5F5DC;
+  --accent: #C15F3C;
+  background-color: var(--bg);
+  color: var(--fg);
   color-scheme: dark;
 }
 
@@ -11,18 +15,43 @@ body {
   margin: 0;
   padding: 0;
   overflow: hidden;
-  font-family: 'JetBrains Mono', monospace;
+  font-family: 'Inter', system-ui, sans-serif;
+  background: var(--bg);
+  background-image: radial-gradient(ellipse at 15% 50%, rgba(193, 95, 60, 0.03), transparent 70%),
+                    radial-gradient(ellipse at 85% 20%, rgba(193, 95, 60, 0.02), transparent 60%);
 }
 
 .glass-panel {
-  background: rgba(15, 23, 42, 0.65);
+  background: rgba(255, 255, 255, 0.05);
   backdrop-filter: blur(12px);
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 16px;
+  box-shadow: 0 8px 32px -8px rgba(0, 0, 0, 0.50),
+              inset 0 1px 0 rgba(255, 255, 255, 0.06);
 }
 
 .glow-text {
-  text-shadow: 0 0 10px rgba(59, 130, 246, 0.5);
+  text-shadow: 0 0 10px rgba(193, 95, 60, 0.4);
+}
+
+.t-mono {
+  font-family: 'JetBrains Mono', monospace;
+}
+
+.t-eyebrow {
+  font-weight: 700;
+  font-size: 8px;
+  text-transform: uppercase;
+  letter-spacing: 0.20em;
+  color: rgba(245, 245, 220, 0.35);
+}
+
+.t-label {
+  font-weight: 700;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.15em;
+  color: rgba(245, 245, 220, 0.65);
 }
 
 .custom-scrollbar::-webkit-scrollbar {
@@ -34,10 +63,10 @@ body {
 }
 
 .custom-scrollbar::-webkit-scrollbar-thumb {
-  background: rgba(59, 130, 246, 0.3);
+  background: rgba(193, 95, 60, 0.3);
   border-radius: 10px;
 }
 
 .custom-scrollbar::-webkit-scrollbar-thumb:hover {
-  background: rgba(59, 130, 246, 0.5);
+  background: rgba(193, 95, 60, 0.5);
 }
