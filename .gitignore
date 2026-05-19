@@ -1,0 +1,45 @@
+# Dependencies
+node_modules
+.pnpm-debug.log*
+
+# Environment and Secrets
+.env
+.env.*
+nyx_vault/
+*.pem
+*.key
+
+# Database and Storage
+*.db
+*.sqlite
+*.sqlite3
+storage/
+
+# Logs and Performance
+*.log
+VRAM_logs/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# OS and Editors
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Project Specific
+$VPC_ROOT/local/
+temp/
+dist/
+build/
+
+# Gemini Metadata
+.gemini/
+.geminiignore
+MEMORY.md
+GEMINI.md
+*.metadata.json
