@@ -7,8 +7,8 @@ import { SemanticIngestor } from './services/SemanticIngestor.js';
 import { HardwareMonitor, VramMetrics } from './services/HardwareMonitor.js';
 import { PhaseEvent } from './protocols/TriadStateMachine.js';
 import { TaskClaimMachine, ClaimEvent, ClaimState } from './protocols/TaskClaimMachine.js';
-import { RetryQueue, RetryDispatch } from './services/RetryQueue.js';
-import { Reconciler, ReconcileAction } from './services/Reconciler.js';
+import { RetryQueue, RetryDispatch, RetryConfig } from './services/RetryQueue.js';
+import { Reconciler, ReconcileAction, ReconcilerConfig } from './services/Reconciler.js';
 import { WorkspaceManager } from './services/WorkspaceManager.js';
 import { HookRunner, HookResult } from './services/HookRunner.js';
 import { WorkflowLoader, WorkflowDocument } from './services/WorkflowLoader.js';
@@ -18,6 +18,11 @@ import crypto from 'node:crypto';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as http from 'http';
+
+export interface OrchestratorConfig {
+    retryQueue?: Partial<RetryConfig>;
+    reconciler?: Partial<ReconcilerConfig>;
+}
 
 /**
  * Nyx-Orchestrator v2: Central bus for the Sovereign Agentic Mesh.
@@ -49,7 +54,7 @@ export class MeshOrchestrator extends EventEmitter {
     private activeCycles: Map<string, PhaseEvent> = new Map();
     private tokenTotals = { input: 0, output: 0, total: 0, runtimeMs: 0, cycles: 0 };
 
-    constructor(port: number) {
+    constructor(port: number, cfg: OrchestratorConfig = {}) {
         super();
         this.handshake = new MevHandshake();
 
@@ -70,9 +75,9 @@ export class MeshOrchestrator extends EventEmitter {
         this.mevBridge = new MevBridge(':memory:');
         this.hardware = new HardwareMonitor(2000);
         this.claims = new TaskClaimMachine();
-        this.retryQueue = new RetryQueue(this.claims);
+        this.retryQueue = new RetryQueue(this.claims, cfg.retryQueue ?? {});
         this.retryQueue.bind((goal) => this.injectTask(goal));
-        this.reconciler = new Reconciler(this.claims);
+        this.reconciler = new Reconciler(this.claims, cfg.reconciler ?? {});
         this.workspaces = new WorkspaceManager();
         this.hooks = new HookRunner();
         this.workflowLoader = new WorkflowLoader();
@@ -96,7 +101,9 @@ export class MeshOrchestrator extends EventEmitter {
         this.workflowLoader.start();
 
         this.server.listen(port, () => {
-            this.log.info('orchestrator_listening', { port, surfaces: ['ws', 'sse', '/api/v1/state'] });
+            const addr = this.server.address();
+            const boundPort = addr && typeof addr === 'object' ? addr.port : port;
+            this.log.info('orchestrator_listening', { port: boundPort, surfaces: ['ws', 'sse', '/api/v1/state'] });
         });
 
         this.hardware.start();
@@ -523,6 +530,25 @@ export class MeshOrchestrator extends EventEmitter {
         });
 
         return receipt;
+    }
+
+    /**
+     * Returns a Promise that resolves to the bound port once the HTTP server
+     * is listening. Use in tests to get the ephemeral port when port 0 is
+     * passed to the constructor.
+     */
+    public ready(): Promise<number> {
+        return new Promise((resolve) => {
+            const addr = this.server.address();
+            if (addr && typeof addr === 'object') {
+                resolve(addr.port);
+            } else {
+                this.server.once('listening', () => {
+                    const a = this.server.address();
+                    resolve(a && typeof a === 'object' ? a.port : 0);
+                });
+            }
+        });
     }
 
     public close() {

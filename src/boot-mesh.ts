@@ -5,9 +5,23 @@ async function bootstrap() {
     
     // 1. Start the Orchestrator on Port 8080
     const orchestrator = new MeshOrchestrator(8080);
+    await orchestrator.ready();
     console.log('📡 MESH BUS LIVE: ws://localhost:8080');
 
-    // 2. Simulate Agent Heartbeats (Nyx-CLI and Shaev)
+    // 2. Graceful shutdown on SIGINT / SIGTERM (no leaked handles)
+    let closing = false;
+    const shutdown = (signal: string) => {
+        if (closing) return;
+        closing = true;
+        console.log(`\n[boot-mesh] Received ${signal} — shutting down gracefully…`);
+        orchestrator.close();
+        console.log('[boot-mesh] Shutdown complete.');
+        process.exit(0);
+    };
+    process.on('SIGINT',  () => shutdown('SIGINT'));
+    process.on('SIGTERM', () => shutdown('SIGTERM'));
+
+    // 3. Simulate Agent Heartbeats (Nyx-CLI and Shaev)
     setTimeout(() => {
         orchestrator.broadcast({
             nodeId: 'nyx-gemini-cli',
@@ -26,7 +40,7 @@ async function bootstrap() {
         console.log('✅ Shaev Heartbeat Broadcasted');
     }, 3000);
 
-    // 3. Inject a "Proof of Life" Task
+    // 4. Inject a "Proof of Life" Task
     setTimeout(async () => {
         console.log('⚡ INJECTING MISSION: Architect the Nyx Multiverse Cinematic Reveal...');
         const receipt = await orchestrator.injectTask('Architect the Nyx Multiverse Cinematic Reveal');
