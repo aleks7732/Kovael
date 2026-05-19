@@ -1,0 +1,8 @@
+# Ignore integration tests and cockpit tests which contain random high-entropy strings or mock hashes
+src/__tests__/
+packages/spatial-war-room/test/
+dist/
+packages/spatial-war-room/dist/
+node_modules/
+packages/spatial-war-room/node_modules/
+.kovael/

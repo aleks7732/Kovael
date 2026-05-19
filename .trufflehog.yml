@@ -1,0 +1,8 @@
+exclude-paths:
+  - "src/__tests__/"
+  - "packages/spatial-war-room/test/"
+  - "dist/"
+  - "packages/spatial-war-room/dist/"
+  - "node_modules/"
+  - "packages/spatial-war-room/node_modules/"
+  - ".kovael/"

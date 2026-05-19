@@ -149,6 +149,12 @@ export class MeshOrchestrator extends EventEmitter {
                 first_load: firstLoad,
                 loaded_at: document.loadedAt,
             });
+
+            const floor = document.frontMatter.routing?.vram_floor_mb;
+            if (typeof floor === 'number') {
+                this.mevBridge.setVramFloor(floor);
+            }
+
             this.broadcast({
                 type: 'workflow_loaded',
                 nodeId: 'workflow-loader',

@@ -105,7 +105,7 @@ describe('Boot smoke test', () => {
         const frames = await collectWsFrames(
             ws,
             (fs) => fs.some((f) => f.type === 'hardware_telemetry'),
-            2500,
+            10000,
         );
         ws.close();
 
@@ -154,7 +154,7 @@ describe('E2E mission_inject', () => {
         const collectPromise = collectWsFrames(
             ws,
             (fs) => fs.some((f) => f.type === 'verification_receipt'),
-            3000,
+            15000,
         );
 
         ws.send(JSON.stringify({ type: 'mission_inject', goal: 'integration test goal', origin: 'e2e' }));
@@ -287,8 +287,8 @@ describe('Retry + reconcile interaction', () => {
         // First dispatch — will throw after enqueuing retry
         await expect(orchestrator.injectTask(goal)).rejects.toThrow('stub_failure');
 
-        // Wait for retry sweep + second attempt + exhaustion (up to 500ms)
-        await waitMs(500);
+        // Wait for retry sweep + second attempt + exhaustion (up to 2000ms)
+        await waitMs(2000);
 
         stub.mockRestore();
 

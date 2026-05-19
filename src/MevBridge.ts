@@ -52,7 +52,6 @@ export interface ShardOptions {
     keepRecent: number;
 }
 
-const VRAM_FLOOR_MB = 8192;
 const SHAEV_AGENT = 'shaev';
 const NYX_CLI_AGENT = 'nyx-cli';
 
@@ -70,6 +69,7 @@ export class MevBridge extends EventEmitter {
     private vramFreeMb: number = 0;
     private vramKnown: boolean = false;
     private rateLimits: RateLimitTracker | null = null;
+    private vramFloorMb: number = 8192;
 
     constructor(dbPath: string = 'mev_bridge.db') {
         super();
@@ -102,6 +102,10 @@ export class MevBridge extends EventEmitter {
     public setVramFree(freeMb: number, known: boolean = true): void {
         this.vramFreeMb = freeMb;
         this.vramKnown = known;
+    }
+
+    public setVramFloor(floorMb: number): void {
+        this.vramFloorMb = floorMb;
     }
 
     public setRateLimitTracker(tracker: RateLimitTracker): void {
@@ -143,15 +147,15 @@ export class MevBridge extends EventEmitter {
                 rationale: 'vram_unknown:defaulting_to_lightweight',
             };
         }
-        if (this.vramFreeMb >= VRAM_FLOOR_MB) {
+        if (this.vramFreeMb >= this.vramFloorMb) {
             return {
                 agent: SHAEV_AGENT,
-                rationale: `vram_free_${this.vramFreeMb}mb>=${VRAM_FLOOR_MB}mb:shaev_authorized`,
+                rationale: `vram_free_${this.vramFreeMb}mb>=${this.vramFloorMb}mb:shaev_authorized`,
             };
         }
         return {
             agent: NYX_CLI_AGENT,
-            rationale: `vram_free_${this.vramFreeMb}mb<${VRAM_FLOOR_MB}mb:shaev_gated`,
+            rationale: `vram_free_${this.vramFreeMb}mb<${this.vramFloorMb}mb:shaev_gated`,
         };
     }
 

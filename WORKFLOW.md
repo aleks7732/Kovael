@@ -2,7 +2,7 @@
 # Kovael Triad Workflow Contract
 # Versioned, repo-owned agent dispatch policy.
 # Loaded at orchestrator boot; reloaded on file change without restart.
-version: 1
+version: 2
 tracker:
   source: in_repo
   poll_interval_ms: 2000

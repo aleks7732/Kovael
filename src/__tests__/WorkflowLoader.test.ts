@@ -14,7 +14,7 @@ describe('WorkflowLoader', () => {
         loader.stop();
 
         expect(doc).not.toBeNull();
-        expect(doc!.frontMatter.version).toBe(1);
+        expect(doc!.frontMatter.version).toBe(2);
         expect(doc!.frontMatter.routing?.vram_floor_mb).toBe(8192);
         expect(doc!.promptTemplate.length).toBeGreaterThan(0);
     });
