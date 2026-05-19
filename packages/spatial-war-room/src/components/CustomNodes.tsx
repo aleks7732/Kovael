@@ -37,13 +37,27 @@ export const AgentHeartbeatNode = memo(({ data }: NodeProps) => {
       {data.telemetry && (
         <div className="mt-3 grid grid-cols-2 gap-2">
           <div className="bg-black/40 p-1.5 rounded border border-white/5">
-            <div className="text-[8px] text-slate-500 mb-0.5">CPU_LOAD</div>
+            <div className="text-[8px] text-slate-500 mb-0.5 uppercase">CPU_LOAD</div>
             <div className="text-[10px] text-command-accent">{(data.telemetry as any).cpu}%</div>
           </div>
           <div className="bg-black/40 p-1.5 rounded border border-white/5">
-            <div className="text-[8px] text-slate-500 mb-0.5">MEM_USE</div>
+            <div className="text-[8px] text-slate-500 mb-0.5 uppercase">MEM_USE</div>
             <div className="text-[10px] text-command-accent">{(data.telemetry as any).mem}%</div>
           </div>
+        </div>
+      )}
+
+      {/* Verification Receipts */}
+      {data.receipts && (data.receipts as any[]).length > 0 && (
+        <div className="mt-3 border-t border-command-border/40 pt-2">
+          <div className="text-[8px] text-slate-500 uppercase mb-1">Recent Receipts</div>
+          {(data.receipts as any[]).map((r, i) => (
+            <div key={i} className="flex items-center gap-1.5 text-[9px] mb-1">
+              <div className={`w-1 h-1 rounded-full ${r.status === 'VERIFIED' ? 'bg-emerald-500' : 'bg-red-500'}`} />
+              <span className="text-slate-400 truncate w-32">{r.id.slice(0, 8)}...</span>
+              <span className="text-slate-600">({r.timestamp.split('T')[1].split('.')[0]})</span>
+            </div>
+          ))}
         </div>
       )}
       

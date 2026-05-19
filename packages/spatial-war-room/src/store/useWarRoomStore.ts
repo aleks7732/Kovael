@@ -10,10 +10,6 @@ import {
   applyEdgeChanges,
 } from '@xyflow/react';
 
-/**
- * TelemetryData
- * Specific structure for high-frequency tactical data.
- */
 export interface TelemetryData {
   status?: string;
   cpu?: number;
@@ -22,10 +18,6 @@ export interface TelemetryData {
   [key: string]: any;
 }
 
-/**
- * Task
- * Structure for recursive task groupings.
- */
 export interface Task {
   id: string;
   name: string;
@@ -33,51 +25,31 @@ export interface Task {
   subTasks?: Task[];
 }
 
-/**
- * WarRoomNodeData
- * Data structure for nodes in the Spatial War Room.
- */
 export interface WarRoomNodeData extends Record<string, unknown> {
   label: string;
   status?: string;
   telemetry?: TelemetryData;
   tasks?: Task[];
+  receipts?: any[];
+  agentCard?: any;
 }
 
 export type WarRoomNode = Node<WarRoomNodeData>;
 
-/**
- * WarRoomState
- * Zustand store interface for managing spatial tactical state.
- */
 export interface WarRoomState {
   nodes: WarRoomNode[];
   edges: Edge[];
-  
-  // Core React Flow Actions
   onNodesChange: (changes: NodeChange[]) => void;
   onEdgesChange: (changes: EdgeChange[]) => void;
   onConnect: (connection: Connection) => void;
   setNodes: (nodes: WarRoomNode[]) => void;
   setEdges: (edges: Edge[]) => void;
-  
-  // Tactical Actions
   updateNodeTelemetry: (id: string, telemetry: TelemetryData) => void;
-  
-  /**
-   * batchUpdate
-   * Optimized for high-frequency telemetry updates from multiple nodes.
-   * Processes all updates in a single state transition to minimize re-renders.
-   */
-  batchUpdate: (updates: { id: string; telemetry: TelemetryData }[]) => void;
-  
+  addVerificationReceipt: (nodeId: string, receipt: any) => void;
+  upsertAgentNode: (card: any) => void;
   addTask: (task: any) => void;
 }
 
-/**
- * useWarRoomStore
- * Central state management for the Spatial War Room.
- */
 export const useWarRoomStore = create<WarRoomState>((set, get) => ({
   nodes: [],
   edges: [],
@@ -121,29 +93,38 @@ export const useWarRoomStore = create<WarRoomState>((set, get) => ({
     }));
   },
 
-  batchUpdate: (updates: { id: string; telemetry: TelemetryData }[]) => {
-    set((state) => {
-      // Create a map for O(1) lookup during update
-      const updateMap = new Map(updates.map(u => [u.id, u.telemetry]));
-      
-      let hasChanges = false;
-      const newNodes = state.nodes.map(node => {
-        const telemetryUpdate = updateMap.get(node.id);
-        if (telemetryUpdate) {
-          hasChanges = true;
-          return { 
-            ...node, 
-            data: { 
-              ...node.data, 
-              status: telemetryUpdate.status || node.data.status, 
-              telemetry: { ...node.data.telemetry, ...telemetryUpdate } 
-            } 
+  addVerificationReceipt: (nodeId: string, receipt: any) => {
+    set((state) => ({
+      nodes: state.nodes.map((node) => {
+        if (node.id === nodeId) {
+          return {
+            ...node,
+            data: {
+              ...node.data,
+              receipts: [receipt, ...(node.data.receipts || [])].slice(0, 5)
+            }
           };
         }
         return node;
-      });
-      
-      return hasChanges ? { nodes: newNodes } : state;
+      })
+    }));
+  },
+
+  upsertAgentNode: (card: any) => {
+    set((state) => {
+      const exists = state.nodes.find(n => n.id === card.id);
+      if (exists) {
+        return {
+          nodes: state.nodes.map(n => n.id === card.id ? { ...n, data: { ...n.data, agentCard: card } } : n)
+        };
+      }
+      const newNode: WarRoomNode = {
+        id: card.id,
+        type: 'agentHeartbeat',
+        position: { x: Math.random() * 200, y: Math.random() * 200 },
+        data: { label: card.name, agentCard: card, status: 'ONLINE' }
+      };
+      return { nodes: [...state.nodes, newNode] };
     });
   },
   
@@ -151,7 +132,7 @@ export const useWarRoomStore = create<WarRoomState>((set, get) => ({
     const newNode: WarRoomNode = {
       id: task.id || `task-${Date.now()}`,
       type: 'taskCluster',
-      position: task.position || { x: Math.random() * 400, y: Math.random() * 400 },
+      position: { x: 400 + Math.random() * 200, y: Math.random() * 400 },
       data: { 
         label: task.name || 'New Task Cluster', 
         tasks: task.tasks || [],
@@ -163,20 +144,3 @@ export const useWarRoomStore = create<WarRoomState>((set, get) => ({
     }));
   },
 }));
-
-/**
- * Selectors
- * Memoized-style selectors to prevent global re-renders when only specific data is needed.
- */
-
-// Selects a single node by ID
-export const selectNode = (id: string) => (state: WarRoomState) => 
-  state.nodes.find((n) => n.id === id);
-
-// Selects only the data of a specific node
-export const selectNodeData = (id: string) => (state: WarRoomState) => 
-  state.nodes.find((n) => n.id === id)?.data;
-
-// Selects only the telemetry of a specific node
-export const selectNodeTelemetry = (id: string) => (state: WarRoomState) => 
-  state.nodes.find((n) => n.id === id)?.data.telemetry;
