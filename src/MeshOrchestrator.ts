@@ -334,17 +334,8 @@ export class MeshOrchestrator extends EventEmitter {
     }
 
     private initializeBus() {
-        // Register once here — not per-connection — to avoid listener accumulation.
-        // Broadcasts cycle_complete receipts to all currently open clients.
-        this.mevBridge.on('cycle_complete', (receipt: VerificationReceipt) => {
-            const payload = {
-                type: 'verification_receipt',
-                nodeId: receipt.verifierId,
-                data: receipt
-            };
-            this.broadcast(payload);
-        });
-
+        // cycle_complete is subscribed in wireMevBridge() where it owns token
+        // accounting + receiptsIssued; do NOT subscribe again here.
         this.wss.on('connection', (ws: WebSocket, request) => {
             const nodeId = this.extractNodeId(request);
 

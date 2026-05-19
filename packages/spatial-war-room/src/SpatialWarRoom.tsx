@@ -138,7 +138,7 @@ const SpatialWarRoom = () => {
       wsRef.current = null;
       ws.close();
     };
-  }, [enqueueTelemetry, enqueueHardware, addTask, addVerificationReceipt, upsertAgentNode, addANXBriefing, recordPhaseEvent, recordClaimEvent, recordRetryEvent, recordReconcileAction, recordHookEvent, recordTokenUpdate]);
+  }, [enqueueTelemetry, enqueueHardware, addTask, addVerificationReceipt, upsertAgentNode, addANXBriefing, recordPhaseEvent, recordClaimEvent, recordRetryEvent, recordReconcileAction, recordHookEvent, recordTokenUpdate, recordRateLimit]);
 
   return (
     <div className="cockpit-grid h-screen w-screen overflow-hidden text-command-warm-white">

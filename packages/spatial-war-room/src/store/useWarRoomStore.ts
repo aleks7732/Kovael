@@ -363,9 +363,20 @@ export const useWarRoomStore = create<WarRoomState>((set, get) => ({
 
   recordPhaseEvent: (evt: PhaseEvent) => {
     set((state) => {
+      // Roster status follows the phase: routedAgent goes to 'dispatching'
+      // while the cycle is in flight, and back to 'online' on any terminal
+      // transition. Without this, every agent perma-sticks at 'dispatching'
+      // after the first cycle.
+      const TERMINAL_PHASES = new Set(['Succeeded', 'Failed', 'Stalled']);
+      const isTerminal = TERMINAL_PHASES.has(evt.phase);
+
       const nextRoster = evt.routedAgent
         ? state.agentRoster.map(r => r.id === evt.routedAgent
-            ? { ...r, status: 'dispatching' as const, lastSeen: evt.timestamp }
+            ? {
+                ...r,
+                status: (isTerminal ? 'online' : 'dispatching') as AgentRosterCard['status'],
+                lastSeen: evt.timestamp,
+              }
             : r)
         : state.agentRoster;
       return {

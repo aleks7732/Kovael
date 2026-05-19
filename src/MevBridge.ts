@@ -242,7 +242,12 @@ export class MevBridge extends EventEmitter {
                 tokens,
             };
 
-            machine.transition(verification.success ? TriadPhase.Succeeded : TriadPhase.Failed);
+            // Terminal transition carries routedAgent so the cockpit can
+            // reset the agent's status from 'dispatching' back to 'online'.
+            machine.transition(
+                verification.success ? TriadPhase.Succeeded : TriadPhase.Failed,
+                { routedAgent: routing.agent },
+            );
             receipt.phaseTrail = machine.trail();
 
             this.storeReceipt(receipt);
@@ -251,7 +256,12 @@ export class MevBridge extends EventEmitter {
             return receipt;
         } catch (error) {
             if (!machine.isTerminal()) {
-                try { machine.transition(TriadPhase.Failed, { note: (error as Error).message }); } catch { /* swallow */ }
+                try {
+                    machine.transition(TriadPhase.Failed, {
+                        routedAgent: routing.agent,
+                        note: (error as Error).message,
+                    });
+                } catch { /* swallow */ }
             }
             console.error('[MevBridge] Loop failure:', error);
             throw error;

@@ -1,5 +1,5 @@
 import { EventEmitter } from 'node:events';
-import { TaskClaimMachine, ClaimState } from '../protocols/TaskClaimMachine.js';
+import { TaskClaimMachine } from '../protocols/TaskClaimMachine.js';
 
 export interface RetryConfig {
     maxAttempts: number;
