@@ -14,6 +14,8 @@ export class MeshOrchestrator extends EventEmitter {
     private memoryDb: DatabaseSync;
     private mevBridge: MevBridge;
     private agentCards: any[] = [];
+    private nodeCache: Map<string, any> = new Map();
+    private taskCache: any[] = [];
 
     constructor(port: number) {
         super();
@@ -54,12 +56,19 @@ export class MeshOrchestrator extends EventEmitter {
         this.wss.on('connection', (ws: WebSocket, request) => {
             const nodeId = this.extractNodeId(request);
             
-            // Broadcast AgentCards to the new connection
+            // 1. Send AgentCards
             this.agentCards.forEach(card => {
-                ws.send(JSON.stringify({
-                    type: 'agent_card',
-                    data: card
-                }));
+                ws.send(JSON.stringify({ type: 'agent_card', data: card }));
+            });
+
+            // 2. Send Cached Nodes (Heartbeats/Telemetry)
+            this.nodeCache.forEach(nodeData => {
+                ws.send(JSON.stringify(nodeData));
+            });
+
+            // 3. Send Cached Tasks
+            this.taskCache.forEach(taskData => {
+                ws.send(JSON.stringify(taskData));
             });
 
             ws.on('message', async (data: string) => {
@@ -69,11 +78,12 @@ export class MeshOrchestrator extends EventEmitter {
 
             // Listen for MevBridge cycles and broadcast to telemetry
             this.mevBridge.on('cycle_complete', (receipt: VerificationReceipt) => {
-                ws.send(JSON.stringify({
+                const payload = {
                     type: 'verification_receipt',
                     nodeId: receipt.verifierId,
                     data: receipt
-                }));
+                };
+                ws.send(JSON.stringify(payload));
             });
         });
     }
@@ -83,8 +93,28 @@ export class MeshOrchestrator extends EventEmitter {
         return url.searchParams.get('nodeId') || 'unknown';
     }
 
+    /**
+     * Broadcasts a message to all connected WebSocket clients and caches it for new arrivals.
+     */
+    public broadcast(payload: any) {
+        // Cache management
+        if (payload.type === 'telemetry') {
+            this.nodeCache.set(payload.nodeId, payload);
+        } else if (payload.type === 'new_task') {
+            this.taskCache.push(payload);
+        }
+
+        this.wss.clients.forEach(client => {
+            if (client.readyState === WebSocket.OPEN) {
+                client.send(JSON.stringify(payload));
+            }
+        });
+    }
+
     private async handleTelemetry(nodeId: string, payload: any) {
-        this.emit('telemetry', { nodeId, ...payload });
+        const fullPayload = { nodeId, type: 'telemetry', ...payload };
+        this.emit('telemetry', fullPayload);
+        this.broadcast(fullPayload);
     }
 
     /**

@@ -1,10 +1,10 @@
 import { create } from 'zustand';
 import {
-  Connection,
-  Edge,
-  EdgeChange,
-  Node,
-  NodeChange,
+  type Connection,
+  type Edge,
+  type EdgeChange,
+  type Node,
+  type NodeChange,
   addEdge,
   applyNodeChanges,
   applyEdgeChanges,
@@ -51,7 +51,14 @@ export interface WarRoomState {
 }
 
 export const useWarRoomStore = create<WarRoomState>((set, get) => ({
-  nodes: [],
+  nodes: [
+    {
+      id: 'system-ready',
+      type: 'agentHeartbeat',
+      position: { x: 0, y: 0 },
+      data: { label: 'VPC_SYSTEM_READY', status: 'SYNCHRONIZING' }
+    }
+  ],
   edges: [],
   
   onNodesChange: (changes: NodeChange[]) => {
@@ -76,21 +83,37 @@ export const useWarRoomStore = create<WarRoomState>((set, get) => ({
   setEdges: (edges: Edge[]) => set({ edges }),
   
   updateNodeTelemetry: (id: string, telemetry: TelemetryData) => {
-    set((state) => ({
-      nodes: state.nodes.map((node) => {
-        if (node.id === id) {
-          return { 
-            ...node, 
-            data: { 
-              ...node.data, 
-              status: telemetry.status || node.data.status,
-              telemetry: { ...node.data.telemetry, ...telemetry } 
-            } 
-          };
-        }
-        return node;
-      }),
-    }));
+    set((state) => {
+      const exists = state.nodes.find(n => n.id === id);
+      if (!exists) {
+        const newNode: WarRoomNode = {
+          id: id,
+          type: 'agentHeartbeat',
+          position: { x: Math.random() * 400, y: Math.random() * 400 },
+          data: { 
+            label: telemetry.label || id, 
+            status: telemetry.status || 'ONLINE',
+            telemetry: telemetry 
+          }
+        };
+        return { nodes: [...state.nodes, newNode] };
+      }
+      return {
+        nodes: state.nodes.map((node) => {
+          if (node.id === id) {
+            return { 
+              ...node, 
+              data: { 
+                ...node.data, 
+                status: telemetry.status || node.data.status,
+                telemetry: { ...node.data.telemetry, ...telemetry } 
+              } 
+            };
+          }
+          return node;
+        }),
+      };
+    });
   },
 
   addVerificationReceipt: (nodeId: string, receipt: any) => {
