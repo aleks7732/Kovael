@@ -46,8 +46,9 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
+          cache: 'npm'
       - name: Install
-        run: npm install --no-audit --no-fund --no-save @types/node ws @types/ws zod @modelcontextprotocol/sdk events
+        run: npm ci --no-audit --no-fund
       - name: Typecheck (root tsconfig)
         run: npx tsc --noEmit -p tsconfig.json
 
@@ -60,12 +61,8 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
+          cache: 'npm'
       - name: Install
-        run: npm install --no-audit --no-fund
+        run: npm ci --no-audit --no-fund
       - name: Run tests
-        run: |
-          if [ -d src/__tests__ ]; then
-            npx vitest run --reporter=default || true
-          else
-            echo "No test directory yet — skipping."
-          fi
+        run: npx vitest run --reporter=default
