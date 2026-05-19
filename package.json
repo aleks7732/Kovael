@@ -15,9 +15,11 @@
     "zod": "^4.4.3",
     "zustand": "^5.0.13"
   },
-  "main": "index.js",
+  "main": "dist/MeshOrchestrator.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "build": "tsc",
+    "start": "node dist/boot-mesh.js",
+    "test": "vitest run"
   },
   "repository": {
     "type": "git",

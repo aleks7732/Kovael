@@ -41,7 +41,6 @@ export class MeshOrchestrator extends EventEmitter {
         
         this.loadAgentCards();
         this.initializeBus();
-        this.initializeMemory();
 
         this.server.listen(port, () => {
             console.log(`[MeshOrchestrator] Server listening on port ${port} (WS + SSE Handshake)`);
@@ -69,17 +68,18 @@ export class MeshOrchestrator extends EventEmitter {
         }
     }
 
-    private initializeMemory() {
-        this.memoryDb.exec(`
-            CREATE TABLE semantic_memory(
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                vector_blob BLOB,
-                relevance_weight REAL
-            ) STRICT
-        `);
-    }
-
     private initializeBus() {
+        // Register once here — not per-connection — to avoid listener accumulation.
+        // Broadcasts cycle_complete receipts to all currently open clients.
+        this.mevBridge.on('cycle_complete', (receipt: VerificationReceipt) => {
+            const payload = {
+                type: 'verification_receipt',
+                nodeId: receipt.verifierId,
+                data: receipt
+            };
+            this.broadcast(payload);
+        });
+
         this.wss.on('connection', (ws: WebSocket, request) => {
             const nodeId = this.extractNodeId(request);
             
@@ -98,19 +98,10 @@ export class MeshOrchestrator extends EventEmitter {
                 ws.send(JSON.stringify(taskData));
             });
 
-            ws.on('message', async (data: string) => {
-                const payload = JSON.parse(data);
+            // data arrives as Buffer from ws; .toString() normalises before JSON.parse
+            ws.on('message', async (data: Buffer | ArrayBuffer | Buffer[]) => {
+                const payload = JSON.parse(data.toString());
                 await this.handleTelemetry(nodeId, payload);
-            });
-
-            // Listen for MevBridge cycles and broadcast to telemetry
-            this.mevBridge.on('cycle_complete', (receipt: VerificationReceipt) => {
-                const payload = {
-                    type: 'verification_receipt',
-                    nodeId: receipt.verifierId,
-                    data: receipt
-                };
-                ws.send(JSON.stringify(payload));
             });
         });
     }
