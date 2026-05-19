@@ -11,6 +11,7 @@ import { RetryQueue, RetryDispatch } from './services/RetryQueue.js';
 import { Reconciler, ReconcileAction } from './services/Reconciler.js';
 import { WorkspaceManager } from './services/WorkspaceManager.js';
 import { HookRunner, HookResult } from './services/HookRunner.js';
+import { WorkflowLoader, WorkflowDocument } from './services/WorkflowLoader.js';
 import crypto from 'node:crypto';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -35,6 +36,7 @@ export class MeshOrchestrator extends EventEmitter {
     private reconciler: Reconciler;
     private workspaces: WorkspaceManager;
     private hooks: HookRunner;
+    private workflowLoader: WorkflowLoader;
     private agentCards: any[] = [];
     private nodeCache: Map<string, any> = new Map();
     private taskCache: any[] = [];
@@ -68,6 +70,7 @@ export class MeshOrchestrator extends EventEmitter {
         this.reconciler = new Reconciler(this.claims);
         this.workspaces = new WorkspaceManager();
         this.hooks = new HookRunner();
+        this.workflowLoader = new WorkflowLoader();
 
         this.loadAgentCards();
         this.initializeBus();
@@ -82,6 +85,8 @@ export class MeshOrchestrator extends EventEmitter {
         this.retryQueue.start();
         this.reconciler.start();
         this.registerDefaultHooks();
+        this.wireWorkflowLoader();
+        this.workflowLoader.start();
 
         this.server.listen(port, () => {
             console.log(`[MeshOrchestrator] Server listening on port ${port} (WS + SSE + /api/v1/state)`);
@@ -109,6 +114,25 @@ export class MeshOrchestrator extends EventEmitter {
                 type: 'claim_event',
                 nodeId: 'task-claim-machine',
                 data: evt,
+            });
+        });
+    }
+
+    private wireWorkflowLoader() {
+        this.workflowLoader.on('workflow_loaded', ({ document, firstLoad }: { document: WorkflowDocument; firstLoad: boolean }) => {
+            console.log(`[WorkflowLoader] ${firstLoad ? 'loaded' : 'reloaded'} v${document.frontMatter.version}`);
+            this.broadcast({
+                type: 'workflow_loaded',
+                nodeId: 'workflow-loader',
+                data: { version: document.frontMatter.version, firstLoad, loadedAt: document.loadedAt },
+            });
+        });
+        this.workflowLoader.on('workflow_error', (payload: { error: string; keptKnownGood: boolean }) => {
+            console.warn(`[WorkflowLoader] reload error (kept_known_good=${payload.keptKnownGood}): ${payload.error}`);
+            this.broadcast({
+                type: 'workflow_error',
+                nodeId: 'workflow-loader',
+                data: payload,
             });
         });
     }
@@ -210,6 +234,12 @@ export class MeshOrchestrator extends EventEmitter {
                 active: this.workspaces.activeCount(),
             },
             hooks: this.hooks.stats(),
+            workflow: {
+                loaded: !!this.workflowLoader.document(),
+                lastError: this.workflowLoader.lastErrorMessage(),
+                version: this.workflowLoader.document()?.frontMatter.version ?? null,
+                loadedAt: this.workflowLoader.document()?.loadedAt ?? null,
+            },
         };
         res.writeHead(200, {
             'Content-Type': 'application/json',
@@ -427,6 +457,7 @@ export class MeshOrchestrator extends EventEmitter {
     }
 
     public close() {
+        this.workflowLoader.stop();
         this.reconciler.stop();
         this.retryQueue.stop();
         this.hardware.stop();
