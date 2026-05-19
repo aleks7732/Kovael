@@ -118,14 +118,19 @@ export class WorkflowLoader extends EventEmitter {
      * `- item` lists, and `# comments`. Strings may be bare or single-quoted.
      */
     private parseYamlSubset(src: string): any {
-        const lines = src.split('\n');
+        // Normalise CRLF → LF so the parser works on both Windows-authored and
+        // Unix-authored WORKFLOW.md files without \r contaminating keys/values.
+        const lines = src.replace(/\r/g, '').split('\n');
         const stack: Array<{ indent: number; obj: any; key?: string }> = [{ indent: -1, obj: {} }];
         let pendingList: { indent: number; arr: any[] } | null = null;
 
         for (let lineNo = 0; lineNo < lines.length; lineNo++) {
             const raw = lines[lineNo];
             const stripped = raw.replace(/\s+#.*$/, '');
-            if (!stripped.trim()) continue;
+            // Skip blank lines and standalone comment lines (e.g. "# Title").
+            // In YAML, `#` introduces a comment only when preceded by whitespace
+            // or at the start of the line.
+            if (!stripped.trim() || stripped.trim().startsWith('#')) continue;
 
             const indent = stripped.match(/^( *)/)?.[1].length ?? 0;
             const content = stripped.slice(indent);
