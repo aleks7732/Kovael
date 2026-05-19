@@ -1,5 +1,6 @@
 import { memo, useEffect, useState } from 'react';
 import { MissionConsole } from './MissionConsole';
+import type { TokenTotals } from '../store/useWarRoomStore';
 
 interface TopBarProps {
   meshStatus: 'live' | 'syncing' | 'offline';
@@ -7,7 +8,14 @@ interface TopBarProps {
   receiptsIssued: number;
   activeAgents: number;
   nodeCount: number;
+  tokenTotals: TokenTotals;
   onInjectMission: (goal: string) => void;
+}
+
+function formatTokens(n: number): string {
+  if (n >= 1_000_000) return (n / 1_000_000).toFixed(1) + 'M';
+  if (n >= 1_000) return (n / 1_000).toFixed(1) + 'k';
+  return String(n);
 }
 
 const STATUS_STYLES: Record<TopBarProps['meshStatus'], { dot: string; label: string }> = {
@@ -26,7 +34,7 @@ const Stat = memo(({ label, value, accent = false }: { label: string; value: str
 ));
 Stat.displayName = 'TopBar.Stat';
 
-export const TopBar = memo(({ meshStatus, connectedClients = 0, receiptsIssued, activeAgents, nodeCount, onInjectMission }: TopBarProps) => {
+export const TopBar = memo(({ meshStatus, connectedClients = 0, receiptsIssued, activeAgents, nodeCount, tokenTotals, onInjectMission }: TopBarProps) => {
   const [now, setNow] = useState(() => new Date());
   useEffect(() => {
     const id = setInterval(() => setNow(new Date()), 1000);
@@ -61,6 +69,7 @@ export const TopBar = memo(({ meshStatus, connectedClients = 0, receiptsIssued, 
         <Stat label="AGENTS" value={activeAgents} />
         <Stat label="NODES" value={nodeCount} />
         <Stat label="RECEIPTS" value={receiptsIssued} accent />
+        <Stat label="TOKENS" value={formatTokens(tokenTotals.total)} />
         <div className="h-7 w-px bg-white/10" />
         <Stat label="UTC" value={time} />
       </div>

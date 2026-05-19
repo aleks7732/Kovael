@@ -43,6 +43,7 @@ export class MeshOrchestrator extends EventEmitter {
     private hardwareCache: VramMetrics | null = null;
     private receiptsIssued: number = 0;
     private activeCycles: Map<string, PhaseEvent> = new Map();
+    private tokenTotals = { input: 0, output: 0, total: 0, runtimeMs: 0, cycles: 0 };
 
     constructor(port: number) {
         super();
@@ -202,6 +203,21 @@ export class MeshOrchestrator extends EventEmitter {
         });
         this.mevBridge.on('cycle_complete', (receipt: VerificationReceipt) => {
             this.receiptsIssued += 1;
+            if (receipt.tokens) {
+                this.tokenTotals.input += receipt.tokens.input;
+                this.tokenTotals.output += receipt.tokens.output;
+                this.tokenTotals.total += receipt.tokens.total;
+                this.tokenTotals.runtimeMs += receipt.tokens.runtimeMs;
+                this.tokenTotals.cycles += 1;
+                this.broadcast({
+                    type: 'token_update',
+                    nodeId: 'mev-bridge',
+                    data: {
+                        cycle: receipt.tokens,
+                        totals: { ...this.tokenTotals },
+                    },
+                });
+            }
             this.broadcast({
                 type: 'verification_receipt',
                 nodeId: receipt.architectId,
@@ -240,6 +256,7 @@ export class MeshOrchestrator extends EventEmitter {
                 version: this.workflowLoader.document()?.frontMatter.version ?? null,
                 loadedAt: this.workflowLoader.document()?.loadedAt ?? null,
             },
+            tokens: { ...this.tokenTotals },
         };
         res.writeHead(200, {
             'Content-Type': 'application/json',

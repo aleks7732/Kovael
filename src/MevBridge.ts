@@ -4,6 +4,22 @@ import crypto from 'node:crypto';
 import { TriadStateMachine, TriadPhase, PhaseEvent } from './protocols/TriadStateMachine.js';
 
 /**
+ * Token accounting per Symphony §13 — every receipt carries the cycle's
+ * input/output/total token count and wall-clock runtime. When a real LLM
+ * provider returns usage, populate `source: 'reported'` and accumulate
+ * absolute thread totals; until then we ship a `source: 'estimate'`
+ * derived from the chars/4 rule so the cockpit always has something
+ * meaningful to render.
+ */
+export interface TokenUsage {
+    input: number;
+    output: number;
+    total: number;
+    runtimeMs: number;
+    source: 'estimate' | 'reported';
+}
+
+/**
  * ZTNP: Zero Trust Node Protocol - Verification Receipt
  */
 export interface VerificationReceipt {
@@ -22,6 +38,13 @@ export interface VerificationReceipt {
         vramFreeMb: number;
     };
     phaseTrail: PhaseEvent[];
+    tokens?: TokenUsage;
+}
+
+const CHARS_PER_TOKEN = 4;
+
+function estimateTokens(text: string): number {
+    return Math.ceil(text.length / CHARS_PER_TOKEN);
 }
 
 export interface ShardOptions {
@@ -139,6 +162,7 @@ export class MevBridge extends EventEmitter {
         const taskHash = crypto.createHash('sha256').update(task).digest('hex');
         const cycleId = crypto.randomUUID();
         const machine = new TriadStateMachine(cycleId, taskHash);
+        const cycleStart = Date.now();
 
         machine.on('phase_change', (evt: PhaseEvent) => this.emit('phase_change', evt));
 
@@ -163,6 +187,21 @@ export class MevBridge extends EventEmitter {
 
             machine.transition(TriadPhase.IssuingReceipt);
 
+            // Symphony §13 — token accounting. No real LLM is wired today;
+            // we estimate from prompt + response character length so the
+            // shape is correct when a provider returns usage later.
+            const promptText = task + shardedContext.map(m => (m?.content ?? '')).join('\n');
+            const responseText = JSON.stringify(blueprint) + JSON.stringify(executionResult) + JSON.stringify(verification.details);
+            const input = estimateTokens(promptText);
+            const output = estimateTokens(responseText);
+            const tokens: TokenUsage = {
+                input,
+                output,
+                total: input + output,
+                runtimeMs: Date.now() - cycleStart,
+                source: 'estimate',
+            };
+
             const receipt: VerificationReceipt = {
                 id: crypto.randomUUID(),
                 cycleId,
@@ -183,6 +222,7 @@ export class MevBridge extends EventEmitter {
                     vramFreeMb: this.vramFreeMb,
                 },
                 phaseTrail: machine.trail(),
+                tokens,
             };
 
             machine.transition(verification.success ? TriadPhase.Succeeded : TriadPhase.Failed);

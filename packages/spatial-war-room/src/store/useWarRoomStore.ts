@@ -83,6 +83,14 @@ export interface ClaimStats {
   Released: number;
 }
 
+export interface TokenTotals {
+  input: number;
+  output: number;
+  total: number;
+  runtimeMs: number;
+  cycles: number;
+}
+
 export interface HookEvent {
   name: string;
   event: 'after_create' | 'before_run' | 'after_run' | 'before_remove';
@@ -141,6 +149,7 @@ export interface WarRoomState {
   retryPendingCount: number;
   reconcileActions: ReconcileAction[];
   hookEvents: HookEvent[];
+  tokenTotals: TokenTotals;
   flushCount: number;
   receiptsIssued: number;
   onNodesChange: (changes: NodeChange[]) => void;
@@ -160,6 +169,7 @@ export interface WarRoomState {
   recordRetryEvent: (evt: Omit<RetryEvent, 'receivedAt'>) => void;
   recordReconcileAction: (action: ReconcileAction) => void;
   recordHookEvent: (evt: Omit<HookEvent, 'receivedAt'>) => void;
+  recordTokenUpdate: (totals: TokenTotals) => void;
 }
 
 /**
@@ -195,6 +205,7 @@ export const useWarRoomStore = create<WarRoomState>((set, get) => ({
   retryPendingCount: 0,
   reconcileActions: [],
   hookEvents: [],
+  tokenTotals: { input: 0, output: 0, total: 0, runtimeMs: 0, cycles: 0 },
   flushCount: 0,
   receiptsIssued: 0,
 
@@ -362,6 +373,10 @@ export const useWarRoomStore = create<WarRoomState>((set, get) => ({
     set((state) => ({
       hookEvents: [{ ...evt, receivedAt: Date.now() }, ...state.hookEvents].slice(0, 40),
     }));
+  },
+
+  recordTokenUpdate: (totals) => {
+    set(() => ({ tokenTotals: { ...totals } }));
   },
 
   recordRetryEvent: (evt) => {
