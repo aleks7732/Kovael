@@ -37,6 +37,9 @@ temp/
 dist/
 build/
 
+# Per-cycle workspaces (Symphony §9)
+.kovael/workspaces/
+
 # Gemini Metadata
 .gemini/
 .geminiignore

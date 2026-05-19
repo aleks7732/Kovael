@@ -9,6 +9,7 @@ import { PhaseEvent } from './protocols/TriadStateMachine.js';
 import { TaskClaimMachine, ClaimEvent, ClaimState } from './protocols/TaskClaimMachine.js';
 import { RetryQueue, RetryDispatch } from './services/RetryQueue.js';
 import { Reconciler, ReconcileAction } from './services/Reconciler.js';
+import { WorkspaceManager } from './services/WorkspaceManager.js';
 import crypto from 'node:crypto';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -31,6 +32,7 @@ export class MeshOrchestrator extends EventEmitter {
     private claims: TaskClaimMachine;
     private retryQueue: RetryQueue;
     private reconciler: Reconciler;
+    private workspaces: WorkspaceManager;
     private agentCards: any[] = [];
     private nodeCache: Map<string, any> = new Map();
     private taskCache: any[] = [];
@@ -62,6 +64,7 @@ export class MeshOrchestrator extends EventEmitter {
         this.retryQueue = new RetryQueue(this.claims);
         this.retryQueue.bind((goal) => this.injectTask(goal));
         this.reconciler = new Reconciler(this.claims);
+        this.workspaces = new WorkspaceManager();
 
         this.loadAgentCards();
         this.initializeBus();
@@ -170,6 +173,10 @@ export class MeshOrchestrator extends EventEmitter {
                 pending: this.retryQueue.snapshot(),
             },
             reconciler: this.reconciler.stats(),
+            workspaces: {
+                root: this.workspaces.root(),
+                active: this.workspaces.activeCount(),
+            },
         };
         res.writeHead(200, {
             'Content-Type': 'application/json',
@@ -307,6 +314,17 @@ export class MeshOrchestrator extends EventEmitter {
         console.log(`[MeshOrchestrator] Claim acquired (taskHash=${taskHash.slice(0, 12)} cycle=${cycleId.slice(0, 8)}): ${goal}`);
         this.claims.markRunning(taskHash, cycleId);
 
+        // Symphony §9 — every cycle gets an isolated workspace directory.
+        // The Triad runs in-process today, so cwd validation is dormant; the
+        // directory exists for future subprocess agents and for incremental
+        // state across retried attempts.
+        let workspacePath: string | undefined;
+        try {
+            workspacePath = this.workspaces.acquire(cycleId);
+        } catch (err) {
+            console.warn(`[MeshOrchestrator] workspace acquire failed for ${cycleId}: ${(err as Error).message}`);
+        }
+
         let receipt: VerificationReceipt;
         try {
             receipt = await this.mevBridge.execute(goal, [
@@ -319,6 +337,7 @@ export class MeshOrchestrator extends EventEmitter {
             // with exponential backoff or release the claim as exhausted.
             const reason = `execute_threw:${(err as Error).message}`;
             this.retryQueue.enqueueFailure(taskHash, goal, reason);
+            if (workspacePath) this.workspaces.release(cycleId);
             throw err;
         }
 
@@ -329,6 +348,7 @@ export class MeshOrchestrator extends EventEmitter {
             // applies — Symphony §3.1.
             this.retryQueue.enqueueFailure(taskHash, goal, `cycle_failed:${receipt.id}`);
         }
+        if (workspacePath) this.workspaces.release(cycleId);
 
         this.emit('task_routed', { goal, receipt });
         
