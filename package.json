@@ -19,6 +19,7 @@
   "scripts": {
     "build": "tsc",
     "start": "node dist/boot-mesh.js",
+    "start:proxy": "node dist/SovereignProxy.js",
     "test": "vitest run"
   },
   "repository": {

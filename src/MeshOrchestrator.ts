@@ -18,6 +18,8 @@ import crypto from 'node:crypto';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as http from 'http';
+import { AgentCards } from './AgentCards.js';
+
 
 export interface OrchestratorConfig {
     retryQueue?: Partial<RetryConfig>;
@@ -371,6 +373,12 @@ export class MeshOrchestrator extends EventEmitter {
                     return JSON.parse(content);
                 });
             this.log.info('agent_cards_loaded', { count: this.agentCards.length });
+        }
+        
+        // Static fallback to prevent empty-roster initialization
+        if (this.agentCards.length === 0) {
+            this.agentCards = Object.values(AgentCards);
+            this.log.info('agent_cards_loaded_fallback', { count: this.agentCards.length });
         }
     }
 
