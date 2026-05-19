@@ -83,6 +83,16 @@ export interface ClaimStats {
   Released: number;
 }
 
+export interface HookEvent {
+  name: string;
+  event: 'after_create' | 'before_run' | 'after_run' | 'before_remove';
+  success: boolean;
+  durationMs: number;
+  timedOut: boolean;
+  error?: string;
+  receivedAt: number;
+}
+
 export interface ReconcileAction {
   kind: 'stall_detected' | 'terminal_cleanup';
   taskHash: string;
@@ -130,6 +140,7 @@ export interface WarRoomState {
   retryEvents: RetryEvent[];
   retryPendingCount: number;
   reconcileActions: ReconcileAction[];
+  hookEvents: HookEvent[];
   flushCount: number;
   receiptsIssued: number;
   onNodesChange: (changes: NodeChange[]) => void;
@@ -148,6 +159,7 @@ export interface WarRoomState {
   recordClaimEvent: (evt: ClaimEvent) => void;
   recordRetryEvent: (evt: Omit<RetryEvent, 'receivedAt'>) => void;
   recordReconcileAction: (action: ReconcileAction) => void;
+  recordHookEvent: (evt: Omit<HookEvent, 'receivedAt'>) => void;
 }
 
 /**
@@ -182,6 +194,7 @@ export const useWarRoomStore = create<WarRoomState>((set, get) => ({
   retryEvents: [],
   retryPendingCount: 0,
   reconcileActions: [],
+  hookEvents: [],
   flushCount: 0,
   receiptsIssued: 0,
 
@@ -342,6 +355,12 @@ export const useWarRoomStore = create<WarRoomState>((set, get) => ({
   recordReconcileAction: (action) => {
     set((state) => ({
       reconcileActions: [action, ...state.reconcileActions].slice(0, 40),
+    }));
+  },
+
+  recordHookEvent: (evt) => {
+    set((state) => ({
+      hookEvents: [{ ...evt, receivedAt: Date.now() }, ...state.hookEvents].slice(0, 40),
     }));
   },
 

@@ -50,6 +50,7 @@ const SpatialWarRoom = () => {
   const recordClaimEvent = useWarRoomStore((s) => s.recordClaimEvent);
   const recordRetryEvent = useWarRoomStore((s) => s.recordRetryEvent);
   const recordReconcileAction = useWarRoomStore((s) => s.recordReconcileAction);
+  const recordHookEvent = useWarRoomStore((s) => s.recordHookEvent);
   const claimStats = useWarRoomStore((s) => s.claimStats);
   const retryPendingCount = useWarRoomStore((s) => s.retryPendingCount);
 
@@ -111,6 +112,9 @@ const SpatialWarRoom = () => {
           case 'reconcile_event':
             recordReconcileAction(message.data);
             break;
+          case 'hook_event':
+            recordHookEvent(message.data);
+            break;
         }
       } catch (err) {
         console.error('Failed to parse WS message', err);
@@ -121,7 +125,7 @@ const SpatialWarRoom = () => {
       wsRef.current = null;
       ws.close();
     };
-  }, [enqueueTelemetry, enqueueHardware, addTask, addVerificationReceipt, upsertAgentNode, addANXBriefing, recordPhaseEvent, recordClaimEvent, recordRetryEvent, recordReconcileAction]);
+  }, [enqueueTelemetry, enqueueHardware, addTask, addVerificationReceipt, upsertAgentNode, addANXBriefing, recordPhaseEvent, recordClaimEvent, recordRetryEvent, recordReconcileAction, recordHookEvent]);
 
   return (
     <div className="cockpit-grid h-screen w-screen overflow-hidden text-command-warm-white">

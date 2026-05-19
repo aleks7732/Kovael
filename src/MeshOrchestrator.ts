@@ -10,6 +10,7 @@ import { TaskClaimMachine, ClaimEvent, ClaimState } from './protocols/TaskClaimM
 import { RetryQueue, RetryDispatch } from './services/RetryQueue.js';
 import { Reconciler, ReconcileAction } from './services/Reconciler.js';
 import { WorkspaceManager } from './services/WorkspaceManager.js';
+import { HookRunner, HookResult } from './services/HookRunner.js';
 import crypto from 'node:crypto';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -33,6 +34,7 @@ export class MeshOrchestrator extends EventEmitter {
     private retryQueue: RetryQueue;
     private reconciler: Reconciler;
     private workspaces: WorkspaceManager;
+    private hooks: HookRunner;
     private agentCards: any[] = [];
     private nodeCache: Map<string, any> = new Map();
     private taskCache: any[] = [];
@@ -65,6 +67,7 @@ export class MeshOrchestrator extends EventEmitter {
         this.retryQueue.bind((goal) => this.injectTask(goal));
         this.reconciler = new Reconciler(this.claims);
         this.workspaces = new WorkspaceManager();
+        this.hooks = new HookRunner();
 
         this.loadAgentCards();
         this.initializeBus();
@@ -74,9 +77,11 @@ export class MeshOrchestrator extends EventEmitter {
         this.wireClaims();
         this.wireRetryQueue();
         this.wireReconciler();
+        this.wireHooks();
 
         this.retryQueue.start();
         this.reconciler.start();
+        this.registerDefaultHooks();
 
         this.server.listen(port, () => {
             console.log(`[MeshOrchestrator] Server listening on port ${port} (WS + SSE + /api/v1/state)`);
@@ -105,6 +110,33 @@ export class MeshOrchestrator extends EventEmitter {
                 nodeId: 'task-claim-machine',
                 data: evt,
             });
+        });
+    }
+
+    private registerDefaultHooks() {
+        // Sentinel logging hooks — purely observational, never abort. They
+        // make the §10.1 lifecycle visible in the cockpit feed from the
+        // moment the orchestrator boots, even before WORKFLOW.md adds more.
+        const log = (event: 'after_create' | 'before_run' | 'after_run' | 'before_remove') => ({
+            name: `kovael.sentinel.${event}`,
+            event,
+            fn: (ctx: { cycleId: string }) => {
+                console.log(`[Hook ${event}] cycle=${ctx.cycleId.slice(0, 8)}`);
+            },
+            timeoutMs: 5000,
+        });
+        this.hooks.register(log('after_create'));
+        this.hooks.register(log('before_run'));
+        this.hooks.register(log('after_run'));
+        this.hooks.register(log('before_remove'));
+    }
+
+    private wireHooks() {
+        this.hooks.on('hook_event', (r: HookResult) => {
+            if (!r.success) {
+                console.warn(`[Hook ${r.event}/${r.name}] FAILED in ${r.durationMs}ms (${r.timedOut ? 'timeout' : 'error'}): ${r.error}`);
+            }
+            this.broadcast({ type: 'hook_event', nodeId: 'hook-runner', data: r });
         });
     }
 
@@ -177,6 +209,7 @@ export class MeshOrchestrator extends EventEmitter {
                 root: this.workspaces.root(),
                 active: this.workspaces.activeCount(),
             },
+            hooks: this.hooks.stats(),
         };
         res.writeHead(200, {
             'Content-Type': 'application/json',
@@ -315,14 +348,29 @@ export class MeshOrchestrator extends EventEmitter {
         this.claims.markRunning(taskHash, cycleId);
 
         // Symphony §9 — every cycle gets an isolated workspace directory.
-        // The Triad runs in-process today, so cwd validation is dormant; the
-        // directory exists for future subprocess agents and for incremental
-        // state across retried attempts.
         let workspacePath: string | undefined;
         try {
             workspacePath = this.workspaces.acquire(cycleId);
         } catch (err) {
             console.warn(`[MeshOrchestrator] workspace acquire failed for ${cycleId}: ${(err as Error).message}`);
+        }
+
+        const hookCtx = { cycleId, taskHash, workspacePath, goal };
+
+        // Symphony §10.1 — after_create FAILS the cycle.
+        const afterCreate = await this.hooks.run('after_create', hookCtx);
+        if (this.hooks.shouldAbort('after_create', afterCreate)) {
+            if (workspacePath) this.workspaces.release(cycleId);
+            this.claims.release(taskHash, 'hook_after_create_aborted');
+            throw new Error('after_create hook aborted cycle');
+        }
+
+        // Symphony §10.1 — before_run FAILS the cycle.
+        const beforeRun = await this.hooks.run('before_run', hookCtx);
+        if (this.hooks.shouldAbort('before_run', beforeRun)) {
+            if (workspacePath) this.workspaces.release(cycleId);
+            this.claims.release(taskHash, 'hook_before_run_aborted');
+            throw new Error('before_run hook aborted cycle');
         }
 
         let receipt: VerificationReceipt;
@@ -341,6 +389,9 @@ export class MeshOrchestrator extends EventEmitter {
             throw err;
         }
 
+        // Symphony §10.1 — after_run failures are logged but do not block.
+        await this.hooks.run('after_run', { ...hookCtx, receiptId: receipt.id, status: receipt.status });
+
         if (receipt.status === 'verified') {
             this.claims.release(taskHash, 'cycle_succeeded');
         } else {
@@ -348,7 +399,12 @@ export class MeshOrchestrator extends EventEmitter {
             // applies — Symphony §3.1.
             this.retryQueue.enqueueFailure(taskHash, goal, `cycle_failed:${receipt.id}`);
         }
-        if (workspacePath) this.workspaces.release(cycleId);
+
+        if (workspacePath) {
+            // Symphony §10.1 — before_remove is advisory; failures don't block cleanup.
+            await this.hooks.run('before_remove', hookCtx);
+            this.workspaces.release(cycleId);
+        }
 
         this.emit('task_routed', { goal, receipt });
         
