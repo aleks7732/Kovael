@@ -50,7 +50,6 @@ function estimateTokens(text: string): number {
 
 export interface ShardOptions {
     keepRecent: number;
-    anxManifest?: string;
 }
 
 const VRAM_FLOOR_MB = 8192;
@@ -105,10 +104,6 @@ export class MevBridge extends EventEmitter {
         this.vramKnown = known;
     }
 
-    public getVramFree(): { freeMb: number; known: boolean } {
-        return { freeMb: this.vramFreeMb, known: this.vramKnown };
-    }
-
     public setRateLimitTracker(tracker: RateLimitTracker): void {
         this.rateLimits = tracker;
     }
@@ -125,12 +120,6 @@ export class MevBridge extends EventEmitter {
 
         const head: any[] = [];
         if (system && !tail.includes(system)) head.push(system);
-        if (opts.anxManifest) {
-            head.push({
-                role: 'system',
-                content: `<anx_manifest>\n${opts.anxManifest}\n</anx_manifest>`,
-            });
-        }
 
         return [...head, ...tail];
     }
@@ -172,7 +161,6 @@ export class MevBridge extends EventEmitter {
     public async execute(
         task: string,
         context: any[] = [],
-        opts: { anxManifest?: string } = {}
     ): Promise<VerificationReceipt> {
         const taskHash = crypto.createHash('sha256').update(task).digest('hex');
         const cycleId = crypto.randomUUID();
@@ -184,10 +172,7 @@ export class MevBridge extends EventEmitter {
         const routing = this.routeArchitect();
         // Record the dispatch for rate-limit accounting (no-op if tracker absent).
         this.rateLimits?.recordDispatch(routing.agent);
-        const shardedContext = this.shardContext(context, {
-            keepRecent: 3,
-            anxManifest: opts.anxManifest,
-        });
+        const shardedContext = this.shardContext(context);
 
         try {
             machine.transition(TriadPhase.DispatchToArchitect, { routedAgent: routing.agent, note: routing.rationale });
@@ -321,10 +306,5 @@ export class MevBridge extends EventEmitter {
             JSON.stringify(receipt.routing),
             JSON.stringify(receipt.phaseTrail),
         );
-    }
-
-    public queryReceipts(taskHash: string): VerificationReceipt[] {
-        const stmt = this.db.prepare('SELECT * FROM verification_receipts WHERE task_hash = ?');
-        return stmt.all(taskHash) as any[];
     }
 }

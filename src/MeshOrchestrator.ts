@@ -1,4 +1,4 @@
-import { EventEmitter } from 'events';
+import { EventEmitter } from 'node:events';
 import { WebSocketServer, WebSocket } from 'ws';
 import { DatabaseSync } from 'node:sqlite';
 import { MevBridge, VerificationReceipt } from './MevBridge.js';
@@ -165,12 +165,11 @@ export class MeshOrchestrator extends EventEmitter {
         // Sentinel logging hooks — purely observational, never abort. They
         // make the §10.1 lifecycle visible in the structured log feed from
         // the moment the orchestrator boots.
-        const orchestratorLog = this.log;
         const sentinel = (event: 'after_create' | 'before_run' | 'after_run' | 'before_remove') => ({
             name: `kovael.sentinel.${event}`,
             event,
             fn: (ctx: { cycleId: string; taskHash?: string }) => {
-                orchestratorLog.info('hook_sentinel', {
+                this.log.info('hook_sentinel', {
                     hook_event: event,
                     cycle_id: ctx.cycleId,
                     task_hash: ctx.taskHash,
@@ -393,7 +392,10 @@ export class MeshOrchestrator extends EventEmitter {
     }
 
     /**
-     * Broadcasts a message to all connected WebSocket clients and caches it for new arrivals.
+     * Broadcasts a message to all connected WebSocket clients and caches it
+     * for new arrivals. Stringifies the payload once outside the fan-out
+     * loop — at 1000 clients × 50 Hz telemetry that's 50k redundant
+     * serializations/sec saved.
      */
     public broadcast(payload: any) {
         // Cache management
@@ -401,11 +403,16 @@ export class MeshOrchestrator extends EventEmitter {
             this.nodeCache.set(payload.nodeId, payload);
         } else if (payload.type === 'new_task') {
             this.taskCache.push(payload);
+            // Cap replay history. Without this, every new WS client receives
+            // the entire mission history on connect — unbounded memory growth
+            // over a long-running session.
+            if (this.taskCache.length > 100) this.taskCache.shift();
         }
 
+        const frame = JSON.stringify(payload);
         this.wss.clients.forEach(client => {
             if (client.readyState === WebSocket.OPEN) {
-                client.send(JSON.stringify(payload));
+                client.send(frame);
             }
         });
     }

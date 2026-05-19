@@ -65,11 +65,6 @@ export class WorkspaceManager {
         return wsPath;
     }
 
-    /** Resolve the workspace path of an active cycle, or `undefined`. */
-    public pathFor(cycleId: string): string | undefined {
-        return this.active.get(cycleId);
-    }
-
     /**
      * Validate that a candidate filesystem path belongs to the supplied
      * cycle's workspace. Symphony §9 invariant: workspaces don't leak.
