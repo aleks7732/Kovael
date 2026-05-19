@@ -42,24 +42,14 @@ const SpatialWarRoom = () => {
   const onNodesChange = useWarRoomStore((s) => s.onNodesChange);
   const onEdgesChange = useWarRoomStore((s) => s.onEdgesChange);
   const onConnect = useWarRoomStore((s) => s.onConnect);
-  const enqueueTelemetry = useWarRoomStore((s) => s.enqueueTelemetry);
-  const enqueueHardware = useWarRoomStore((s) => s.enqueueHardware);
   const flushPressureValve = useWarRoomStore((s) => s.flushPressureValve);
-  const addVerificationReceipt = useWarRoomStore((s) => s.addVerificationReceipt);
-  const upsertAgentNode = useWarRoomStore((s) => s.upsertAgentNode);
-  const addTask = useWarRoomStore((s) => s.addTask);
-  const addANXBriefing = useWarRoomStore((s) => s.addANXBriefing);
-  const recordPhaseEvent = useWarRoomStore((s) => s.recordPhaseEvent);
-  const recordClaimEvent = useWarRoomStore((s) => s.recordClaimEvent);
-  const recordRetryEvent = useWarRoomStore((s) => s.recordRetryEvent);
-  const recordReconcileAction = useWarRoomStore((s) => s.recordReconcileAction);
-  const recordHookEvent = useWarRoomStore((s) => s.recordHookEvent);
-  const recordTokenUpdate = useWarRoomStore((s) => s.recordTokenUpdate);
-  const recordRateLimit = useWarRoomStore((s) => s.recordRateLimit);
   const tokenTotals = useWarRoomStore((s) => s.tokenTotals);
   const rateLimits = useWarRoomStore((s) => s.rateLimits);
   const claimStats = useWarRoomStore((s) => s.claimStats);
   const retryPendingCount = useWarRoomStore((s) => s.retryPendingCount);
+  const interAgentChatEnabled = useWarRoomStore((s) => s.interAgentChatEnabled);
+  const interAgentChatMode = useWarRoomStore((s) => s.interAgentChatMode);
+  const interAgentMessages = useWarRoomStore((s) => s.interAgentMessages);
 
   const meshStatus = useMemo<'live' | 'syncing' | 'offline'>(() => {
     if (agentRoster.length === 0 && nodes.length <= 1) return 'syncing';
@@ -80,59 +70,89 @@ const SpatialWarRoom = () => {
     ws.send(JSON.stringify({ type: 'mission_inject', goal, origin: 'cockpit' }));
   }, []);
 
+  const toggleInterAgentChat = useCallback((enabled: boolean) => {
+    const ws = wsRef.current;
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    ws.send(JSON.stringify({ type: 'toggle_inter_agent_chat', enabled }));
+  }, []);
+
+  const changeInterAgentChatMode = useCallback((mode: 'technical' | 'interests') => {
+    const ws = wsRef.current;
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    ws.send(JSON.stringify({ type: 'set_inter_agent_chat_mode', mode }));
+  }, []);
+
   useEffect(() => {
     let active = true;
     let reconnectTimeout: any = null;
+    let currentWs: WebSocket | null = null;
 
     const connect = () => {
       console.log('Connecting to WebSocket...');
       const ws = new WebSocket(ORCHESTRATOR_URL);
+      currentWs = ws;
       wsRef.current = ws;
 
       ws.onmessage = (event) => {
         if (!active) return;
         try {
           const message = JSON.parse(event.data);
+          const store = useWarRoomStore.getState();
 
           switch (message.type) {
             case 'telemetry':
-              enqueueTelemetry(message.nodeId, message.data);
+              store.enqueueTelemetry(message.nodeId, message.data);
               break;
             case 'hardware_telemetry':
-              enqueueHardware(message.data);
+              store.enqueueHardware(message.data);
               break;
             case 'new_task':
-              addTask(message.task);
+              store.addTask(message.task);
               break;
             case 'agent_card':
-              upsertAgentNode(message.data);
+              store.upsertAgentNode(message.data);
               break;
             case 'verification_receipt':
-              addVerificationReceipt(message.nodeId, message.data);
+              store.addVerificationReceipt(message.nodeId, message.data);
               break;
             case 'anx_briefing':
-              if (typeof message.data === 'string') addANXBriefing(message.data);
+              if (typeof message.data === 'string') store.addANXBriefing(message.data);
               break;
             case 'phase_change':
-              recordPhaseEvent(message.data);
+              store.recordPhaseEvent(message.data);
               break;
             case 'claim_event':
-              recordClaimEvent(message.data);
+              store.recordClaimEvent(message.data);
               break;
             case 'retry_event':
-              recordRetryEvent(message.data);
+              store.recordRetryEvent(message.data);
               break;
             case 'reconcile_event':
-              recordReconcileAction(message.data);
+              store.recordReconcileAction(message.data);
               break;
             case 'hook_event':
-              recordHookEvent(message.data);
+              store.recordHookEvent(message.data);
               break;
             case 'token_update':
-              if (message.data?.totals) recordTokenUpdate(message.data.totals);
+              if (message.data?.totals) store.recordTokenUpdate(message.data.totals);
               break;
             case 'rate_limit_update':
-              if (message.data?.agentId) recordRateLimit(message.data);
+              if (message.data?.agentId) store.recordRateLimit(message.data);
+              break;
+            case 'inter_agent_chat_state':
+              if (message.data) {
+                if (typeof message.data.enabled === 'boolean') {
+                  store.setInterAgentChatEnabled(message.data.enabled);
+                }
+                if (message.data.mode) {
+                  store.setInterAgentChatMode(message.data.mode);
+                }
+              }
+              break;
+            case 'inter_agent_message':
+              if (message.data) {
+                store.addInterAgentMessage(message.data);
+              }
               break;
           }
         } catch (err) {
@@ -141,7 +161,9 @@ const SpatialWarRoom = () => {
       };
 
       ws.onclose = () => {
-        wsRef.current = null;
+        if (wsRef.current === ws) {
+          wsRef.current = null;
+        }
         if (active) {
           console.log('WebSocket closed. Reconnecting in 3 seconds...');
           reconnectTimeout = setTimeout(connect, 3000);
@@ -158,12 +180,14 @@ const SpatialWarRoom = () => {
     return () => {
       active = false;
       if (reconnectTimeout) clearTimeout(reconnectTimeout);
-      if (wsRef.current) {
-        wsRef.current.close();
+      if (currentWs) {
+        currentWs.close();
+      }
+      if (wsRef.current === currentWs) {
         wsRef.current = null;
       }
     };
-  }, [enqueueTelemetry, enqueueHardware, addTask, addVerificationReceipt, upsertAgentNode, addANXBriefing, recordPhaseEvent, recordClaimEvent, recordRetryEvent, recordReconcileAction, recordHookEvent, recordTokenUpdate, recordRateLimit]);
+  }, []);
 
   return (
     <div className="cockpit-grid h-screen w-screen overflow-hidden text-command-warm-white">
@@ -223,7 +247,16 @@ const SpatialWarRoom = () => {
           </ReactFlow>
         </main>
 
-        <AgentRosterPanel roster={agentRoster} hardware={hardware} rateLimits={rateLimits} />
+        <AgentRosterPanel
+          roster={agentRoster}
+          hardware={hardware}
+          rateLimits={rateLimits}
+          interAgentChatEnabled={interAgentChatEnabled}
+          interAgentChatMode={interAgentChatMode}
+          interAgentMessages={interAgentMessages}
+          onToggleInterAgentChat={toggleInterAgentChat}
+          onChangeInterAgentChatMode={changeInterAgentChatMode}
+        />
       </div>
 
       <PhaseFeed

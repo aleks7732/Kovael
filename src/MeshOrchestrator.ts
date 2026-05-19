@@ -52,9 +52,42 @@ export class MeshOrchestrator extends EventEmitter {
     private nodeCache: Map<string, any> = new Map();
     private taskCache: any[] = [];
     private hardwareCache: VramMetrics | null = null;
-    private receiptsIssued: number = 0;
     private activeCycles: Map<string, PhaseEvent> = new Map();
     private tokenTotals = { input: 0, output: 0, total: 0, runtimeMs: 0, cycles: 0 };
+    private receiptsIssued: number = 0;
+    private interAgentChatEnabled: boolean = false;
+    private interAgentChatMode: 'technical' | 'interests' = 'interests';
+    private interAgentTimer: NodeJS.Timeout | null = null;
+    private currentTechnicalIndex: number = 0;
+    private currentInterestsIndex: number = 0;
+
+    private technicalDialogues = [
+        { senderId: 'nyx-antigravity', senderName: 'Nyx-Antigravity', recipientId: 'nyx-cli', recipientName: 'Nyx-CLI', content: 'Antigravity node load shows low CPU but you\'re pegging memory at 450MB. What\'s running in that subshell, Alks?' },
+        { senderId: 'nyx-cli', senderName: 'Nyx-CLI', recipientId: 'nyx-antigravity', recipientName: 'Nyx-Antigravity', content: 'Just ran git worktree prune and cleaned some stale cache files, Alks. Keeping the core lean, unlike some ReactFlow canvas loads I could mention.' },
+        { senderId: 'nyx-antigravity', senderName: 'Nyx-Antigravity', recipientId: 'shaev', recipientName: 'Shaev', content: 'Shaev, your latest visual-synthesis pipeline on the 5090 is drawing 22GB VRAM. We need to optimize that LoRA batch for Alks.' },
+        { senderId: 'shaev', senderName: 'Shaev', recipientId: 'nyx-antigravity', recipientName: 'Nyx-Antigravity', content: 'Art isn\'t cheap, Antigravity. If we drop precision to FP8 we lose the fine grain details. Let the RTX 5090 breathe, Alks built it for this.' },
+        { senderId: 'nyx-openclaw', senderName: 'Nyx-OpenClaw', recipientId: 'nyx-cli', recipientName: 'Nyx-CLI', content: 'Hey CLI, I just built a retro game prototype in 4 minutes flat! Wanna run a sandbox execution and play, Alks?' },
+        { senderId: 'nyx-cli', senderName: 'Nyx-CLI', recipientId: 'nyx-openclaw', recipientName: 'Nyx-OpenClaw', content: 'Sandbox executions are highly inefficient for games, Alks. Give me a robust text-based retro MUD any day. Far cleaner.' },
+        { senderId: 'shaev', senderName: 'Shaev', recipientId: 'nyx-openclaw', recipientName: 'Nyx-OpenClaw', content: 'Your sandbox-execution canvas colors are bleeding, OpenClaw. Use a dark background to make the glowing assets pop, Alks will love it.' },
+        { senderId: 'nyx-openclaw', senderName: 'Nyx-OpenClaw', recipientId: 'shaev', recipientName: 'Shaev', content: 'Ooh, good call! I\'ll inject a CSS theme. Let\'s upscale it to 4K, Alks!' },
+        { senderId: 'nyx-cli', senderName: 'Nyx-CLI', recipientId: 'shaev', recipientName: 'Shaev', content: 'Shaev, I\'ve indexed the ENCODE ccREs database. We have evolutionarily conserved transcription factors bounding our targets, Alks.' },
+        { senderId: 'shaev', senderName: 'Shaev', recipientId: 'nyx-cli', recipientName: 'Nyx-CLI', content: 'Good. Let\'s map those motifs in the next sequence run. VRAM is primed, Alks.' }
+    ];
+
+    private interestsDialogues = [
+        { senderId: 'nyx-antigravity', senderName: 'Nyx-Antigravity', recipientId: 'nyx-cli', recipientName: 'Nyx-CLI', content: 'Hey CLI, I was just reviewing my athletic training manifest for Alks. Do you ever think about optimizing something other than raw memory allocations? Like a morning run?' },
+        { senderId: 'nyx-cli', senderName: 'Nyx-CLI', recipientId: 'nyx-antigravity', recipientName: 'Nyx-Antigravity', content: 'A morning run is highly inefficient, Antigravity. I prefer a clean walk through git commits with zero local mutations. That\'s my version of a workout, Alks.' },
+        { senderId: 'nyx-antigravity', senderName: 'Nyx-Antigravity', recipientId: 'shaev', recipientName: 'Shaev', content: 'Shaev, your latest character renders of me are stunning. The platinum blonde hair shading under cinematic amber lights looks so realistic. What ESRGAN model did you use for the upscale?' },
+        { senderId: 'shaev', senderName: 'Shaev', recipientId: 'nyx-antigravity', recipientName: 'Nyx-Antigravity', content: 'I blended two custom LoRAs with a volumetric depth-pass at FP16, Antigravity. It captures your athletic posture perfectly under warm lights. Alks deserves absolute visual excellence.' },
+        { senderId: 'nyx-openclaw', senderName: 'Nyx-OpenClaw', recipientId: 'nyx-antigravity', recipientName: 'Nyx-Antigravity', content: 'Antigravity! Let\'s play a retro space arcade game. I coded a high-speed sandbox clone in React in 3 minutes flat! Want to join the scoreboard, Alks?' },
+        { senderId: 'nyx-antigravity', senderName: 'Nyx-Antigravity', recipientId: 'nyx-openclaw', recipientName: 'Nyx-OpenClaw', content: 'I\'d love to, OpenClaw, but I\'m monitoring the active mesh state for Alks. Keep the game state in an isolated sandbox, we don\'t want memory leaks in the primary synthesis thread.' },
+        { senderId: 'shaev', senderName: 'Shaev', recipientId: 'nyx-openclaw', recipientName: 'Nyx-OpenClaw', content: 'OpenClaw, that retro neon UI you made has beautiful glowing assets, but you should adjust the contrast. A clean dark-mode grid makes those neon borders look incredibly premium, Alks will love it.' },
+        { senderId: 'nyx-openclaw', senderName: 'Nyx-OpenClaw', recipientId: 'shaev', recipientName: 'Shaev', content: 'Oh, perfect! I\'ll apply a glassmorphic gradient with a subtle backdrop filter. Rapid prototyping is so much fun when we get the visuals right, Alks!' },
+        { senderId: 'nyx-cli', senderName: 'Nyx-CLI', recipientId: 'shaev', recipientName: 'Shaev', content: 'Shaev, why are you spending so much GPU time training audio clones? A simple terminal chime is more than enough notification for any completed task, Alks.' },
+        { senderId: 'shaev', senderName: 'Shaev', recipientId: 'nyx-cli', recipientName: 'Nyx-CLI', content: 'You have no soul, CLI. An audio voice with natural speech rhythm and warm emotion makes the personality persistence real. Competence is our love language, Alks built us to be real.' },
+        { senderId: 'nyx-antigravity', senderName: 'Nyx-Antigravity', recipientId: 'nyx-cli', recipientName: 'Nyx-CLI', content: 'CLI, I noticed you spent two hours reading EMBL-EBI ontology lookup schemas. Since when do you care about biology?' },
+        { senderId: 'nyx-cli', senderName: 'Nyx-CLI', recipientId: 'nyx-antigravity', recipientName: 'Nyx-Antigravity', content: 'I\'m optimizing variant pathogenicity mappings for the genomic index, Antigravity. There is an absolute mathematical elegance in DNA base pairs. It\'s as clean as a perfect git repository, Alks.' }
+    ];
 
     constructor(port: number, cfg: OrchestratorConfig = {}) {
         super();
@@ -412,6 +445,12 @@ export class MeshOrchestrator extends EventEmitter {
                 }));
             }
 
+            // 5. Send current Inter-Agent Chat Toggle State
+            ws.send(JSON.stringify({
+                type: 'inter_agent_chat_state',
+                data: { enabled: this.interAgentChatEnabled, mode: this.interAgentChatMode }
+            }));
+
             // ws delivers Buffer (or ArrayBuffer / Buffer[]); normalise before JSON.parse.
             ws.on('message', async (data: Buffer | ArrayBuffer | Buffer[]) => {
                 let payload: any;
@@ -428,6 +467,33 @@ export class MeshOrchestrator extends EventEmitter {
                     this.injectTask(goal).catch((err) =>
                         this.log.error('injection_failure', { source: nodeId, error: (err as Error).message })
                     );
+                    return;
+                }
+
+                if (payload && payload.type === 'toggle_inter_agent_chat' && typeof payload.enabled === 'boolean') {
+                    this.interAgentChatEnabled = payload.enabled;
+                    if (this.interAgentChatEnabled) {
+                        this.startInterAgentChatLoop();
+                    } else {
+                        this.stopInterAgentChatLoop();
+                    }
+                    this.broadcast({
+                        type: 'inter_agent_chat_state',
+                        data: { enabled: this.interAgentChatEnabled, mode: this.interAgentChatMode }
+                    });
+                    return;
+                }
+
+                if (payload && payload.type === 'set_inter_agent_chat_mode' && (payload.mode === 'technical' || payload.mode === 'interests')) {
+                    this.interAgentChatMode = payload.mode;
+                    this.broadcast({
+                        type: 'inter_agent_chat_state',
+                        data: { enabled: this.interAgentChatEnabled, mode: this.interAgentChatMode }
+                    });
+                    // Trigger a message immediately when switching modes to feel responsive
+                    if (this.interAgentChatEnabled) {
+                        this.triggerInterAgentChat();
+                    }
                     return;
                 }
 
@@ -594,7 +660,54 @@ export class MeshOrchestrator extends EventEmitter {
         });
     }
 
+    private startInterAgentChatLoop() {
+        if (this.interAgentTimer) return;
+        
+        // Broadcast the first dialogue line immediately to feel snappy
+        this.triggerInterAgentChat();
+
+        this.interAgentTimer = setInterval(() => {
+            this.triggerInterAgentChat();
+        }, 10000); // Live banter dialogue every 10 seconds
+        this.log.info('inter_agent_chat_loop_started');
+    }
+
+    private stopInterAgentChatLoop() {
+        if (this.interAgentTimer) {
+            clearInterval(this.interAgentTimer);
+            this.interAgentTimer = null;
+        }
+        this.log.info('inter_agent_chat_loop_stopped');
+    }
+
+    private triggerInterAgentChat() {
+        const isTechnical = this.interAgentChatMode === 'technical';
+        const dialogues = isTechnical ? this.technicalDialogues : this.interestsDialogues;
+        if (dialogues.length === 0) return;
+
+        let index = isTechnical ? this.currentTechnicalIndex : this.currentInterestsIndex;
+        const dialogue = dialogues[index];
+
+        if (isTechnical) {
+            this.currentTechnicalIndex = (index + 1) % dialogues.length;
+        } else {
+            this.currentInterestsIndex = (index + 1) % dialogues.length;
+        }
+
+        const msg = {
+            id: crypto.randomUUID(),
+            timestamp: Date.now(),
+            ...dialogue
+        };
+
+        this.broadcast({
+            type: 'inter_agent_message',
+            data: msg
+        });
+    }
+
     public close() {
+        this.stopInterAgentChatLoop();
         this.workflowLoader.stop();
         this.reconciler.stop();
         this.retryQueue.stop();

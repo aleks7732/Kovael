@@ -162,6 +162,17 @@ export interface WarRoomState {
   rateLimits: Record<string, RateLimitSnapshot>;
   flushCount: number;
   receiptsIssued: number;
+  interAgentChatEnabled: boolean;
+  interAgentChatMode: 'technical' | 'interests';
+  interAgentMessages: Array<{
+    id: string;
+    timestamp: number;
+    senderId: string;
+    senderName: string;
+    recipientId: string;
+    recipientName: string;
+    content: string;
+  }>;
   onNodesChange: (changes: NodeChange[]) => void;
   onEdgesChange: (changes: EdgeChange[]) => void;
   onConnect: (connection: Connection) => void;
@@ -181,6 +192,9 @@ export interface WarRoomState {
   recordHookEvent: (evt: Omit<HookEvent, 'receivedAt'>) => void;
   recordTokenUpdate: (totals: TokenTotals) => void;
   recordRateLimit: (snapshot: RateLimitSnapshot) => void;
+  setInterAgentChatEnabled: (enabled: boolean) => void;
+  setInterAgentChatMode: (mode: 'technical' | 'interests') => void;
+  addInterAgentMessage: (msg: any) => void;
 }
 
 /**
@@ -220,6 +234,9 @@ export const useWarRoomStore = create<WarRoomState>((set, get) => ({
   rateLimits: {},
   flushCount: 0,
   receiptsIssued: 0,
+  interAgentChatEnabled: false,
+  interAgentChatMode: 'interests',
+  interAgentMessages: [],
 
   onNodesChange: (changes: NodeChange[]) => {
     set({
@@ -474,6 +491,14 @@ export const useWarRoomStore = create<WarRoomState>((set, get) => ({
     set((state) => ({
       anxBriefings: [briefing, ...state.anxBriefings].slice(0, 16),
       nodes: [...state.nodes, briefingNode],
+    }));
+  },
+
+  setInterAgentChatEnabled: (enabled: boolean) => set({ interAgentChatEnabled: enabled }),
+  setInterAgentChatMode: (mode: 'technical' | 'interests') => set({ interAgentChatMode: mode }),
+  addInterAgentMessage: (msg: any) => {
+    set((state) => ({
+      interAgentMessages: [...state.interAgentMessages, msg].slice(-50),
     }));
   },
 }));
