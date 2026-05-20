@@ -1,0 +1,199 @@
+// @vitest-environment happy-dom
+import { describe, it, expect, afterEach, vi } from 'vitest';
+import { render, cleanup, screen, fireEvent } from '@testing-library/react';
+import { StoppingCard } from '../../src/components/theater/StoppingCard';
+import { TraceBreadcrumb } from '../../src/components/theater/TraceBreadcrumb';
+import { Stage } from '../../src/components/theater/Stage';
+import type { AgentRosterCard } from '../../src/store/useWarRoomStore';
+
+afterEach(() => cleanup());
+
+// ---------------------------------------------------------------------------
+// StoppingCard — renders the consensus banner when adaptive stability fires.
+// ---------------------------------------------------------------------------
+describe('StoppingCard', () => {
+    it('returns null when no criterion is supplied (no banner spam pre-convene)', () => {
+        const { container } = render(<StoppingCard criterion={null} />);
+        expect(container.firstChild).toBeNull();
+    });
+
+    it('renders the verifier mention from the criterion payload', () => {
+        render(
+            <StoppingCard
+                criterion={{
+                    agentId: 'shaev',
+                    reason: 'adaptive_stability_reached:delta=0.0392<0.05',
+                    confidence: 0.82,
+                }}
+            />,
+        );
+        expect(screen.getByText('VERIFIER CONSENSUS REACHED')).toBeTruthy();
+        // The verifier mention renders inside the prose, NOT as a bare span,
+        // so we match on a substring instead of an exact text node.
+        const banner = screen.getByText(/recorded a stable stopping condition/i);
+        expect(banner.textContent).toContain('@shaev');
+    });
+
+    it('formats the confidence as a rounded percentage (0..100)', () => {
+        render(
+            <StoppingCard criterion={{ agentId: 'shaev', reason: 'adaptive_stability_reached:x', confidence: 0.8245 }} />,
+        );
+        expect(screen.getByText(/CONFIDENCE:\s*82%/)).toBeTruthy();
+    });
+
+    it('labels adaptive-stability metric distinctly from a hard-cap stop', () => {
+        render(
+            <StoppingCard criterion={{ agentId: 'shaev', reason: 'adaptive_stability_reached:delta=0.04', confidence: 0.9 }} />,
+        );
+        expect(screen.getByText(/ADAPTIVE STABILITY \(arXiv 2510\.12697\)/)).toBeTruthy();
+    });
+
+    it('shows ROUND TIMEOUT when the stop came from the hard cap', () => {
+        render(
+            <StoppingCard criterion={{ agentId: 'nyx-cli', reason: 'hard_cap_reached:rounds=6', confidence: 0.4 }} />,
+        );
+        expect(screen.getByText(/ROUND TIMEOUT/)).toBeTruthy();
+    });
+
+    it('humanises the rationale prefix so the operator sees prose, not snake_case', () => {
+        render(
+            <StoppingCard
+                criterion={{ agentId: 'shaev', reason: 'adaptive_stability_reached:delta=0.04<0.05', confidence: 0.7 }}
+            />,
+        );
+        // The mangled prefix gets rewritten to a human label
+        expect(screen.getByText(/Adaptive Stability Met:/)).toBeTruthy();
+    });
+});
+
+// ---------------------------------------------------------------------------
+// TraceBreadcrumb — placeholder until Day 7 OTel wiring; verify it survives.
+// ---------------------------------------------------------------------------
+describe('TraceBreadcrumb', () => {
+    it('renders the OTEL TRACE pill with the topic id as title text', () => {
+        render(<TraceBreadcrumb topicId="topic-abcd-1234" />);
+        const pill = screen.getByText('OTEL TRACE').closest('div');
+        expect(pill).toBeTruthy();
+        expect(pill!.getAttribute('title')).toContain('topic-abcd-1234');
+    });
+
+    it('emits a console breadcrumb on click (will route to the trace view on Day 7)', () => {
+        const spy = vi.spyOn(console, 'log').mockImplementation(() => {});
+        render(<TraceBreadcrumb topicId="topic-xyz" />);
+        const pill = screen.getByText('OTEL TRACE');
+        fireEvent.click(pill);
+        expect(spy).toHaveBeenCalled();
+        const message = spy.mock.calls[0]?.[0] as string;
+        expect(message).toContain('topic-xyz');
+        spy.mockRestore();
+    });
+});
+
+// ---------------------------------------------------------------------------
+// Stage — the round-table layout. Tests cover empty-roster, single seat,
+// active-speaker highlight, name label, and the live-chair beacon dot.
+// ---------------------------------------------------------------------------
+
+function makeCard(id: string, overrides: Partial<AgentRosterCard> = {}): AgentRosterCard {
+    return {
+        id,
+        name: id,
+        provider: 'test',
+        status: 'online',
+        ...overrides,
+    };
+}
+
+describe('Stage', () => {
+    it('renders no seats but keeps the table core for an empty roster', () => {
+        render(<Stage roster={[]} activeSpeakerId={null} />);
+        expect(screen.getByText('STANDBY')).toBeTruthy();
+    });
+
+    it('switches the core to CONVENING when there is an active speaker', () => {
+        render(
+            <Stage
+                roster={[makeCard('nyx-antigravity', { name: 'Nyx-Antigravity' })]}
+                activeSpeakerId="nyx-antigravity"
+            />,
+        );
+        expect(screen.getByText('CONVENING')).toBeTruthy();
+    });
+
+    it('caps the visible seating at 9 even when more agents are on the roster', () => {
+        const ten = Array.from({ length: 10 }, (_, i) => makeCard(`agent-${i}`));
+        const { container } = render(<Stage roster={ten} activeSpeakerId={null} />);
+        // Each rendered seat carries the agent's display name in a label
+        // chip; the table core itself is NOT a seat. Count seat name chips.
+        const seatLabels = container.querySelectorAll('.max-w-\\[80px\\]');
+        expect(seatLabels.length).toBe(9);
+    });
+
+    it('strips the nyx- prefix from the display name chip', () => {
+        render(
+            <Stage
+                roster={[makeCard('nyx-codex', { name: 'nyx-codex' })]}
+                activeSpeakerId={null}
+            />,
+        );
+        // The label chip should show 'codex', not 'nyx-codex'
+        expect(screen.getByText('codex')).toBeTruthy();
+    });
+
+    it('renders the avatar image when portrait_url is supplied', () => {
+        render(
+            <Stage
+                roster={[makeCard('nyx-antigravity', { name: 'Nyx-Antigravity', portrait_url: '/agents/nyx-antigravity.png' })]}
+                activeSpeakerId={null}
+            />,
+        );
+        const img = screen.getByAltText('Nyx-Antigravity') as HTMLImageElement;
+        expect(img.tagName.toLowerCase()).toBe('img');
+        expect(img.getAttribute('src')).toBe('/agents/nyx-antigravity.png');
+    });
+
+    it('falls back to the SVG identity avatar when no portrait_url is given', () => {
+        const { container } = render(
+            <Stage
+                roster={[makeCard('newcomer', { name: 'newcomer' })]}
+                activeSpeakerId={null}
+            />,
+        );
+        // AgentAvatarFallback renders an <svg> with aria-label
+        const svg = container.querySelector('svg[aria-label*="newcomer"]');
+        expect(svg).not.toBeNull();
+    });
+
+    it('shows the live-chair beacon dot in emerald when chair.presence is live', () => {
+        const { container } = render(
+            <Stage
+                roster={[
+                    makeCard('nyx-cli', {
+                        chair: { sessionId: 's1', claimedAt: 1, lastBeaconAt: Date.now(), presence: 'live' },
+                    }),
+                ]}
+                activeSpeakerId={null}
+            />,
+        );
+        const dot = container.querySelector('span[title^="Chair Status: Live"]');
+        expect(dot).not.toBeNull();
+    });
+
+    it('places seats in deterministic alphabetical order around the table', () => {
+        const { container } = render(
+            <Stage
+                roster={[
+                    makeCard('zeta'),
+                    makeCard('alpha'),
+                    makeCard('mu'),
+                ]}
+                activeSpeakerId={null}
+            />,
+        );
+        const labels = Array.from(container.querySelectorAll('.max-w-\\[80px\\] span:first-child')).map(
+            (n) => n.textContent,
+        );
+        // Stage sorts by id locale-compare → alpha, mu, zeta
+        expect(labels).toEqual(['alpha', 'mu', 'zeta']);
+    });
+});
