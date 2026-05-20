@@ -72,8 +72,9 @@ function stubFetchOk(body: any = {}) {
         json: () => Promise.resolve(body),
         text: () => Promise.resolve(''),
     });
-    // @ts-expect-error happy-dom global
-    global.fetch = fetchMock;
+    // vi.fn()'s loose signature doesn't structurally match the strict
+    // global `fetch` overload; cast through unknown for the typecheck.
+    global.fetch = fetchMock as unknown as typeof fetch;
     return fetchMock;
 }
 
@@ -190,8 +191,7 @@ describe('ConversationTheater', () => {
     });
 
     it('does not crash if the mount-time state prefetch fails (offline orchestrator)', () => {
-        // @ts-expect-error happy-dom global
-        global.fetch = vi.fn().mockRejectedValue(new Error('connection refused'));
+        global.fetch = vi.fn().mockRejectedValue(new Error('connection refused')) as unknown as typeof fetch;
         const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
         expect(() => render(<ConversationTheater />)).not.toThrow();
         warn.mockRestore();

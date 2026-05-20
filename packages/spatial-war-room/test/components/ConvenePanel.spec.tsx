@@ -26,8 +26,11 @@ describe('ConvenePanel', () => {
 
     beforeEach(() => {
         fetchMock = vi.fn();
-        // @ts-expect-error happy-dom global
-        global.fetch = fetchMock;
+        // vi.fn()'s loose signature doesn't structurally match the strict
+        // global `fetch` overload; cast through unknown so the test config
+        // type-check (tsconfig.test.json) stays happy without weakening
+        // production code.
+        global.fetch = fetchMock as unknown as typeof fetch;
     });
 
     afterEach(() => {
