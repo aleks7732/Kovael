@@ -21,6 +21,7 @@ import { ClaimsStrip } from './components/ClaimsStrip.js';
 import { ConnectionBanner } from './components/ConnectionBanner.js';
 import { ToastStack } from './components/ToastStack.js';
 import { CycleInspector } from './components/CycleInspector.js';
+import { StatusLegend } from './components/StatusLegend.js';
 
 const nodeTypes = {
   agentHeartbeat: AgentHeartbeatNode,
@@ -291,6 +292,7 @@ const SpatialWarRoom = () => {
         hookEvents={hookEvents}
         onClose={() => setSelectedCycle(null)}
       />
+      <StatusLegend />
     </div>
   );
 };
