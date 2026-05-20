@@ -18,6 +18,7 @@ import { MissionBriefPanel } from './components/MissionBriefPanel.js';
 import { AgentRosterPanel } from './components/AgentRosterPanel.js';
 import { PhaseFeed } from './components/PhaseFeed.js';
 import { ClaimsStrip } from './components/ClaimsStrip.js';
+import { ConnectionBanner } from './components/ConnectionBanner.js';
 
 const nodeTypes = {
   agentHeartbeat: AgentHeartbeatNode,
@@ -202,6 +203,7 @@ const SpatialWarRoom = () => {
 
   return (
     <div className="cockpit-grid h-screen w-screen overflow-hidden text-command-warm-white">
+      <ConnectionBanner wsConnected={wsConnected} />
       <TopBar
         meshStatus={meshStatus}
         connectedClients={1}
