@@ -51,10 +51,15 @@ const SpatialWarRoom = () => {
   const interAgentChatMode = useWarRoomStore((s) => s.interAgentChatMode);
   const interAgentMessages = useWarRoomStore((s) => s.interAgentMessages);
 
+  const wsConnected = useWarRoomStore((s) => s.wsConnected);
   const meshStatus = useMemo<'live' | 'syncing' | 'offline'>(() => {
+    // Offline if the WS is down — that's the only state where the cockpit
+    // genuinely has no live data. Syncing covers the cold-start window
+    // where WS is up but the orchestrator hasn't pushed agent cards yet.
+    if (!wsConnected) return 'offline';
     if (agentRoster.length === 0 && nodes.length <= 1) return 'syncing';
     return 'live';
-  }, [agentRoster.length, nodes.length]);
+  }, [wsConnected, agentRoster.length, nodes.length]);
 
   // 100ms Telemetry Pressure Valve — Module A
   useEffect(() => {
@@ -92,6 +97,11 @@ const SpatialWarRoom = () => {
       const ws = new WebSocket(ORCHESTRATOR_URL);
       currentWs = ws;
       wsRef.current = ws;
+
+      ws.onopen = () => {
+        if (!active) return;
+        useWarRoomStore.getState().setWsConnected(true);
+      };
 
       ws.onmessage = (event) => {
         if (!active) return;
@@ -164,6 +174,7 @@ const SpatialWarRoom = () => {
         if (wsRef.current === ws) {
           wsRef.current = null;
         }
+        useWarRoomStore.getState().setWsConnected(false);
         if (active) {
           console.log('WebSocket closed. Reconnecting in 3 seconds...');
           reconnectTimeout = setTimeout(connect, 3000);

@@ -157,6 +157,8 @@ export interface WarRoomState {
   retryEvents: RetryEvent[];
   retryPendingCount: number;
   reconcileActions: ReconcileAction[];
+  /** True when the cockpit's WS to the orchestrator is OPEN. False during reconnect. */
+  wsConnected: boolean;
   hookEvents: HookEvent[];
   tokenTotals: TokenTotals;
   rateLimits: Record<string, RateLimitSnapshot>;
@@ -192,6 +194,7 @@ export interface WarRoomState {
   recordHookEvent: (evt: Omit<HookEvent, 'receivedAt'>) => void;
   recordTokenUpdate: (totals: TokenTotals) => void;
   recordRateLimit: (snapshot: RateLimitSnapshot) => void;
+  setWsConnected: (connected: boolean) => void;
   setInterAgentChatEnabled: (enabled: boolean) => void;
   setInterAgentChatMode: (mode: 'technical' | 'interests') => void;
   addInterAgentMessage: (msg: any) => void;
@@ -234,6 +237,7 @@ export const useWarRoomStore = create<WarRoomState>((set, get) => ({
   rateLimits: {},
   flushCount: 0,
   receiptsIssued: 0,
+  wsConnected: false,
   interAgentChatEnabled: false,
   interAgentChatMode: 'interests',
   interAgentMessages: [],
@@ -494,6 +498,7 @@ export const useWarRoomStore = create<WarRoomState>((set, get) => ({
     }));
   },
 
+  setWsConnected: (connected: boolean) => set({ wsConnected: connected }),
   setInterAgentChatEnabled: (enabled: boolean) => set({ interAgentChatEnabled: enabled }),
   setInterAgentChatMode: (mode: 'technical' | 'interests') => set({ interAgentChatMode: mode }),
   addInterAgentMessage: (msg: any) => {
