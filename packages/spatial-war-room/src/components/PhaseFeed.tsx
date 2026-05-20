@@ -11,6 +11,7 @@ interface PhaseFeedProps {
   hookEvents: HookEvent[];
   retryEvents: RetryEvent[];
   reconcileActions: ReconcileAction[];
+  onSelectCycle: (cycleId: string) => void;
 }
 
 interface UnifiedEvent {
@@ -151,13 +152,18 @@ function unify(
   return out.slice(0, 80);
 }
 
-const Row = memo(({ evt }: { evt: UnifiedEvent }) => {
+const Row = memo(({ evt, onSelectCycle }: { evt: UnifiedEvent; onSelectCycle: (id: string) => void }) => {
   const time = new Date(evt.timestamp).toISOString().split('T')[1].split('.')[0];
   const meta = KIND_META[evt.kind];
+  const clickable = !!evt.cycleId;
   return (
     <div
-      className="flex items-center gap-3 px-3.5 h-11 border-r border-white/5 shrink-0 hover:bg-white/[0.015] transition-colors"
-      title={`${meta.label} · ${evt.cycleId ? 'cycle ' + evt.cycleId : ''}`}
+      role={clickable ? 'button' : undefined}
+      tabIndex={clickable ? 0 : undefined}
+      onClick={clickable ? () => onSelectCycle(evt.cycleId!) : undefined}
+      onKeyDown={clickable ? (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onSelectCycle(evt.cycleId!); } } : undefined}
+      className={`flex items-center gap-3 px-3.5 h-11 border-r border-white/5 shrink-0 transition-colors ${clickable ? 'cursor-pointer hover:bg-white/[0.04] focus:bg-white/[0.04] focus:outline-none' : 'hover:bg-white/[0.015]'}`}
+      title={`${meta.label}${evt.cycleId ? ' · click to inspect cycle ' + evt.cycleId.slice(0, 8) : ''}`}
     >
       <span className="t-mono text-[10px] text-command-warm-white/45 tabular-nums">{time}</span>
       <span className={`inline-flex items-center gap-1.5 t-mono text-[8.5px] uppercase tracking-wider px-1.5 py-0.5 rounded border ${meta.pill}`}>
@@ -185,7 +191,7 @@ const Row = memo(({ evt }: { evt: UnifiedEvent }) => {
 });
 Row.displayName = 'PhaseFeed.Row';
 
-export const PhaseFeed = memo(({ phaseEvents, hookEvents, retryEvents, reconcileActions }: PhaseFeedProps) => {
+export const PhaseFeed = memo(({ phaseEvents, hookEvents, retryEvents, reconcileActions, onSelectCycle }: PhaseFeedProps) => {
   const events = useMemo(
     () => unify(phaseEvents, hookEvents, retryEvents, reconcileActions),
     [phaseEvents, hookEvents, retryEvents, reconcileActions],
@@ -206,7 +212,7 @@ export const PhaseFeed = memo(({ phaseEvents, hookEvents, retryEvents, reconcile
             Awaiting cycle events…
           </div>
         ) : (
-          events.map((evt, i) => <Row key={`${evt.kind}-${evt.timestamp}-${i}`} evt={evt} />)
+          events.map((evt, i) => <Row key={`${evt.kind}-${evt.timestamp}-${i}`} evt={evt} onSelectCycle={onSelectCycle} />)
         )}
       </div>
     </footer>

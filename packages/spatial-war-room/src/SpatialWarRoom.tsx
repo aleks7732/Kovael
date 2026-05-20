@@ -20,6 +20,7 @@ import { PhaseFeed } from './components/PhaseFeed.js';
 import { ClaimsStrip } from './components/ClaimsStrip.js';
 import { ConnectionBanner } from './components/ConnectionBanner.js';
 import { ToastStack } from './components/ToastStack.js';
+import { CycleInspector } from './components/CycleInspector.js';
 
 const nodeTypes = {
   agentHeartbeat: AgentHeartbeatNode,
@@ -54,6 +55,8 @@ const SpatialWarRoom = () => {
   const interAgentMessages = useWarRoomStore((s) => s.interAgentMessages);
 
   const wsConnected = useWarRoomStore((s) => s.wsConnected);
+  const selectedCycleId = useWarRoomStore((s) => s.selectedCycleId);
+  const setSelectedCycle = useWarRoomStore((s) => s.setSelectedCycle);
   const meshStatus = useMemo<'live' | 'syncing' | 'offline'>(() => {
     // Offline if the WS is down — that's the only state where the cockpit
     // genuinely has no live data. Syncing covers the cold-start window
@@ -278,9 +281,16 @@ const SpatialWarRoom = () => {
         hookEvents={hookEvents}
         retryEvents={retryEvents}
         reconcileActions={reconcileActions}
+        onSelectCycle={setSelectedCycle}
       />
 
       <ToastStack phaseEvents={phaseEvents} />
+      <CycleInspector
+        cycleId={selectedCycleId}
+        phaseEvents={phaseEvents}
+        hookEvents={hookEvents}
+        onClose={() => setSelectedCycle(null)}
+      />
     </div>
   );
 };

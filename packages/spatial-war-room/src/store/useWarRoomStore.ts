@@ -159,6 +159,8 @@ export interface WarRoomState {
   reconcileActions: ReconcileAction[];
   /** True when the cockpit's WS to the orchestrator is OPEN. False during reconnect. */
   wsConnected: boolean;
+  /** Cycle currently shown in the Cycle Inspector drawer, or null when closed. */
+  selectedCycleId: string | null;
   hookEvents: HookEvent[];
   tokenTotals: TokenTotals;
   rateLimits: Record<string, RateLimitSnapshot>;
@@ -195,6 +197,7 @@ export interface WarRoomState {
   recordTokenUpdate: (totals: TokenTotals) => void;
   recordRateLimit: (snapshot: RateLimitSnapshot) => void;
   setWsConnected: (connected: boolean) => void;
+  setSelectedCycle: (cycleId: string | null) => void;
   setInterAgentChatEnabled: (enabled: boolean) => void;
   setInterAgentChatMode: (mode: 'technical' | 'interests') => void;
   addInterAgentMessage: (msg: any) => void;
@@ -238,6 +241,7 @@ export const useWarRoomStore = create<WarRoomState>((set, get) => ({
   flushCount: 0,
   receiptsIssued: 0,
   wsConnected: false,
+  selectedCycleId: null,
   interAgentChatEnabled: false,
   interAgentChatMode: 'interests',
   interAgentMessages: [],
@@ -499,6 +503,7 @@ export const useWarRoomStore = create<WarRoomState>((set, get) => ({
   },
 
   setWsConnected: (connected: boolean) => set({ wsConnected: connected }),
+  setSelectedCycle: (cycleId: string | null) => set({ selectedCycleId: cycleId }),
   setInterAgentChatEnabled: (enabled: boolean) => set({ interAgentChatEnabled: enabled }),
   setInterAgentChatMode: (mode: 'technical' | 'interests') => set({ interAgentChatMode: mode }),
   addInterAgentMessage: (msg: any) => {
