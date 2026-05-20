@@ -19,6 +19,7 @@ import { AgentRosterPanel } from './components/AgentRosterPanel.js';
 import { PhaseFeed } from './components/PhaseFeed.js';
 import { ClaimsStrip } from './components/ClaimsStrip.js';
 import { ConnectionBanner } from './components/ConnectionBanner.js';
+import { ToastStack } from './components/ToastStack.js';
 
 const nodeTypes = {
   agentHeartbeat: AgentHeartbeatNode,
@@ -278,6 +279,8 @@ const SpatialWarRoom = () => {
         retryEvents={retryEvents}
         reconcileActions={reconcileActions}
       />
+
+      <ToastStack phaseEvents={phaseEvents} />
     </div>
   );
 };
