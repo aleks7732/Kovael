@@ -1,21 +1,33 @@
-# TruffleHog path-exclusion list.
-# One glob per line; matched against file paths relative to the repo root.
-# High-entropy strings in the paths below are intentional (hashes, UUIDs,
-# integrity SHAs) and are NOT rotatable secrets.
+# TruffleHog path-exclusion list — Go-regexp patterns, one per line.
+#
+# IMPORTANT: TruffleHog's --exclude-paths consumes regular expressions
+# (not globs). A glob like `dist/**` fails to compile and aborts the
+# scan with "could not create exclude rules: can not compile regular
+# expression: dist/**". See:
+#   https://github.com/trufflesecurity/trufflehog#scanning-options
+#
+# Each pattern is matched against the file path relative to the repo
+# root with Go's regexp/syntax (RE2). Anchor with ^ where helpful.
 
-# Build outputs
-dist/**
-packages/spatial-war-room/dist/**
+# Build outputs — anchored so we never match an arbitrary "dist" inside
+# a directory name elsewhere in the tree.
+^dist/
+^packages/spatial-war-room/dist/
 
-# Package lockfiles (contain integrity SHAs and registry URLs)
-package-lock.json
-packages/spatial-war-room/package-lock.json
+# Package lockfiles (integrity SHAs are not rotatable secrets)
+^package-lock\.json$
+^packages/spatial-war-room/package-lock\.json$
 
 # Installed dependencies
-node_modules/**
-packages/*/node_modules/**
+^node_modules/
+^packages/[^/]+/node_modules/
 
-# Agent-local directories (gitignored; guard against accidental git-add)
-.notes/**
-.kovael/**
-.tsupgrader/**
+# Agent-local scratch / notes (gitignored on purpose, defence-in-depth)
+^\.notes/
+^\.kovael/
+^\.tsupgrader/
+
+# Generated portrait PNGs — binary assets, no source-of-secrets risk.
+# Excluded so the binary entropy of color-quantized PNG payload doesn't
+# burn CI minutes on every scan; the files themselves are committed.
+^packages/spatial-war-room/public/agents/.*\.png$

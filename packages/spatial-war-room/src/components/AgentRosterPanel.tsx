@@ -1,6 +1,7 @@
 import { memo, useEffect, useState } from 'react';
 import type { AgentRosterCard, HardwareTelemetry, RateLimitSnapshot } from '../store/useWarRoomStore';
 import { AgentAvatarFallback } from './AgentAvatarFallback';
+import { AgentIdentityBadge } from './AgentIdentityBadge';
 
 interface AgentRosterPanelProps {
   roster: AgentRosterCard[];
@@ -102,7 +103,11 @@ const AgentCard = memo(({ card, rate }: { card: AgentRosterCard; rate?: RateLimi
     style={card.accent_hex && hasLiveBeacon ? { borderLeft: `3px solid ${card.accent_hex}` } : undefined}
   >
     <div className="flex items-start gap-3 mb-2">
-      {/* 36x36 Avatar */}
+      {/* 36x36 Avatar with corner glyphs:
+            bottom-right = chair status dot (existing)
+            bottom-left  = per-agent identity badge (new — survives the
+            tiny render size where the painterly identity tells inside
+            the portrait stop being legible). */}
       <div className="shrink-0 w-9 h-9 relative">
         {!imgError && card.portrait_url ? (
           <img
@@ -114,7 +119,9 @@ const AgentCard = memo(({ card, rate }: { card: AgentRosterCard; rate?: RateLimi
         ) : (
           <AgentAvatarFallback agentId={card.id} size={36} />
         )}
-        {/* Status indicator sitting on the avatar */}
+        <div className="absolute -bottom-0.5 -left-0.5">
+          <AgentIdentityBadge agentId={card.id} accentHex={card.accent_hex} size={14} />
+        </div>
         <div className={`absolute -bottom-0.5 -right-0.5 w-3 h-3 rounded-full border-2 border-[#121212] shrink-0 ${status.dot}`} />
       </div>
 
