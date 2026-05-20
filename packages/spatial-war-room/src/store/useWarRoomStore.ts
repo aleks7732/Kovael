@@ -43,6 +43,22 @@ export interface ANXBriefing {
   receivedAt: number;
 }
 
+export interface ConversationTopic {
+  id: string;
+  title: string;
+  participants: string[];
+  active: boolean;
+}
+
+export interface ConversationMessage {
+  id: string;
+  topicId: string;
+  senderId: string;
+  role: 'system' | 'user' | 'assistant';
+  content: string;
+  timestamp: number;
+}
+
 export interface PhaseEvent {
   cycleId: string;
   taskHash: string;
@@ -214,6 +230,17 @@ export interface WarRoomState {
     recipientName: string;
     content: string;
   }>;
+  activeTopicId: string | null;
+  topics: ConversationTopic[];
+  messagesByTopic: Record<string, ConversationMessage[]>;
+  conversationStoppingCriterion: Record<string, { agentId: string; reason: string; confidence: number } | null>;
+  activeTab: 'canvas' | 'theater';
+  setActiveTab: (tab: 'canvas' | 'theater') => void;
+  openConversation: (topic: ConversationTopic) => void;
+  applyMessageDelta: (topicId: string, messageId: string, senderId: string, role: 'system' | 'user' | 'assistant', delta: string, isEnd: boolean, usage?: any) => void;
+  closeConversation: (topicId: string) => void;
+  selectTopic: (topicId: string | null) => void;
+  recordStoppingCriterion: (topicId: string, agentId: string, reason: string, confidence: number) => void;
   onNodesChange: (changes: NodeChange[]) => void;
   onEdgesChange: (changes: EdgeChange[]) => void;
   onConnect: (connection: Connection) => void;
@@ -241,6 +268,14 @@ export interface WarRoomState {
   setInterAgentChatMode: (mode: 'technical' | 'interests') => void;
   addInterAgentMessage: (msg: any) => void;
 }
+
+const getInitialTab = (): 'canvas' | 'theater' => {
+  if (typeof window !== 'undefined') {
+    const tab = new URLSearchParams(window.location.search).get('tab');
+    if (tab === 'theater') return 'theater';
+  }
+  return 'canvas';
+};
 
 /**
  * Telemetry Pressure Valve (Module A):
@@ -284,6 +319,21 @@ export const useWarRoomStore = create<WarRoomState>((set, get) => ({
   interAgentChatEnabled: false,
   interAgentChatMode: 'interests',
   interAgentMessages: [],
+  activeTopicId: null,
+  topics: [],
+  messagesByTopic: {},
+  conversationStoppingCriterion: {},
+  activeTab: getInitialTab(),
+
+  setActiveTab: (tab) => {
+    if (typeof window !== 'undefined') {
+      const url = new URL(window.location.href);
+      url.searchParams.set('tab', tab);
+      window.history.replaceState({}, '', url.toString());
+    }
+    set({ activeTab: tab });
+  },
+
 
   onNodesChange: (changes: NodeChange[]) => {
     set({
@@ -617,6 +667,59 @@ export const useWarRoomStore = create<WarRoomState>((set, get) => ({
   addInterAgentMessage: (msg: any) => {
     set((state) => ({
       interAgentMessages: [...state.interAgentMessages, msg].slice(-50),
+    }));
+  },
+  openConversation: (topic) => {
+    set((state) => {
+      const exists = state.topics.some((t) => t.id === topic.id);
+      return {
+        topics: exists ? state.topics.map((t) => t.id === topic.id ? topic : t) : [...state.topics, topic],
+        activeTopicId: topic.id,
+      };
+    });
+  },
+  applyMessageDelta: (topicId, messageId, senderId, role, delta, _isEnd, _usage) => {
+    set((state) => {
+      const topicMsgs = state.messagesByTopic[topicId] ? [...state.messagesByTopic[topicId]] : [];
+      const idx = topicMsgs.findIndex((m) => m.id === messageId);
+      if (idx !== -1) {
+        const current = topicMsgs[idx];
+        topicMsgs[idx] = {
+          ...current,
+          content: current.content + delta,
+        };
+      } else {
+        topicMsgs.push({
+          id: messageId,
+          topicId,
+          senderId,
+          role,
+          content: delta,
+          timestamp: Date.now(),
+        });
+      }
+      return {
+        messagesByTopic: {
+          ...state.messagesByTopic,
+          [topicId]: topicMsgs.slice(-200),
+        },
+      };
+    });
+  },
+  closeConversation: (topicId) => {
+    set((state) => ({
+      topics: state.topics.map((t) => t.id === topicId ? { ...t, active: false } : t),
+    }));
+  },
+  selectTopic: (topicId) => {
+    set({ activeTopicId: topicId });
+  },
+  recordStoppingCriterion: (topicId, agentId, reason, confidence) => {
+    set((state) => ({
+      conversationStoppingCriterion: {
+        ...state.conversationStoppingCriterion,
+        [topicId]: { agentId, reason, confidence },
+      },
     }));
   },
 }));

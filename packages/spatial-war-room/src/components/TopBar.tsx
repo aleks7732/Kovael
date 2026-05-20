@@ -1,6 +1,6 @@
 import { memo, useEffect, useState } from 'react';
 import { MissionConsole } from './MissionConsole';
-import type { TokenTotals } from '../store/useWarRoomStore';
+import { useWarRoomStore, type TokenTotals } from '../store/useWarRoomStore.js';
 
 interface TopBarProps {
   meshStatus: 'live' | 'syncing' | 'offline';
@@ -45,6 +45,9 @@ Stat.displayName = 'TopBar.Stat';
 
 export const TopBar = memo(({ meshStatus, connectedClients = 0, receiptsIssued, activeAgents, nodeCount, tokenTotals, onInjectMission }: TopBarProps) => {
   const [now, setNow] = useState(() => new Date());
+  const activeTab = useWarRoomStore((s) => s.activeTab);
+  const setActiveTab = useWarRoomStore((s) => s.setActiveTab);
+
   useEffect(() => {
     const id = setInterval(() => setNow(new Date()), 1000);
     return () => clearInterval(id);
@@ -72,6 +75,29 @@ export const TopBar = memo(({ meshStatus, connectedClients = 0, receiptsIssued, 
             <span className={`text-[12px] font-semibold ${status.textTone} leading-none`}>{status.human}</span>
             <span className="text-[8.5px] mt-1 text-command-warm-white/45 font-medium tracking-wide uppercase">{status.technical}</span>
           </div>
+        </div>
+        <div className="h-7 w-px bg-white/10" />
+        <div className="flex items-center gap-1 bg-black/40 p-1 rounded-lg border border-white/5 relative z-30">
+          <button
+            onClick={() => setActiveTab('canvas')}
+            className={`px-3 py-1 text-[10.5px] rounded font-bold tracking-wider uppercase transition-all select-none cursor-pointer ${
+              activeTab === 'canvas'
+                ? 'bg-command-accent/20 border border-command-accent/30 text-command-warm-white shadow-[0_0_8px_rgba(193,95,60,0.3)]'
+                : 'text-command-warm-white/50 hover:text-command-warm-white/80 border border-transparent'
+            }`}
+          >
+            Canvas
+          </button>
+          <button
+            onClick={() => setActiveTab('theater')}
+            className={`px-3 py-1 text-[10.5px] rounded font-bold tracking-wider uppercase transition-all select-none cursor-pointer ${
+              activeTab === 'theater'
+                ? 'bg-command-accent/20 border border-command-accent/30 text-command-warm-white shadow-[0_0_8px_rgba(193,95,60,0.3)]'
+                : 'text-command-warm-white/50 hover:text-command-warm-white/80 border border-transparent'
+            }`}
+          >
+            Theater
+          </button>
         </div>
       </div>
 

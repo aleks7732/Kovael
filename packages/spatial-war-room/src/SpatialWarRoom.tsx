@@ -22,6 +22,7 @@ import { ConnectionBanner } from './components/ConnectionBanner.js';
 import { ToastStack } from './components/ToastStack.js';
 import { CycleInspector } from './components/CycleInspector.js';
 import { StatusLegend } from './components/StatusLegend.js';
+import { ConversationTheater } from './components/theater/ConversationTheater.js';
 
 const nodeTypes = {
   agentHeartbeat: AgentHeartbeatNode,
@@ -58,6 +59,7 @@ const SpatialWarRoom = () => {
   const wsConnected = useWarRoomStore((s) => s.wsConnected);
   const selectedCycleId = useWarRoomStore((s) => s.selectedCycleId);
   const setSelectedCycle = useWarRoomStore((s) => s.setSelectedCycle);
+  const activeTab = useWarRoomStore((s) => s.activeTab);
   const meshStatus = useMemo<'live' | 'syncing' | 'offline'>(() => {
     // Offline if the WS is down — that's the only state where the cockpit
     // genuinely has no live data. Syncing covers the cold-start window
@@ -193,6 +195,18 @@ const SpatialWarRoom = () => {
             case 'chair_roster_snapshot':
               if (message.data) store.applyChairRoster(message.data);
               break;
+            case 'conversation_topic_opened':
+              if (message.topic) store.openConversation(message.topic);
+              break;
+            case 'conversation_topic_closed':
+              if (message.topicId) store.closeConversation(message.topicId);
+              break;
+            case 'conversation_message_delta':
+              store.applyMessageDelta(message.topicId, message.messageId, message.senderId, message.role, message.delta, message.isEnd, message.usage);
+              break;
+            case 'conversation_stopping_criterion':
+              store.recordStoppingCriterion(message.topicId, message.agentId, message.reason, message.confidence);
+              break;
           }
         } catch (err) {
           console.error('Failed to parse WS message', err);
@@ -246,46 +260,50 @@ const SpatialWarRoom = () => {
       <div className="flex flex-1 min-h-0">
         <MissionBriefPanel briefings={anxBriefings} phaseEvents={phaseEvents} />
 
-        <main className="flex-1 relative min-w-0">
-          <div className="grid-overlay pointer-events-none" />
-          <div className="ember-ambient pointer-events-none" />
-          <ReactFlow
-            nodes={nodes}
-            edges={edges}
-            onNodesChange={onNodesChange}
-            onEdgesChange={onEdgesChange}
-            onConnect={onConnect}
-            nodeTypes={nodeTypes}
-            colorMode="dark"
-            fitView
-            fitViewOptions={{ padding: 0.25 }}
-            onlyRenderVisibleElements
-            proOptions={{ hideAttribution: true }}
-          >
-            <Background
-              variant={BackgroundVariant.Dots}
-              gap={22}
-              size={1}
-              color="rgba(245,245,220,0.06)"
-            />
-            <Controls
-              className="!bg-black/40 !backdrop-blur-md !border !border-white/5 !shadow-none"
-              showInteractive={false}
-            />
-            <MiniMap
-              pannable
-              zoomable
-              className="!bg-black/30 !backdrop-blur-md !border !border-white/5"
-              maskColor="rgba(0,0,0,0.6)"
-              nodeColor={(n) => {
-                if (n.type === 'agentHeartbeat') return '#C15F3C';
-                if (n.type === 'taskCluster') return '#F5F5DC';
-                if (n.type === 'anxBriefing') return '#34d399';
-                return '#666';
-              }}
-            />
-          </ReactFlow>
-        </main>
+        {activeTab === 'theater' ? (
+          <ConversationTheater />
+        ) : (
+          <main className="flex-1 relative min-w-0">
+            <div className="grid-overlay pointer-events-none" />
+            <div className="ember-ambient pointer-events-none" />
+            <ReactFlow
+              nodes={nodes}
+              edges={edges}
+              onNodesChange={onNodesChange}
+              onEdgesChange={onEdgesChange}
+              onConnect={onConnect}
+              nodeTypes={nodeTypes}
+              colorMode="dark"
+              fitView
+              fitViewOptions={{ padding: 0.25 }}
+              onlyRenderVisibleElements
+              proOptions={{ hideAttribution: true }}
+            >
+              <Background
+                variant={BackgroundVariant.Dots}
+                gap={22}
+                size={1}
+                color="rgba(245,245,220,0.06)"
+              />
+              <Controls
+                className="!bg-black/40 !backdrop-blur-md !border !border-white/5 !shadow-none"
+                showInteractive={false}
+              />
+              <MiniMap
+                pannable
+                zoomable
+                className="!bg-black/30 !backdrop-blur-md !border !border-white/5"
+                maskColor="rgba(0,0,0,0.6)"
+                nodeColor={(n) => {
+                  if (n.type === 'agentHeartbeat') return '#C15F3C';
+                  if (n.type === 'taskCluster') return '#F5F5DC';
+                  if (n.type === 'anxBriefing') return '#34d399';
+                  return '#666';
+                }}
+              />
+            </ReactFlow>
+          </main>
+        )}
 
         <AgentRosterPanel
           roster={agentRoster}
