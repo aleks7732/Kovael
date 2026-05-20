@@ -6,12 +6,21 @@ import { memo, type ReactElement } from 'react';
  * Reason it exists: at the cockpit's roster size (36 × 36) the painterly
  * identity tells inside each portrait (Antigravity's ringed-planet pin,
  * Claude-Code's `{ }` tag, Codex's wrench, etc.) become invisible. The
- * badge restores per-agent legibility with a single SVG glyph rendered
- * in the chair's accent colour, sitting in the bottom-left of the avatar
- * (the status dot already lives in the bottom-right).
+ * badge restores per-agent legibility with a single SVG glyph sitting
+ * in the bottom-left of the avatar (the status dot already lives in
+ * the bottom-right).
  *
- * Each glyph is an inline 12×12 path so the bundle stays small and there
- * are no image-load races. Unknown agentIds fall back to a generic dot.
+ * Color rule: the chip *background* is tinted with the chair's accent
+ * (`accentHex`) so the badge picks up the same accent the AgentCard
+ * uses for its left-edge border; the glyph itself renders in warm
+ * obsidian (`#0A0A09`) for high contrast on the colored chip. This
+ * stays legible against every accent in the design system; using the
+ * accent for the glyph stroke instead would wash out at 14×14 on the
+ * darker accents (violet, magenta-orange) and on the avatar background.
+ *
+ * Each glyph is an inline 12 × 12 path so the bundle stays small and
+ * there are no image-load races. Unknown agentIds fall back to a
+ * generic dot.
  */
 
 interface GlyphProps {
@@ -114,7 +123,11 @@ interface AgentIdentityBadgeProps {
   agentId: string;
   /** Outer chip diameter in px. Default 14. */
   size?: number;
-  /** Background tint as a CSS color (usually the agent's accent_hex). */
+  /**
+   * CSS color used as the *chip background* (typically the agent's
+   * `accent_hex`). The glyph itself always renders dark — see the
+   * component docstring for the rationale.
+   */
   accentHex?: string;
 }
 

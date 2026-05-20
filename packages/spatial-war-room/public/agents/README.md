@@ -14,8 +14,11 @@ post-processed for asset hygiene + payload size.
    --skip-if-larger 96` (heroes) / `--skip-if-larger 64` (thumbnails).
    Pngquant respects perceptual color distance, so the chibi gradients
    survive far better than naive 128-color quantization in PIL.
-4. **Budget**: heroes ≤ 90 KB, thumbnails ≤ 8 KB. Both numbers are real
-   ceilings — files that overshoot fail review.
+4. **Budget**: heroes ≤ 92 000 bytes (≈ 90 KB), thumbnails ≤ 8 000
+   bytes (≈ 8 KB). Both numbers are real ceilings — files that overshoot
+   fail review. The check script below is the source of truth for what
+   "overshoot" means; the prose ceilings above are just rounded
+   restatements of the same numbers.
 
 Asset budget verification:
 
