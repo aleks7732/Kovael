@@ -77,7 +77,7 @@ cd packages/spatial-war-room && npm install && cd -
 npm run build
 
 # 3. Start the orchestrator (WS + HTTP on :8080)
-node dist/MeshOrchestrator.js
+npm start                # alias for `node dist/boot-mesh.js`
 
 # 4. In a second shell, start the cockpit (Vite on :5173)
 cd packages/spatial-war-room && npm run dev
@@ -97,17 +97,20 @@ The cockpit roster lights up the matching chair within 100 ms.
 
 ## The nine chairs
 
+Provider strings match the canonical `AgentCards` (`src/AgentCards.ts`)
+— copy them verbatim into `--provider` when claiming a chair.
+
 | Chair | Provider | Tier | VRAM |
 |---|---|---|---|
-| `shaev` | Hermes 3 (local) | 3 | 24 GiB |
-| `nyx-antigravity` | Gemini 3 Pro · Antigravity IDE | 1 | 32 GiB |
-| `nyx-claude-code` | Anthropic · Claude Code | 1 | cloud |
-| `nyx-cli` | Google · Gemini CLI | 1 | 8 GiB |
+| `shaev` | VantagePoint Local · Hermes 3 | 3 | 24 GB |
+| `nyx-antigravity` | Google · Gemini 3 Pro (Antigravity IDE) | 1 | 32 GB |
+| `nyx-claude-code` | Anthropic · Claude Code CLI | 1 | cloud |
+| `nyx-cli` | Anthropic · Gemini CLI (legacy alias) | 1 | 8 GB |
 | `nyx-agcli` | Google · Antigravity CLI | 1 | cloud |
-| `nyx-adk` | Google · Agent Development Kit | 2 | cloud |
+| `nyx-adk` | Google · Agent Development Kit (Python) | 2 | cloud |
 | `nyx-codex` | OpenAI · Codex CLI | 2 | cloud |
-| `nyx-openclaw` | OpenAI · Codex (elevated sandbox) | 2 | 16 GiB |
-| `nyx-cw` | JetBrains · Junie / Cowork | 2 | cloud |
+| `nyx-openclaw` | OpenAI · Codex (elevated sandbox) | 2 | 16 GB |
+| `nyx-cw` | JetBrains · Junie / Cowork plugin | 2 | cloud |
 
 Every chair has a persona card under [`personas/`](./personas) (voice,
 expertise, disposition) and a 512² portrait under
