@@ -18,18 +18,27 @@ function formatTokens(n: number): string {
   return String(n);
 }
 
-const STATUS_STYLES: Record<TopBarProps['meshStatus'], { dot: string; label: string }> = {
-  live: { dot: 'bg-emerald-500 shadow-[0_0_10px_rgba(52,211,153,0.6)]', label: 'LIVE' },
-  syncing: { dot: 'bg-amber-500 shadow-[0_0_10px_rgba(245,158,11,0.6)] animate-pulse', label: 'SYNCING' },
-  offline: { dot: 'bg-red-500 shadow-[0_0_10px_rgba(239,68,68,0.6)]', label: 'OFFLINE' },
+interface StatusStyle {
+  dot: string;
+  pill: string;
+  textTone: string;
+  technical: string;
+  human: string;
+  pulse: boolean;
+}
+
+const STATUS_STYLES: Record<TopBarProps['meshStatus'], StatusStyle> = {
+  live:    { dot: 'bg-emerald-500 shadow-[0_0_10px_rgba(52,211,153,0.6)]', pill: 'border-emerald-500/30 bg-emerald-500/5', textTone: 'text-emerald-300', technical: 'LIVE',    human: 'Mesh healthy',           pulse: false },
+  syncing: { dot: 'bg-amber-500 shadow-[0_0_10px_rgba(245,158,11,0.6)]',   pill: 'border-amber-500/30 bg-amber-500/5',     textTone: 'text-amber-300',  technical: 'SYNCING', human: 'Syncing nodes',          pulse: true  },
+  offline: { dot: 'bg-red-500 shadow-[0_0_10px_rgba(239,68,68,0.6)]',      pill: 'border-red-500/30 bg-red-500/5',         textTone: 'text-red-300',    technical: 'OFFLINE', human: 'Disconnected — retrying', pulse: true  },
 };
 
-const Stat = memo(({ label, value, accent = false }: { label: string; value: string | number; accent?: boolean }) => (
-  <div className="flex flex-col items-end">
-    <div className="t-eyebrow !text-[7px]">{label}</div>
-    <div className={`t-mono text-[13px] font-bold leading-none ${accent ? 'text-command-accent glow-text' : 'text-command-warm-white'}`}>
+const Stat = memo(({ label, value, hint, accent = false }: { label: string; value: string | number; hint: string; accent?: boolean }) => (
+  <div className="flex flex-col items-end leading-none" title={hint}>
+    <div className={`t-mono text-[14px] font-bold ${accent ? 'text-command-accent glow-text' : 'text-command-warm-white'}`}>
       {value}
     </div>
+    <div className="text-[8.5px] mt-1 text-command-warm-white/55 font-medium tracking-wide uppercase">{label}</div>
   </div>
 ));
 Stat.displayName = 'TopBar.Stat';
@@ -50,13 +59,19 @@ export const TopBar = memo(({ meshStatus, connectedClients = 0, receiptsIssued, 
           <div className="w-2 h-2 rotate-45 bg-command-accent shadow-[0_0_12px_rgba(193,95,60,0.7)]" />
           <div className="flex flex-col leading-none">
             <span className="font-display font-bold text-[18px] tracking-tight text-command-warm-white">KOVAEL</span>
-            <span className="t-eyebrow !text-[7px] mt-0.5">SOVEREIGN AGENTIC MESH</span>
+            <span className="text-[8.5px] mt-1 text-command-warm-white/55 font-medium tracking-wide uppercase">Sovereign Agentic Mesh</span>
           </div>
         </div>
         <div className="h-7 w-px bg-white/10" />
-        <div className="flex items-center gap-2">
-          <div className={`w-1.5 h-1.5 rounded-full ${status.dot}`} />
-          <span className="t-mono text-[10px] tracking-widest text-command-warm-white/70 uppercase">{status.label}</span>
+        <div
+          className={`flex items-center gap-2 h-9 pl-2.5 pr-3 rounded-lg border ${status.pill}`}
+          title={`Mesh status: ${status.technical}`}
+        >
+          <div className={`w-2 h-2 rounded-full ${status.dot} ${status.pulse ? 'animate-pulse' : ''}`} />
+          <div className="flex flex-col items-start leading-none">
+            <span className={`text-[12px] font-semibold ${status.textTone} leading-none`}>{status.human}</span>
+            <span className="text-[8.5px] mt-1 text-command-warm-white/45 font-medium tracking-wide uppercase">{status.technical}</span>
+          </div>
         </div>
       </div>
 
@@ -65,13 +80,13 @@ export const TopBar = memo(({ meshStatus, connectedClients = 0, receiptsIssued, 
       </div>
 
       <div className="flex items-center gap-7">
-        <Stat label="CLIENTS" value={connectedClients} />
-        <Stat label="AGENTS" value={activeAgents} />
-        <Stat label="NODES" value={nodeCount} />
-        <Stat label="RECEIPTS" value={receiptsIssued} accent />
-        <Stat label="TOKENS" value={formatTokens(tokenTotals.total)} />
+        <Stat label="Clients" value={connectedClients} hint="WebSocket clients currently connected to the orchestrator" />
+        <Stat label="Agents"  value={activeAgents}     hint="Distinct agent identities registered on the mesh" />
+        <Stat label="Nodes"   value={nodeCount}        hint="ReactFlow nodes rendered in the canvas" />
+        <Stat label="Receipts" value={receiptsIssued}  hint="ZTNP verification receipts issued since boot" accent />
+        <Stat label="Tokens"  value={formatTokens(tokenTotals.total)} hint="Cumulative input+output tokens across all Triad cycles" />
         <div className="h-7 w-px bg-white/10" />
-        <Stat label="UTC" value={time} />
+        <Stat label="UTC"     value={time}             hint="Server time, ISO-8601" />
       </div>
     </header>
   );
