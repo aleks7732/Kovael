@@ -1,0 +1,21 @@
+# TruffleHog path-exclusion list.
+# One glob per line; matched against file paths relative to the repo root.
+# High-entropy strings in the paths below are intentional (hashes, UUIDs,
+# integrity SHAs) and are NOT rotatable secrets.
+
+# Build outputs
+dist/**
+packages/spatial-war-room/dist/**
+
+# Package lockfiles (contain integrity SHAs and registry URLs)
+package-lock.json
+packages/spatial-war-room/package-lock.json
+
+# Installed dependencies
+node_modules/**
+packages/*/node_modules/**
+
+# Agent-local directories (gitignored; guard against accidental git-add)
+.notes/**
+.kovael/**
+.tsupgrader/**

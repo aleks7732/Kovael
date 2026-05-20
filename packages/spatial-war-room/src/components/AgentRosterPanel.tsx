@@ -20,49 +20,55 @@ interface AgentRosterPanelProps {
   onChangeInterAgentChatMode: (mode: 'technical' | 'interests') => void;
 }
 
-const STATUS_DOT: Record<AgentRosterCard['status'], string> = {
-  online: 'bg-emerald-500 shadow-[0_0_6px_rgba(52,211,153,0.6)]',
-  dispatching: 'bg-command-accent shadow-[0_0_6px_rgba(193,95,60,0.6)] animate-pulse',
-  idle: 'bg-white/30',
-  offline: 'bg-red-500',
+interface StatusStyle { dot: string; text: string; label: string }
+const STATUS_STYLE: Record<AgentRosterCard['status'], StatusStyle> = {
+  online:      { dot: 'bg-emerald-500 shadow-[0_0_6px_rgba(52,211,153,0.6)]',     text: 'text-emerald-300',     label: 'Online' },
+  dispatching: { dot: 'bg-command-accent shadow-[0_0_6px_rgba(193,95,60,0.6)] animate-pulse', text: 'text-command-accent', label: 'Dispatching' },
+  idle:        { dot: 'bg-white/30',                                              text: 'text-command-warm-white/55', label: 'Idle' },
+  offline:     { dot: 'bg-red-500',                                               text: 'text-red-300',         label: 'Offline' },
 };
 
 const TRUST_LABEL: Record<number, string> = {
-  1: 'TIER_1 / SOVEREIGN',
-  2: 'TIER_2 / ELEVATED',
-  3: 'TIER_3 / LOCAL',
+  1: 'Tier 1 · Sovereign',
+  2: 'Tier 2 · Elevated',
+  3: 'Tier 3 · Local',
 };
 
-const AgentCard = memo(({ card, rate }: { card: AgentRosterCard; rate?: RateLimitSnapshot }) => (
+const AgentCard = memo(({ card, rate }: { card: AgentRosterCard; rate?: RateLimitSnapshot }) => {
+  const status = STATUS_STYLE[card.status];
+  return (
   <div className="glass-panel p-3">
-    <div className="flex items-start justify-between mb-1.5">
-      <div className="flex items-center gap-2">
-        <div className={`w-1.5 h-1.5 rounded-full ${STATUS_DOT[card.status]}`} />
-        <div className="font-display font-bold text-[13px] text-command-warm-white leading-none">{card.name}</div>
+    <div className="flex items-start justify-between gap-2 mb-2">
+      <div className="flex items-center gap-2 min-w-0">
+        <div className={`w-2 h-2 rounded-full shrink-0 ${status.dot}`} />
+        <div className="font-display font-bold text-[14px] text-command-warm-white leading-none truncate">{card.name}</div>
       </div>
-      <div className="flex items-center gap-1.5">
+      <div className="flex items-center gap-1.5 shrink-0">
         {rate && (
           <span
-            className={`t-mono text-[8px] font-bold uppercase tracking-wider px-1 py-0.5 rounded ${
+            className={`t-mono text-[8.5px] font-semibold tracking-wide px-1.5 py-0.5 rounded tabular-nums ${
               rate.blocked
                 ? 'bg-red-500/15 text-red-300'
                 : rate.inWindow / rate.capacity > 0.7
                   ? 'bg-amber-500/15 text-amber-300'
                   : 'bg-emerald-500/10 text-emerald-300/80'
             }`}
-            title={`${rate.inWindow}/${rate.capacity} in ${Math.round(rate.windowMs / 1000)}s`}
+            title={`Rate-limit: ${rate.inWindow} of ${rate.capacity} dispatches in last ${Math.round(rate.windowMs / 1000)}s`}
           >
             {rate.inWindow}/{rate.capacity}
           </span>
         )}
         {card.trust_tier !== undefined && (
-          <div className="t-mono text-[8px] text-command-accent/80 font-bold tracking-wider">
+          <div className="t-mono text-[9px] text-command-accent/85 font-bold tracking-wider" title={TRUST_LABEL[card.trust_tier] ?? `Trust tier ${card.trust_tier}`}>
             T{card.trust_tier}
           </div>
         )}
       </div>
     </div>
-    <div className="t-mono text-[9px] text-command-warm-white/50 mb-2 truncate">{card.provider}</div>
+    <div className="flex items-center justify-between mb-2">
+      <span className={`text-[10.5px] font-semibold ${status.text}`}>{status.label}</span>
+      <span className="t-mono text-[9px] text-command-warm-white/45 truncate ml-2">{card.provider}</span>
+    </div>
     {card.description && (
       <div className="text-[10px] text-command-warm-white/65 leading-snug mb-2">{card.description}</div>
     )}
@@ -80,14 +86,15 @@ const AgentCard = memo(({ card, rate }: { card: AgentRosterCard; rate?: RateLimi
     )}
     <div className="flex items-center justify-between pt-1.5 border-t border-white/5">
       {card.vram_requirements && (
-        <span className="t-mono text-[8px] text-command-warm-white/45">VRAM·{card.vram_requirements}</span>
+        <span className="t-mono text-[9px] text-command-warm-white/55">VRAM · {card.vram_requirements}</span>
       )}
       {card.trust_tier !== undefined && TRUST_LABEL[card.trust_tier] && (
-        <span className="t-eyebrow !text-[6px] !tracking-[0.15em]">{TRUST_LABEL[card.trust_tier]}</span>
+        <span className="text-[8.5px] font-medium text-command-warm-white/50 tracking-wide">{TRUST_LABEL[card.trust_tier]}</span>
       )}
     </div>
   </div>
-));
+  );
+});
 AgentCard.displayName = 'AgentRosterPanel.Card';
 
 const VramGauge = memo(({ hardware }: { hardware: HardwareTelemetry | null }) => {

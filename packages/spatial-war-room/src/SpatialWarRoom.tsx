@@ -18,6 +18,10 @@ import { MissionBriefPanel } from './components/MissionBriefPanel.js';
 import { AgentRosterPanel } from './components/AgentRosterPanel.js';
 import { PhaseFeed } from './components/PhaseFeed.js';
 import { ClaimsStrip } from './components/ClaimsStrip.js';
+import { ConnectionBanner } from './components/ConnectionBanner.js';
+import { ToastStack } from './components/ToastStack.js';
+import { CycleInspector } from './components/CycleInspector.js';
+import { StatusLegend } from './components/StatusLegend.js';
 
 const nodeTypes = {
   agentHeartbeat: AgentHeartbeatNode,
@@ -51,10 +55,17 @@ const SpatialWarRoom = () => {
   const interAgentChatMode = useWarRoomStore((s) => s.interAgentChatMode);
   const interAgentMessages = useWarRoomStore((s) => s.interAgentMessages);
 
+  const wsConnected = useWarRoomStore((s) => s.wsConnected);
+  const selectedCycleId = useWarRoomStore((s) => s.selectedCycleId);
+  const setSelectedCycle = useWarRoomStore((s) => s.setSelectedCycle);
   const meshStatus = useMemo<'live' | 'syncing' | 'offline'>(() => {
+    // Offline if the WS is down — that's the only state where the cockpit
+    // genuinely has no live data. Syncing covers the cold-start window
+    // where WS is up but the orchestrator hasn't pushed agent cards yet.
+    if (!wsConnected) return 'offline';
     if (agentRoster.length === 0 && nodes.length <= 1) return 'syncing';
     return 'live';
-  }, [agentRoster.length, nodes.length]);
+  }, [wsConnected, agentRoster.length, nodes.length]);
 
   // 100ms Telemetry Pressure Valve — Module A
   useEffect(() => {
@@ -92,6 +103,11 @@ const SpatialWarRoom = () => {
       const ws = new WebSocket(ORCHESTRATOR_URL);
       currentWs = ws;
       wsRef.current = ws;
+
+      ws.onopen = () => {
+        if (!active) return;
+        useWarRoomStore.getState().setWsConnected(true);
+      };
 
       ws.onmessage = (event) => {
         if (!active) return;
@@ -164,6 +180,7 @@ const SpatialWarRoom = () => {
         if (wsRef.current === ws) {
           wsRef.current = null;
         }
+        useWarRoomStore.getState().setWsConnected(false);
         if (active) {
           console.log('WebSocket closed. Reconnecting in 3 seconds...');
           reconnectTimeout = setTimeout(connect, 3000);
@@ -191,6 +208,7 @@ const SpatialWarRoom = () => {
 
   return (
     <div className="cockpit-grid h-screen w-screen overflow-hidden text-command-warm-white">
+      <ConnectionBanner wsConnected={wsConnected} />
       <TopBar
         meshStatus={meshStatus}
         connectedClients={1}
@@ -204,7 +222,7 @@ const SpatialWarRoom = () => {
       <ClaimsStrip stats={claimStats} retryPending={retryPendingCount} />
 
       <div className="flex flex-1 min-h-0">
-        <MissionBriefPanel briefings={anxBriefings} />
+        <MissionBriefPanel briefings={anxBriefings} phaseEvents={phaseEvents} />
 
         <main className="flex-1 relative min-w-0">
           <div className="grid-overlay pointer-events-none" />
@@ -264,7 +282,17 @@ const SpatialWarRoom = () => {
         hookEvents={hookEvents}
         retryEvents={retryEvents}
         reconcileActions={reconcileActions}
+        onSelectCycle={setSelectedCycle}
       />
+
+      <ToastStack phaseEvents={phaseEvents} />
+      <CycleInspector
+        cycleId={selectedCycleId}
+        phaseEvents={phaseEvents}
+        hookEvents={hookEvents}
+        onClose={() => setSelectedCycle(null)}
+      />
+      <StatusLegend />
     </div>
   );
 };

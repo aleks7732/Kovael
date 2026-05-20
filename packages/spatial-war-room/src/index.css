@@ -1,8 +1,14 @@
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Space+Grotesk:wght@600;700&family=JetBrains+Mono:wght@400;500;700&display=swap');
 
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+@import "tailwindcss";
+
+/* Tailwind v4: @config pulls the v3-style JS config (custom colors, fonts) — see tailwind.config.js */
+@config "../tailwind.config.js";
+
+/* Tailwind v4: @source declares the content roots so utilities are detected even
+ * when the JS config's `content` field is dormant in v4. */
+@source "../index.html";
+@source "./**/*.{ts,tsx}";
 
 :root {
   --bg: #0A0A09;
