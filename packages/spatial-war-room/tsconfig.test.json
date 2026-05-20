@@ -1,0 +1,20 @@
+{
+  "extends": "./tsconfig.app.json",
+  "compilerOptions": {
+    "tsBuildInfoFile": "./node_modules/.tmp/tsconfig.test.tsbuildinfo",
+    // Tests intentionally write `void container;` to mark a deliberately
+    // unused value, and component fixtures sometimes accept callback
+    // params they don't dispatch. Both patterns clash with the strict
+    // unused-locals/params rules the app build uses, so relax them only
+    // for test files.
+    "noUnusedLocals": false,
+    "noUnusedParameters": false,
+    // Keep the app's `vite/client` types and explicitly add `node` so
+    // `global.fetch`, `Buffer`, and similar Node-runtime APIs the tests
+    // stub or reference resolve under this config. Production code does
+    // not need Node types in scope so they stay out of tsconfig.app.json.
+    "types": ["vite/client", "node"]
+  },
+  "include": ["src", "test"]
+}
+

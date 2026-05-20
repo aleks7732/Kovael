@@ -26,13 +26,17 @@ describe('ConvenePanel', () => {
 
     beforeEach(() => {
         fetchMock = vi.fn();
-        // @ts-expect-error happy-dom global
-        global.fetch = fetchMock;
+        // Use vi.stubGlobal so vi.unstubAllGlobals() in afterEach actually
+        // restores the original fetch reference — `global.fetch = ...`
+        // reassignment leaks past `vi.restoreAllMocks()` (which only resets
+        // tracked mock fns, not arbitrary global reassignments).
+        vi.stubGlobal('fetch', fetchMock as unknown as typeof fetch);
     });
 
     afterEach(() => {
         cleanup();
         vi.restoreAllMocks();
+        vi.unstubAllGlobals();
     });
 
     it('renders the title + goal inputs and the dispatch button', () => {

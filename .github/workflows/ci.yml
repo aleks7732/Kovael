@@ -36,6 +36,13 @@ jobs:
         run: npm ci --no-audit --no-fund
       - name: Typecheck (tsc -b)
         run: npx tsc -b
+      - name: Typecheck test fixtures (tsconfig.test.json)
+        # tsconfig.app.json only includes `src`, so test fixtures could
+        # silently drift from production types (caught by Copilot review
+        # on PR #17 where a HardwareTelemetry fixture was missing required
+        # fields). This step keeps the test/ tree on the same type leash
+        # as src/.
+        run: npx tsc --noEmit -p tsconfig.test.json
 
   typecheck-backend:
     name: Typecheck · orchestrator
