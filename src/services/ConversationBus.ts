@@ -150,21 +150,30 @@ export class ConversationBus extends EventEmitter {
 
     /**
      * Retrieve the persistent message history for a given topic.
-     * Implements Context Sharding by pulling the last N messages up to the token budget.
+     * Implements Context Sharding by pulling the most recent N messages.
+     *
+     * SQL takes the tail with DESC + LIMIT; we reverse to ASC before returning
+     * so the model receives messages in chronological order — `ORDER BY ASC
+     * LIMIT N` would pin to the first N forever as the topic grows.
      */
     public getHistory(topicId: string, limit = 200): ChatMessage[] {
+        // rowid is the SQLite-implicit insertion sequence and tiebreaks when
+        // two messages share a timestamp (Date.now() collisions happen in
+        // tight loops and inside the convene speaker loop).
         const stmt = this.db.prepare(`
-            SELECT sender_id, role, content FROM conversation_messages
+            SELECT sender_id, role, content, timestamp FROM conversation_messages
             WHERE topic_id = ?
-            ORDER BY timestamp ASC
+            ORDER BY timestamp DESC, rowid DESC
             LIMIT ?
         `);
         const rows = stmt.all(topicId, limit) as any[];
-        return rows.map((r) => ({
-            role: r.role,
-            content: r.content,
-            name: r.sender_id,
-        }));
+        return rows
+            .reverse()
+            .map((r) => ({
+                role: r.role,
+                content: r.content,
+                name: r.sender_id,
+            }));
     }
 
     /**

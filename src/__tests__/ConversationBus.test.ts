@@ -76,6 +76,23 @@ describe('ConversationBus', () => {
         expect(history[1].name).toBe('nyx-cli');
     });
 
+    it('getHistory returns the most recent N messages, in chronological order', () => {
+        const topic = bus.createTopic('Sharding Sanity', ['nyx-cli']);
+
+        // Post 10 messages in order; timestamps are auto from Date.now() so we
+        // assert ordering by content.
+        for (let i = 0; i < 10; i++) {
+            bus.postMessage(topic.id, 'nyx-cli', 'assistant', `turn ${i}`);
+        }
+
+        const recent3 = bus.getHistory(topic.id, 3);
+        expect(recent3).toHaveLength(3);
+        // Most-recent-3 should be turns 7, 8, 9 in ASC order — NOT 0, 1, 2.
+        expect(recent3[0].content).toBe('turn 7');
+        expect(recent3[1].content).toBe('turn 8');
+        expect(recent3[2].content).toBe('turn 9');
+    });
+
     it('correctly parses @mention tokens in message content', () => {
         const text = 'Hey @shaev, check out @nyx-cli hoodie details!';
         const mentions = bus.parseMentions(text);
