@@ -170,6 +170,12 @@ const SpatialWarRoom = () => {
                 store.addInterAgentMessage(message.data);
               }
               break;
+            case 'chair_event':
+              if (message.data) store.recordChairEvent(message.data);
+              break;
+            case 'chair_roster_snapshot':
+              if (message.data) store.applyChairRoster(message.data);
+              break;
           }
         } catch (err) {
           console.error('Failed to parse WS message', err);

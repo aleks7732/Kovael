@@ -13,6 +13,7 @@ import { WorkspaceManager } from './services/WorkspaceManager.js';
 import { HookRunner, HookResult } from './services/HookRunner.js';
 import { WorkflowLoader, WorkflowDocument } from './services/WorkflowLoader.js';
 import { RateLimitTracker, AgentRateSnapshot } from './services/RateLimitTracker.js';
+import { ChairRegistry, ChairEvent, ChairRegistryConfig } from './services/ChairRegistry.js';
 import { Logger, rootLogger } from './services/Logger.js';
 import crypto from 'node:crypto';
 import * as fs from 'fs';
@@ -24,6 +25,7 @@ import { AgentCards } from './AgentCards.js';
 export interface OrchestratorConfig {
     retryQueue?: Partial<RetryConfig>;
     reconciler?: Partial<ReconcilerConfig>;
+    chairRegistry?: Partial<ChairRegistryConfig>;
 }
 
 /**
@@ -47,6 +49,7 @@ export class MeshOrchestrator extends EventEmitter {
     private hooks: HookRunner;
     private workflowLoader: WorkflowLoader;
     private rateLimits: RateLimitTracker;
+    private chairs: ChairRegistry;
     private log: Logger = rootLogger;
     private agentCards: any[] = [];
     private nodeCache: Map<string, any> = new Map();
@@ -99,6 +102,10 @@ export class MeshOrchestrator extends EventEmitter {
                 this.handleStateSnapshot(req, res);
                 return;
             }
+            if (req.url && req.url.startsWith('/api/v1/chairs')) {
+                this.handleChairRequest(req, res);
+                return;
+            }
             this.handshake.handleRequest(req, res);
         });
 
@@ -117,6 +124,7 @@ export class MeshOrchestrator extends EventEmitter {
         this.hooks = new HookRunner();
         this.workflowLoader = new WorkflowLoader();
         this.rateLimits = new RateLimitTracker();
+        this.chairs = new ChairRegistry(cfg.chairRegistry ?? {});
         this.mevBridge.setRateLimitTracker(this.rateLimits);
 
         this.loadAgentCards();
@@ -127,6 +135,7 @@ export class MeshOrchestrator extends EventEmitter {
         this.wireRetryQueue();
         this.wireReconciler();
         this.wireHooks();
+        this.wireChairs();
 
         this.retryQueue.start();
         this.reconciler.start();
@@ -134,6 +143,7 @@ export class MeshOrchestrator extends EventEmitter {
         this.wireWorkflowLoader();
         this.wireRateLimits();
         this.workflowLoader.start();
+        this.chairs.start();
 
         this.server.listen(port, () => {
             const addr = this.server.address();
@@ -162,6 +172,23 @@ export class MeshOrchestrator extends EventEmitter {
             this.broadcast({
                 type: 'claim_event',
                 nodeId: 'task-claim-machine',
+                data: evt,
+            });
+        });
+    }
+
+    private wireChairs() {
+        this.chairs.on('chair_event', (evt: ChairEvent) => {
+            this.log.info('chair_event', {
+                kind: evt.kind,
+                agent_id: evt.agentId,
+                session_id: evt.sessionId,
+                status: evt.status,
+                reason: evt.reason,
+            });
+            this.broadcast({
+                type: 'chair_event',
+                nodeId: 'chair-registry',
                 data: evt,
             });
         });
@@ -349,6 +376,132 @@ export class MeshOrchestrator extends EventEmitter {
         });
     }
 
+    /**
+     * Chair Beacon Protocol endpoints. Three actions, all JSON-in / JSON-out:
+     *   POST /api/v1/chairs/claim     → { agentId, sessionId, ttlMs }
+     *   POST /api/v1/chairs/heartbeat → { sessionId, status }
+     *   POST /api/v1/chairs/release   → { released: boolean }
+     *   GET  /api/v1/chairs           → { chairs: ChairClaim[] }
+     *
+     * Bodies are capped at 16 KiB so a misbehaving client cannot exhaust
+     * the orchestrator with a slow-loris-style payload. Errors return
+     * structured JSON so the kovael-chair helper can surface them.
+     */
+    private handleChairRequest(req: http.IncomingMessage, res: http.ServerResponse): void {
+        const writeJson = (status: number, body: Record<string, unknown>): void => {
+            res.writeHead(status, {
+                'Content-Type': 'application/json',
+                'Cache-Control': 'no-store',
+                'Access-Control-Allow-Origin': '*',
+            });
+            res.end(JSON.stringify(body));
+        };
+        const url = new URL(req.url || '/', `http://${req.headers.host}`);
+        const action = url.pathname.replace(/^\/api\/v1\/chairs\/?/, '') || '';
+
+        if (req.method === 'GET' && (action === '' || action === 'snapshot')) {
+            writeJson(200, { chairs: this.chairs.snapshot(), stats: this.chairs.stats() });
+            return;
+        }
+
+        if (req.method !== 'POST') {
+            writeJson(405, { error: 'method_not_allowed' });
+            return;
+        }
+
+        const MAX_BODY = 16 * 1024;
+        let received = 0;
+        const chunks: Buffer[] = [];
+        let aborted = false;
+        req.on('data', (chunk: Buffer) => {
+            if (aborted) return;
+            received += chunk.length;
+            if (received > MAX_BODY) {
+                aborted = true;
+                writeJson(413, { error: 'payload_too_large', max_bytes: MAX_BODY });
+                req.destroy();
+                return;
+            }
+            chunks.push(chunk);
+        });
+        req.on('end', () => {
+            if (aborted) return;
+            let body: any = {};
+            const raw = Buffer.concat(chunks).toString('utf8');
+            if (raw.length > 0) {
+                try {
+                    body = JSON.parse(raw);
+                } catch {
+                    writeJson(400, { error: 'invalid_json' });
+                    return;
+                }
+            }
+
+            if (action === 'claim') {
+                const agentId = typeof body.agentId === 'string' ? body.agentId.trim() : '';
+                const provider = typeof body.provider === 'string' ? body.provider.trim() : '';
+                if (!agentId || !provider) {
+                    writeJson(400, { error: 'missing_required_fields', need: ['agentId', 'provider'] });
+                    return;
+                }
+                const claim = this.chairs.claim({
+                    agentId,
+                    provider,
+                    capabilities: Array.isArray(body.capabilities)
+                        ? body.capabilities.filter((c: unknown) => typeof c === 'string').slice(0, 32)
+                        : [],
+                    trustTier: typeof body.trustTier === 'number' ? body.trustTier : undefined,
+                    host: typeof body.host === 'string' ? body.host : undefined,
+                    note: typeof body.note === 'string' ? body.note.slice(0, 200) : undefined,
+                });
+                writeJson(200, {
+                    agentId: claim.agentId,
+                    sessionId: claim.sessionId,
+                    ttlMs: this.chairs.config().offlineMs,
+                    heartbeatIntervalMs: Math.floor(this.chairs.config().healthyMs / 2),
+                });
+                return;
+            }
+
+            if (action === 'heartbeat') {
+                const agentId = typeof body.agentId === 'string' ? body.agentId.trim() : '';
+                const sessionId = typeof body.sessionId === 'string' ? body.sessionId.trim() : '';
+                if (!agentId || !sessionId) {
+                    writeJson(400, { error: 'missing_required_fields', need: ['agentId', 'sessionId'] });
+                    return;
+                }
+                const claim = this.chairs.heartbeat(
+                    agentId,
+                    sessionId,
+                    typeof body.note === 'string' ? body.note.slice(0, 200) : undefined,
+                );
+                if (!claim) {
+                    writeJson(409, { error: 'unknown_or_superseded_session' });
+                    return;
+                }
+                writeJson(200, { status: claim.status, lastBeaconAt: claim.lastBeaconAt });
+                return;
+            }
+
+            if (action === 'release') {
+                const agentId = typeof body.agentId === 'string' ? body.agentId.trim() : '';
+                const sessionId = typeof body.sessionId === 'string' ? body.sessionId.trim() : '';
+                if (!agentId || !sessionId) {
+                    writeJson(400, { error: 'missing_required_fields', need: ['agentId', 'sessionId'] });
+                    return;
+                }
+                const ok = this.chairs.release(agentId, sessionId, 'client_release');
+                writeJson(200, { released: ok });
+                return;
+            }
+
+            writeJson(404, { error: 'unknown_chair_action', action });
+        });
+        req.on('error', () => {
+            if (!aborted) writeJson(400, { error: 'request_stream_error' });
+        });
+    }
+
     private handleStateSnapshot(_req: http.IncomingMessage, res: http.ServerResponse): void {
         const snapshot = {
             timestamp: Date.now(),
@@ -381,6 +534,10 @@ export class MeshOrchestrator extends EventEmitter {
             },
             tokens: { ...this.tokenTotals },
             rateLimits: this.rateLimits.allSnapshots(),
+            chairs: {
+                stats: this.chairs.stats(),
+                roster: this.chairs.snapshot(),
+            },
         };
         res.writeHead(200, {
             'Content-Type': 'application/json',
@@ -450,6 +607,17 @@ export class MeshOrchestrator extends EventEmitter {
                 type: 'inter_agent_chat_state',
                 data: { enabled: this.interAgentChatEnabled, mode: this.interAgentChatMode }
             }));
+
+            // 6. Replay current chair roster so the cockpit doesn't render an
+            //    empty presence panel between connect and the next beacon.
+            const chairRoster = this.chairs.snapshot();
+            if (chairRoster.length > 0) {
+                ws.send(JSON.stringify({
+                    type: 'chair_roster_snapshot',
+                    nodeId: 'chair-registry',
+                    data: { chairs: chairRoster, stats: this.chairs.stats() },
+                }));
+            }
 
             // ws delivers Buffer (or ArrayBuffer / Buffer[]); normalise before JSON.parse.
             ws.on('message', async (data: Buffer | ArrayBuffer | Buffer[]) => {
@@ -709,6 +877,7 @@ export class MeshOrchestrator extends EventEmitter {
         this.reconciler.stop();
         this.retryQueue.stop();
         this.hardware.stop();
+        this.chairs.stop();
         this.wss.close();
         this.server.close();
         this.memoryDb.close();

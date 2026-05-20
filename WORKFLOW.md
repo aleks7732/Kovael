@@ -37,6 +37,11 @@ observability:
     - task_hash
     - phase
     - routed_agent
+
+chairs:
+  beacon_endpoint: /api/v1/chairs
+  healthy_ms: 15000
+  offline_ms: 30000
 ---
 
 # Triad Prompt Template

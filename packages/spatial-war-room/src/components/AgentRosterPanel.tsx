@@ -1,4 +1,4 @@
-import { memo } from 'react';
+import { memo, useEffect, useState } from 'react';
 import type { AgentRosterCard, HardwareTelemetry, RateLimitSnapshot } from '../store/useWarRoomStore';
 
 interface AgentRosterPanelProps {
@@ -34,16 +34,72 @@ const TRUST_LABEL: Record<number, string> = {
   3: 'Tier 3 · Local',
 };
 
+function formatBeaconAge(ms: number): string {
+  const s = Math.round(ms / 1000);
+  if (s < 1) return 'just now';
+  if (s < 60) return `${s}s ago`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m ago`;
+  return `${Math.floor(m / 60)}h ago`;
+}
+
+const ChairBeaconPill = memo(({ card }: { card: AgentRosterCard }) => {
+  // Tick once per second so "last seen Ns ago" stays accurate without
+  // requiring a global timer in the store.
+  const [, force] = useState(0);
+  useEffect(() => {
+    if (!card.chair) return;
+    const id = setInterval(() => force((n) => n + 1), 1000);
+    return () => clearInterval(id);
+  }, [card.chair]);
+
+  if (!card.chair) {
+    return (
+      <span
+        className="t-mono text-[8px] font-semibold tracking-wider px-1.5 py-0.5 rounded bg-white/[0.04] text-command-warm-white/40 border border-white/5"
+        title="No live beacon — agent process is not running"
+      >
+        UNCLAIMED
+      </span>
+    );
+  }
+  const age = Date.now() - card.chair.lastBeaconAt;
+  const isLive = card.chair.presence === 'live';
+  const isStale = card.chair.presence === 'stale';
+  const tone = isLive
+    ? 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30'
+    : isStale
+      ? 'bg-amber-500/15 text-amber-300 border-amber-500/30'
+      : 'bg-red-500/15 text-red-300 border-red-500/30';
+  const dot = isLive
+    ? 'bg-emerald-400 shadow-[0_0_6px_rgba(52,211,153,0.7)] animate-pulse'
+    : isStale
+      ? 'bg-amber-400 shadow-[0_0_6px_rgba(251,191,36,0.5)]'
+      : 'bg-red-400';
+  return (
+    <span
+      className={`flex items-center gap-1 t-mono text-[8px] font-semibold tracking-wider px-1.5 py-0.5 rounded border ${tone}`}
+      title={`Chair Beacon · last seen ${formatBeaconAge(age)} · session ${card.chair.sessionId.slice(0, 8)}`}
+    >
+      <span className={`w-1.5 h-1.5 rounded-full ${dot}`} />
+      LIVE · {formatBeaconAge(age)}
+    </span>
+  );
+});
+ChairBeaconPill.displayName = 'AgentRosterPanel.ChairBeaconPill';
+
 const AgentCard = memo(({ card, rate }: { card: AgentRosterCard; rate?: RateLimitSnapshot }) => {
   const status = STATUS_STYLE[card.status];
+  const hasLiveBeacon = card.chair?.presence === 'live';
   return (
-  <div className="glass-panel p-3">
+  <div className={`glass-panel p-3 transition-colors duration-300 ${hasLiveBeacon ? 'ring-1 ring-emerald-500/15' : ''}`}>
     <div className="flex items-start justify-between gap-2 mb-2">
       <div className="flex items-center gap-2 min-w-0">
         <div className={`w-2 h-2 rounded-full shrink-0 ${status.dot}`} />
         <div className="font-display font-bold text-[14px] text-command-warm-white leading-none truncate">{card.name}</div>
       </div>
       <div className="flex items-center gap-1.5 shrink-0">
+        <ChairBeaconPill card={card} />
         {rate && (
           <span
             className={`t-mono text-[8.5px] font-semibold tracking-wide px-1.5 py-0.5 rounded tabular-nums ${

@@ -63,6 +63,41 @@ export interface AgentRosterCard {
   trust_tier?: number;
   status: 'online' | 'idle' | 'dispatching' | 'offline';
   lastSeen?: number;
+  /** Chair Beacon Protocol presence — independent of dispatch status. */
+  chair?: {
+    sessionId: string;
+    claimedAt: number;
+    lastBeaconAt: number;
+    presence: 'live' | 'stale' | 'absent';
+    host?: string;
+    note?: string;
+  };
+}
+
+export interface ChairEventPayload {
+  kind: 'claimed' | 'heartbeat' | 'released' | 'stale' | 'expired';
+  agentId: string;
+  sessionId: string;
+  status: 'online' | 'stale' | 'offline';
+  timestamp: number;
+  reason?: string;
+  chair?: {
+    agentId: string;
+    sessionId: string;
+    provider: string;
+    capabilities: string[];
+    trustTier: number;
+    claimedAt: number;
+    lastBeaconAt: number;
+    status: 'online' | 'stale' | 'offline';
+    host?: string;
+    note?: string;
+  };
+}
+
+export interface ChairRosterSnapshot {
+  chairs: Array<ChairEventPayload['chair']>;
+  stats?: { total: number; online: number; stale: number };
 }
 
 export interface ClaimEvent {
@@ -196,6 +231,8 @@ export interface WarRoomState {
   recordHookEvent: (evt: Omit<HookEvent, 'receivedAt'>) => void;
   recordTokenUpdate: (totals: TokenTotals) => void;
   recordRateLimit: (snapshot: RateLimitSnapshot) => void;
+  recordChairEvent: (evt: ChairEventPayload) => void;
+  applyChairRoster: (snapshot: ChairRosterSnapshot) => void;
   setWsConnected: (connected: boolean) => void;
   setSelectedCycle: (cycleId: string | null) => void;
   setInterAgentChatEnabled: (enabled: boolean) => void;
@@ -431,6 +468,73 @@ export const useWarRoomStore = create<WarRoomState>((set, get) => ({
     set((state) => ({
       rateLimits: { ...state.rateLimits, [snapshot.agentId]: snapshot },
     }));
+  },
+
+  recordChairEvent: (evt: ChairEventPayload) => {
+    set((state) => {
+      const presence: 'live' | 'stale' | 'absent' =
+        evt.kind === 'released' || evt.kind === 'expired'
+          ? 'absent'
+          : evt.status === 'stale'
+            ? 'stale'
+            : 'live';
+
+      const nextRoster = state.agentRoster.map((card) => {
+        if (card.id !== evt.agentId) return card;
+        if (presence === 'absent') {
+          // Drop chair presence but keep static card metadata. Dispatch
+          // status remains whatever the triad last set so we don't blow
+          // away in-flight work just because a beacon process exited.
+          const { chair, ...rest } = card;
+          void chair;
+          return rest as AgentRosterCard;
+        }
+        return {
+          ...card,
+          chair: {
+            sessionId: evt.sessionId,
+            claimedAt: evt.chair?.claimedAt ?? card.chair?.claimedAt ?? evt.timestamp,
+            lastBeaconAt: evt.chair?.lastBeaconAt ?? evt.timestamp,
+            presence,
+            host: evt.chair?.host ?? card.chair?.host,
+            note: evt.chair?.note ?? card.chair?.note,
+          },
+        };
+      });
+      return { agentRoster: nextRoster };
+    });
+  },
+
+  applyChairRoster: (snapshot: ChairRosterSnapshot) => {
+    set((state) => {
+      const byId = new Map<string, NonNullable<ChairEventPayload['chair']>>();
+      for (const c of snapshot.chairs) {
+        if (c) byId.set(c.agentId, c);
+      }
+      const nextRoster = state.agentRoster.map((card) => {
+        const chair = byId.get(card.id);
+        if (!chair) {
+          if (card.chair) {
+            const { chair: _drop, ...rest } = card;
+            void _drop;
+            return rest as AgentRosterCard;
+          }
+          return card;
+        }
+        return {
+          ...card,
+          chair: {
+            sessionId: chair.sessionId,
+            claimedAt: chair.claimedAt,
+            lastBeaconAt: chair.lastBeaconAt,
+            presence: chair.status === 'stale' ? 'stale' as const : 'live' as const,
+            host: chair.host,
+            note: chair.note,
+          },
+        };
+      });
+      return { agentRoster: nextRoster };
+    });
   },
 
   recordRetryEvent: (evt) => {
