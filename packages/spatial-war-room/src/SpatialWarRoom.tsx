@@ -97,6 +97,22 @@ const SpatialWarRoom = () => {
     let active = true;
     let reconnectTimeout: any = null;
     let currentWs: WebSocket | null = null;
+    // Exponential backoff with full jitter so a fleet of dropped clients
+    // doesn't synchronize their reconnect attempts onto the same tick.
+    // Schedule: ~0.5s, 1s, 2s, 4s, 8s, 16s, 30s (cap). On a successful
+    // open the attempt counter resets so the next outage starts fresh.
+    const RECONNECT_BASE_MS = 500;
+    const RECONNECT_MAX_MS = 30_000;
+    let reconnectAttempt = 0;
+
+    const scheduleReconnect = () => {
+      const exp = Math.min(RECONNECT_MAX_MS, RECONNECT_BASE_MS * 2 ** reconnectAttempt);
+      // Full jitter: pick uniformly from [0, exp). Cheap thundering-herd guard.
+      const delay = Math.floor(Math.random() * exp);
+      reconnectAttempt += 1;
+      console.log(`WebSocket reconnect attempt ${reconnectAttempt} in ${delay}ms (window ${exp}ms)`);
+      reconnectTimeout = setTimeout(connect, delay);
+    };
 
     const connect = () => {
       console.log('Connecting to WebSocket...');
@@ -106,6 +122,7 @@ const SpatialWarRoom = () => {
 
       ws.onopen = () => {
         if (!active) return;
+        reconnectAttempt = 0;
         useWarRoomStore.getState().setWsConnected(true);
       };
 
@@ -188,8 +205,7 @@ const SpatialWarRoom = () => {
         }
         useWarRoomStore.getState().setWsConnected(false);
         if (active) {
-          console.log('WebSocket closed. Reconnecting in 3 seconds...');
-          reconnectTimeout = setTimeout(connect, 3000);
+          scheduleReconnect();
         }
       };
 
