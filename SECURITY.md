@@ -2,7 +2,7 @@
 
 ## Supported Versions
 
-The following versions of VantagePoint Command Core are currently being supported with security updates:
+The following versions of Kovael are currently being supported with security updates:
 
 | Version | Supported          |
 | ------- | ------------------ |
@@ -11,7 +11,7 @@ The following versions of VantagePoint Command Core are currently being supporte
 
 ## Reporting a Vulnerability
 
-We take the security of VantagePoint Command Core seriously. If you believe you have found a security vulnerability, please report it to us by following these steps:
+We take the security of Kovael seriously. If you believe you have found a security vulnerability, please report it to us by following these steps:
 
 1. **Do not** open a public GitHub issue.
 2. Email your report to `security@example.com` (Placeholder).
