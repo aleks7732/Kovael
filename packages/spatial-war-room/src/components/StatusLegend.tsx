@@ -55,6 +55,13 @@ const FEED_ENTRIES: LegendEntry[] = [
   { Icon: Alert,    label: 'Reconcile', meaning: 'Stall detected or terminal claim pruned', tone: 'text-red-400' },
 ];
 
+interface BeaconLegendEntry { tone: string; label: string; meaning: string }
+const BEACON_ENTRIES: BeaconLegendEntry[] = [
+  { tone: 'bg-emerald-400 shadow-[0_0_6px_rgba(52,211,153,0.7)] animate-pulse', label: 'LIVE',      meaning: 'Beacon refreshed within the last 15 seconds. Agent process is healthy.' },
+  { tone: 'bg-amber-400 shadow-[0_0_6px_rgba(251,191,36,0.5)]',                  label: 'STALE',     meaning: '15–30s since the last beacon. Possible network blip or paused agent.' },
+  { tone: 'bg-white/20 border border-white/10',                                  label: 'UNCLAIMED', meaning: 'No active beacon — the persona is on the roster but its agent process is not running.' },
+];
+
 export const StatusLegend = memo(() => {
   const [open, setOpen] = useState(false);
 
@@ -137,11 +144,23 @@ export const StatusLegend = memo(() => {
                 </ul>
               </div>
               <div className="pt-3 border-t border-white/5">
+                <div className="text-[10px] font-semibold uppercase tracking-wide text-command-warm-white/55 mb-2">Chair Beacon · live presence</div>
+                <ul className="space-y-1.5">
+                  {BEACON_ENTRIES.map((e) => (
+                    <li key={e.label} className="flex items-center gap-3 py-1">
+                      <span className={`w-2.5 h-2.5 rounded-full shrink-0 ${e.tone}`} aria-hidden />
+                      <span className="text-[12px] font-semibold text-command-warm-white w-[80px]">{e.label}</span>
+                      <span className="text-[11px] text-command-warm-white/65">{e.meaning}</span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+              <div className="pt-3 border-t border-white/5">
                 <div className="text-[10px] font-semibold uppercase tracking-wide text-command-warm-white/55 mb-2">Mesh status</div>
                 <ul className="space-y-1.5 text-[11px] text-command-warm-white/65">
                   <li><span className="text-emerald-300 font-semibold">Mesh healthy</span> — WS connected, agents registered, telemetry flowing</li>
                   <li><span className="text-amber-300 font-semibold">Syncing nodes</span> — WS connected, awaiting first agent_card frames</li>
-                  <li><span className="text-red-300 font-semibold">Disconnected — retrying</span> — WS dropped, auto-reconnecting every 3s</li>
+                  <li><span className="text-red-300 font-semibold">Disconnected — retrying</span> — WS dropped, reconnecting with exponential backoff (500 ms → 30 s cap, jittered)</li>
                 </ul>
               </div>
             </section>
