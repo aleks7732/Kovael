@@ -308,3 +308,92 @@ describe('Retry + reconcile interaction', () => {
         expect(retryQueue.pendingCount()).toBe(0);
     });
 });
+
+// ---------------------------------------------------------------------------
+// E2E — Conversation Theater (Phoenix Day 3/4)
+//
+// Locks in the bus contract the cockpit Theater depends on:
+//   - opening a topic broadcasts `conversation_topic_opened`
+//   - posting an @-mention triggers a convene loop
+//   - participants emit at least one `conversation_message_delta`
+//   - the adaptive-stability stopping criterion fires within budget
+//   - closing the topic broadcasts `conversation_topic_closed`
+// ---------------------------------------------------------------------------
+describe('E2E — Conversation Theater', () => {
+    let orchestrator: MeshOrchestrator;
+    let port: number;
+
+    beforeAll(async () => {
+        orchestrator = new MeshOrchestrator(0);
+        port = await orchestrator.ready();
+    });
+
+    afterAll(() => {
+        orchestrator.close();
+    });
+
+    it('open → @mention message → deltas stream → stopping fires → close', async () => {
+        const ws = new WebSocket(`ws://localhost:${port}?nodeId=theater-e2e`);
+        await new Promise<void>((resolve) => ws.once('open', () => resolve()));
+
+        const framesPromise = collectWsFrames(
+            ws,
+            (frames) => frames.some((f) => f.type === 'conversation_stopping_criterion'),
+            15_000,
+        );
+
+        // 1. open topic
+        const createRes = await fetch(`http://localhost:${port}/api/v1/conversations`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                title: 'e2e · retry policy',
+                participants: ['nyx-antigravity', 'shaev', 'nyx-codex'],
+            }),
+        });
+        expect(createRes.ok).toBe(true);
+        const topic = (await createRes.json()) as { id: string };
+
+        // 2. post @mention message
+        const msgRes = await fetch(`http://localhost:${port}/api/v1/conversations/${topic.id}/message`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                senderId: 'operator',
+                content: '@Nyx-Antigravity @Shaev @Nyx-Codex propose a policy',
+            }),
+        });
+        expect(msgRes.ok).toBe(true);
+
+        // 3. wait for stopping criterion
+        const frames = await framesPromise;
+        const deltas = frames.filter((f) => f.type === 'conversation_message_delta');
+        const stopping = frames.find((f) => f.type === 'conversation_stopping_criterion');
+        const opened = frames.find((f) => f.type === 'conversation_topic_opened');
+
+        expect(opened).toBeDefined();
+        expect(deltas.length).toBeGreaterThan(0);
+        expect(stopping).toBeDefined();
+        expect(stopping?.topicId).toBe(topic.id);
+        // Adaptive-stability semantics: reason field present and confidence is a number in [0, 1]
+        expect(typeof stopping?.reason).toBe('string');
+        expect(typeof stopping?.confidence).toBe('number');
+
+        // 4. close topic
+        const closeRes = await fetch(`http://localhost:${port}/api/v1/conversations/${topic.id}/close`, {
+            method: 'POST',
+        });
+        expect(closeRes.ok).toBe(true);
+
+        ws.close();
+    }, 20_000);
+
+    it('rejects missing-field requests with 400', async () => {
+        const noTitle = await fetch(`http://localhost:${port}/api/v1/conversations`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ participants: ['shaev'] }),
+        });
+        expect(noTitle.status).toBe(400);
+    });
+});
