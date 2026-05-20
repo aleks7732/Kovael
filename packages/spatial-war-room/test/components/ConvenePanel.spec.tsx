@@ -26,16 +26,17 @@ describe('ConvenePanel', () => {
 
     beforeEach(() => {
         fetchMock = vi.fn();
-        // vi.fn()'s loose signature doesn't structurally match the strict
-        // global `fetch` overload; cast through unknown so the test config
-        // type-check (tsconfig.test.json) stays happy without weakening
-        // production code.
-        global.fetch = fetchMock as unknown as typeof fetch;
+        // Use vi.stubGlobal so vi.unstubAllGlobals() in afterEach actually
+        // restores the original fetch reference — `global.fetch = ...`
+        // reassignment leaks past `vi.restoreAllMocks()` (which only resets
+        // tracked mock fns, not arbitrary global reassignments).
+        vi.stubGlobal('fetch', fetchMock as unknown as typeof fetch);
     });
 
     afterEach(() => {
         cleanup();
         vi.restoreAllMocks();
+        vi.unstubAllGlobals();
     });
 
     it('renders the title + goal inputs and the dispatch button', () => {

@@ -15,6 +15,10 @@ beforeEach(() => {
 afterEach(() => {
     cleanup();
     vi.restoreAllMocks();
+    // Unstub any globals (we use vi.stubGlobal('fetch', ...) below) so the
+    // mocked fetch doesn't leak into sibling files. vi.restoreAllMocks()
+    // only resets tracked spies, not reassigned globals.
+    vi.unstubAllGlobals();
     // Reset the Zustand singleton between tests so seeded state from one
     // case can't bleed into a sibling. We only zero out the fields the
     // theater reads — leave the rest of the store at its initial values
@@ -72,9 +76,9 @@ function stubFetchOk(body: any = {}) {
         json: () => Promise.resolve(body),
         text: () => Promise.resolve(''),
     });
-    // vi.fn()'s loose signature doesn't structurally match the strict
-    // global `fetch` overload; cast through unknown for the typecheck.
-    global.fetch = fetchMock as unknown as typeof fetch;
+    // Use vi.stubGlobal so afterEach's vi.unstubAllGlobals() actually
+    // restores the original fetch reference.
+    vi.stubGlobal('fetch', fetchMock as unknown as typeof fetch);
     return fetchMock;
 }
 
@@ -191,7 +195,7 @@ describe('ConversationTheater', () => {
     });
 
     it('does not crash if the mount-time state prefetch fails (offline orchestrator)', () => {
-        global.fetch = vi.fn().mockRejectedValue(new Error('connection refused')) as unknown as typeof fetch;
+        vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('connection refused')) as unknown as typeof fetch);
         const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
         expect(() => render(<ConversationTheater />)).not.toThrow();
         warn.mockRestore();

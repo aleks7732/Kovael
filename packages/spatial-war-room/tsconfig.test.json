@@ -9,9 +9,12 @@
     // for test files.
     "noUnusedLocals": false,
     "noUnusedParameters": false,
-    // Vitest globals are not used (we import describe/it/expect/vi
-    // explicitly) — keep the app's `vite/client` types and add nothing.
+    // Keep the app's `vite/client` types and explicitly add `node` so
+    // `global.fetch`, `Buffer`, and similar Node-runtime APIs the tests
+    // stub or reference resolve under this config. Production code does
+    // not need Node types in scope so they stay out of tsconfig.app.json.
     "types": ["vite/client", "node"]
   },
   "include": ["src", "test"]
 }
+
