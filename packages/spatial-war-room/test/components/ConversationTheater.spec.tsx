@@ -154,12 +154,19 @@ describe('ConversationTheater', () => {
             ],
             agentRoster: [],
         });
-        // Override the store action with our spy
+        // The store is a module-scoped singleton — swap the action with a
+        // spy for the duration of this test and restore the original in a
+        // try/finally so we don't leak the spy into siblings (afterEach
+        // only resets data state, not actions).
+        const originalSelectTopic = useWarRoomStore.getState().selectTopic;
         useWarRoomStore.setState({ selectTopic } as any);
-
-        render(<ConversationTheater />);
-        fireEvent.click(screen.getByText('second'));
-        expect(selectTopic).toHaveBeenCalledWith('t2');
+        try {
+            render(<ConversationTheater />);
+            fireEvent.click(screen.getByText('second'));
+            expect(selectTopic).toHaveBeenCalledWith('t2');
+        } finally {
+            useWarRoomStore.setState({ selectTopic: originalSelectTopic } as any);
+        }
     });
 
     it('HALT button on an active topic POSTs the close endpoint', async () => {

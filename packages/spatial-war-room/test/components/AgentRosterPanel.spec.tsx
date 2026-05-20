@@ -25,9 +25,15 @@ const defaultProps = {
     onChangeInterAgentChatMode: () => {},
 };
 
+// Fixtures populate every required HardwareTelemetry field so tsc and the
+// component contract stay in sync. timestamp + usedMb are derived from the
+// other numbers; if production telemetry ever adds another required field
+// these fixtures will fail tsc and we'll know to update them.
 const HARDWARE_OK: HardwareTelemetry = {
     status: 'ok',
+    timestamp: 1_779_262_000_000,
     freeMb: 12_000,
+    usedMb: 12_000,
     totalMb: 24_000,
     utilizationPct: 50,
     devices: 1,
@@ -35,7 +41,9 @@ const HARDWARE_OK: HardwareTelemetry = {
 
 const HARDWARE_GATED: HardwareTelemetry = {
     status: 'ok',
+    timestamp: 1_779_262_000_000,
     freeMb: 4_000,
+    usedMb: 20_000,
     totalMb: 24_000,
     utilizationPct: 90,
     devices: 1,
