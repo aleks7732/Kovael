@@ -3,6 +3,7 @@ import { EventEmitter } from 'node:events';
 import crypto from 'node:crypto';
 import { TriadStateMachine, TriadPhase, PhaseEvent } from './protocols/TriadStateMachine.js';
 import type { RateLimitTracker } from './services/RateLimitTracker.js';
+import type { PersonaLoader } from './services/PersonaLoader.js';
 
 /**
  * Token accounting per Symphony §13 — every receipt carries the cycle's
@@ -73,11 +74,16 @@ export class MevBridge extends EventEmitter {
     private primaryArchitect: string = SHAEV_AGENT;
     private fallbackAgent: string = NYX_CLI_AGENT;
     private keepRecentTurns: number = 3;
+    private personaLoader: PersonaLoader | null = null;
 
     constructor(dbPath: string = 'mev_bridge.db') {
         super();
         this.db = new DatabaseSync(dbPath);
         this.initializeDatabase();
+    }
+
+    public setPersonaLoader(loader: PersonaLoader): void {
+        this.personaLoader = loader;
     }
 
     private initializeDatabase() {
@@ -192,11 +198,21 @@ export class MevBridge extends EventEmitter {
         // Record the dispatch for rate-limit accounting (no-op if tracker absent).
         this.rateLimits?.recordDispatch(routing.agent);
         const shardedContext = this.shardContext(context, { keepRecent: this.keepRecentTurns });
+        let contextForArchitect = shardedContext;
+        if (this.personaLoader) {
+            const compiledPrompt = this.personaLoader.compileSystemPrompt(routing.agent);
+            contextForArchitect = shardedContext.map(m => {
+                if (m?.role === 'system') {
+                    return { ...m, content: compiledPrompt };
+                }
+                return m;
+            });
+        }
 
         try {
             machine.transition(TriadPhase.DispatchToArchitect, { routedAgent: routing.agent, note: routing.rationale });
             machine.transition(TriadPhase.ArchitectStreaming);
-            const blueprint = await this.architect(task, shardedContext, routing.agent);
+            const blueprint = await this.architect(task, contextForArchitect, routing.agent);
 
             machine.transition(TriadPhase.DispatchToOperator);
             machine.transition(TriadPhase.OperatorExecuting);
@@ -211,7 +227,7 @@ export class MevBridge extends EventEmitter {
             // Symphony §13 — token accounting. No real LLM is wired today;
             // we estimate from prompt + response character length so the
             // shape is correct when a provider returns usage later.
-            const promptText = task + shardedContext.map(m => (m?.content ?? '')).join('\n');
+            const promptText = task + contextForArchitect.map(m => (m?.content ?? '')).join('\n');
             const responseText = JSON.stringify(blueprint) + JSON.stringify(executionResult) + JSON.stringify(verification.details);
             const input = estimateTokens(promptText);
             const output = estimateTokens(responseText);

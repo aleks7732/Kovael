@@ -20,6 +20,9 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as http from 'http';
 import { AgentCards } from './AgentCards.js';
+import { PersonaLoader } from './services/PersonaLoader.js';
+import { ConversationBus } from './services/ConversationBus.js';
+import { ChairBridgeProvider } from './services/ModelProvider.js';
 
 
 export interface OrchestratorConfig {
@@ -48,8 +51,10 @@ export class MeshOrchestrator extends EventEmitter {
     private workspaces: WorkspaceManager;
     private hooks: HookRunner;
     private workflowLoader: WorkflowLoader;
+    private personaLoader: PersonaLoader;
     private rateLimits: RateLimitTracker;
     private chairs: ChairRegistry;
+    private conversationBus: ConversationBus;
     private log: Logger = rootLogger;
     private agentCards: any[] = [];
     private nodeCache: Map<string, any> = new Map();
@@ -63,6 +68,7 @@ export class MeshOrchestrator extends EventEmitter {
     private interAgentTimer: NodeJS.Timeout | null = null;
     private currentTechnicalIndex: number = 0;
     private currentInterestsIndex: number = 0;
+    private banterTopicId: string | null = null;
 
     // Banter content is scrubbed of personal references for the public repo —
     // no operator handle, no biographical details, no biology-domain identifiers.
@@ -109,6 +115,10 @@ export class MeshOrchestrator extends EventEmitter {
                 this.handleChairRequest(req, res);
                 return;
             }
+            if (req.url && req.url.startsWith('/api/v1/conversations')) {
+                this.handleConversationRequest(req, res);
+                return;
+            }
             this.handshake.handleRequest(req, res);
         });
 
@@ -118,6 +128,9 @@ export class MeshOrchestrator extends EventEmitter {
         this.memoryDb = new DatabaseSync(':memory:');
         this.ingestor = new SemanticIngestor(this.memoryDb);
         this.mevBridge = new MevBridge(':memory:');
+        this.personaLoader = new PersonaLoader();
+        this.personaLoader.start();
+        this.mevBridge.setPersonaLoader(this.personaLoader);
         this.hardware = new HardwareMonitor(2000);
         this.claims = new TaskClaimMachine();
         this.retryQueue = new RetryQueue(this.claims, cfg.retryQueue ?? {});
@@ -128,6 +141,12 @@ export class MeshOrchestrator extends EventEmitter {
         this.workflowLoader = new WorkflowLoader();
         this.rateLimits = new RateLimitTracker();
         this.chairs = new ChairRegistry(cfg.chairRegistry ?? {});
+        this.conversationBus = new ConversationBus(
+            this.memoryDb,
+            this.chairs,
+            this.personaLoader,
+            port
+        );
         this.mevBridge.setRateLimitTracker(this.rateLimits);
 
         this.loadAgentCards();
@@ -151,6 +170,7 @@ export class MeshOrchestrator extends EventEmitter {
         this.server.listen(port, () => {
             const addr = this.server.address();
             const boundPort = addr && typeof addr === 'object' ? addr.port : port;
+            this.conversationBus.orchestratorPort = boundPort;
             this.log.info('orchestrator_listening', { port: boundPort, surfaces: ['ws', 'sse', '/api/v1/state'] });
         });
 
@@ -379,6 +399,129 @@ export class MeshOrchestrator extends EventEmitter {
         });
     }
 
+    private handleConversationRequest(req: http.IncomingMessage, res: http.ServerResponse): void {
+        const writeJson = (status: number, body: Record<string, unknown> | Array<unknown>): void => {
+            res.writeHead(status, {
+                'Content-Type': 'application/json',
+                'Cache-Control': 'no-store',
+                'Access-Control-Allow-Origin': '*',
+            });
+            res.end(JSON.stringify(body));
+        };
+
+        const url = new URL(req.url || '/', `http://${req.headers.host}`);
+        const pathname = url.pathname;
+
+        // Path regexes
+        const topicMatch = pathname.match(/^\/api\/v1\/conversations\/?$/);
+        const messageMatch = pathname.match(/^\/api\/v1\/conversations\/([^/]+)\/message\/?$/);
+        const closeMatch = pathname.match(/^\/api\/v1\/conversations\/([^/]+)\/close\/?$/);
+        const historyMatch = pathname.match(/^\/api\/v1\/conversations\/([^/]+)\/history\/?$/);
+
+        if (req.method === 'GET' && historyMatch) {
+            const topicId = historyMatch[1];
+            try {
+                const history = this.conversationBus.getHistory(topicId);
+                writeJson(200, history as any);
+            } catch (err: any) {
+                writeJson(500, { error: 'failed_to_get_history', message: err.message });
+            }
+            return;
+        }
+
+        if (req.method !== 'POST') {
+            writeJson(405, { error: 'method_not_allowed' });
+            return;
+        }
+
+        const MAX_BODY = 16 * 1024;
+        let received = 0;
+        const chunks: Buffer[] = [];
+        let aborted = false;
+
+        req.on('data', (chunk: Buffer) => {
+            if (aborted) return;
+            received += chunk.length;
+            if (received > MAX_BODY) {
+                aborted = true;
+                writeJson(413, { error: 'payload_too_large', max_bytes: MAX_BODY });
+                req.destroy();
+                return;
+            }
+            chunks.push(chunk);
+        });
+
+        req.on('error', () => {
+            if (!aborted) writeJson(400, { error: 'request_stream_error' });
+        });
+
+        req.on('end', () => {
+            if (aborted) return;
+            let body: any = {};
+            const raw = Buffer.concat(chunks).toString('utf8');
+            if (raw.length > 0) {
+                try {
+                    body = JSON.parse(raw);
+                } catch {
+                    writeJson(400, { error: 'invalid_json' });
+                    return;
+                }
+            }
+
+            if (topicMatch) {
+                const title = typeof body.title === 'string' ? body.title.trim() : '';
+                const participants = Array.isArray(body.participants) ? body.participants : [];
+                if (!title || participants.length === 0) {
+                    writeJson(400, { error: 'missing_required_fields', need: ['title', 'participants'] });
+                    return;
+                }
+                try {
+                    const topic = this.conversationBus.createTopic(title, participants);
+                    writeJson(200, topic as any);
+                } catch (err: any) {
+                    writeJson(500, { error: 'failed_to_create_topic', message: err.message });
+                }
+                return;
+            }
+
+            if (messageMatch) {
+                const topicId = messageMatch[1];
+                const senderId = typeof body.senderId === 'string' ? body.senderId.trim() : '';
+                const content = typeof body.content === 'string' ? body.content.trim() : '';
+                if (!senderId || !content) {
+                    writeJson(400, { error: 'missing_required_fields', need: ['senderId', 'content'] });
+                    return;
+                }
+                try {
+                    const msg = this.conversationBus.postMessage(topicId, senderId, 'user', content);
+                    
+                    // Asynchronously trigger convene loop in background
+                    this.conversationBus.convene(topicId, content).catch((err) => {
+                        this.log.error('convene_loop_failed', { topicId, error: err.message });
+                    });
+
+                    writeJson(200, msg as any);
+                } catch (err: any) {
+                    writeJson(500, { error: 'failed_to_post_message', message: err.message });
+                }
+                return;
+            }
+
+            if (closeMatch) {
+                const topicId = closeMatch[1];
+                try {
+                    this.conversationBus.closeTopic(topicId);
+                    writeJson(200, { success: true });
+                } catch (err: any) {
+                    writeJson(500, { error: 'failed_to_close_topic', message: err.message });
+                }
+                return;
+            }
+
+            writeJson(404, { error: 'unknown_conversation_action' });
+        });
+    }
+
     /**
      * Chair Beacon Protocol endpoints. Three actions, all JSON-in / JSON-out:
      *   POST /api/v1/chairs/claim     → { agentId, sessionId, ttlMs }
@@ -456,6 +599,7 @@ export class MeshOrchestrator extends EventEmitter {
                     trustTier: typeof body.trustTier === 'number' ? body.trustTier : undefined,
                     host: typeof body.host === 'string' ? body.host : undefined,
                     note: typeof body.note === 'string' ? body.note.slice(0, 200) : undefined,
+                    inboxUrl: typeof body.inboxUrl === 'string' ? body.inboxUrl.trim() : undefined,
                 });
                 writeJson(200, {
                     agentId: claim.agentId,
@@ -495,6 +639,19 @@ export class MeshOrchestrator extends EventEmitter {
                 }
                 const ok = this.chairs.release(agentId, sessionId, 'client_release');
                 writeJson(200, { released: ok });
+                return;
+            }
+
+            if (action === 'reply') {
+                const topicId = typeof body.topicId === 'string' ? body.topicId.trim() : '';
+                const agentId = typeof body.agentId === 'string' ? body.agentId.trim() : '';
+                const content = typeof body.content === 'string' ? body.content : '';
+                if (!topicId || !agentId) {
+                    writeJson(400, { error: 'missing_required_fields', need: ['topicId', 'agentId'] });
+                    return;
+                }
+                const success = ChairBridgeProvider.submitReply(topicId, agentId, content);
+                writeJson(200, { success });
                 return;
             }
 
@@ -576,6 +733,10 @@ export class MeshOrchestrator extends EventEmitter {
     }
 
     private initializeBus() {
+        this.conversationBus.on('bus_event', (event) => {
+            this.broadcast(event);
+        });
+
         // cycle_complete is subscribed in wireMevBridge() where it owns token
         // accounting + receiptsIssued; do NOT subscribe again here.
         this.wss.on('connection', (ws: WebSocket, request) => {
@@ -862,6 +1023,32 @@ export class MeshOrchestrator extends EventEmitter {
             this.currentInterestsIndex = (index + 1) % dialogues.length;
         }
 
+        // Use the stateful ConversationBus to track history statefully
+        if (!this.banterTopicId) {
+            try {
+                const topic = this.conversationBus.createTopic(
+                    'Inter-Agent Banter',
+                    ['nyx-antigravity', 'nyx-cli', 'shaev', 'nyx-openclaw']
+                );
+                this.banterTopicId = topic.id;
+            } catch (err: any) {
+                this.log.error('failed_to_create_banter_topic', { error: err.message });
+            }
+        }
+
+        if (this.banterTopicId) {
+            try {
+                this.conversationBus.postMessage(
+                    this.banterTopicId,
+                    dialogue.senderId,
+                    'assistant',
+                    dialogue.content
+                );
+            } catch (err: any) {
+                this.log.error('failed_to_post_banter_message', { error: err.message });
+            }
+        }
+
         const msg = {
             id: crypto.randomUUID(),
             timestamp: Date.now(),
@@ -876,6 +1063,7 @@ export class MeshOrchestrator extends EventEmitter {
 
     public close() {
         this.stopInterAgentChatLoop();
+        this.personaLoader.stop();
         this.workflowLoader.stop();
         this.reconciler.stop();
         this.retryQueue.stop();

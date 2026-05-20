@@ -50,4 +50,67 @@ describe('MeshOrchestrator', () => {
         expect(taskRoutedSpy).toHaveBeenCalledTimes(1);
         expect(taskRoutedSpy).toHaveBeenCalledWith(expect.objectContaining({ goal, receipt }));
     });
+
+    it('should inject compiled persona guidelines into the architect context', async () => {
+        const mevBridge = (orchestrator as any).mevBridge;
+        const architectSpy = vi.spyOn(mevBridge, 'architect');
+
+        const goal = 'Synthesize graphics and telemetry';
+        await orchestrator.injectTask(goal);
+
+        expect(architectSpy).toHaveBeenCalled();
+        const callArgs = architectSpy.mock.calls[0];
+        const contextArg = callArgs[1] as any[]; // second parameter is context
+        const systemMessage = contextArg.find((m: any) => m.role === 'system');
+
+        expect(systemMessage).toBeDefined();
+        expect(systemMessage.content).toContain('Your voice guidelines:');
+        expect(systemMessage.content).toContain('Your disposition in the mesh:');
+
+        architectSpy.mockRestore();
+    });
+
+    it('should support REST API endpoints for conversations', async () => {
+        // 1. Create a conversation topic
+        const createRes = await fetch(`http://localhost:${PORT}/api/v1/conversations`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                title: 'REST Banter Test',
+                participants: ['nyx-antigravity', 'nyx-cli'],
+            }),
+        });
+        expect(createRes.ok).toBe(true);
+        const topic = await createRes.json() as any;
+        expect(topic.id).toBeDefined();
+        expect(topic.title).toBe('REST Banter Test');
+
+        // 2. Post a message to the topic
+        const postRes = await fetch(`http://localhost:${PORT}/api/v1/conversations/${topic.id}/message`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                senderId: 'nyx-antigravity',
+                content: 'Hello over REST',
+            }),
+        });
+        expect(postRes.ok).toBe(true);
+        const msg = await postRes.json() as any;
+        expect(msg.content).toBe('Hello over REST');
+
+        // 3. Get history of the topic
+        const historyRes = await fetch(`http://localhost:${PORT}/api/v1/conversations/${topic.id}/history`);
+        expect(historyRes.ok).toBe(true);
+        const history = await historyRes.json() as any[];
+        expect(history.length).toBeGreaterThanOrEqual(1);
+        expect(history[0].content).toBe('Hello over REST');
+
+        // 4. Close the conversation
+        const closeRes = await fetch(`http://localhost:${PORT}/api/v1/conversations/${topic.id}/close`, {
+            method: 'POST',
+        });
+        expect(closeRes.ok).toBe(true);
+        const closeResult = await closeRes.json() as any;
+        expect(closeResult.success).toBe(true);
+    });
 });

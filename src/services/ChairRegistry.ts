@@ -33,6 +33,7 @@ export interface ChairClaim {
     status: ChairStatus;
     host?: string;
     note?: string;
+    inboxUrl?: string;
 }
 
 export interface ChairEvent {
@@ -97,6 +98,7 @@ export class ChairRegistry extends EventEmitter {
         trustTier?: number;
         host?: string;
         note?: string;
+        inboxUrl?: string;
     }): ChairClaim {
         const now = Date.now();
         const existing = this.chairs.get(input.agentId);
@@ -122,6 +124,7 @@ export class ChairRegistry extends EventEmitter {
             status: 'online',
             host: input.host,
             note: input.note,
+            inboxUrl: input.inboxUrl,
         };
         this.chairs.set(claim.agentId, claim);
         this.emit('chair_event', {
