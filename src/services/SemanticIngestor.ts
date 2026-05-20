@@ -38,6 +38,17 @@ export class SemanticIngestor {
         }
     }
 
+    /**
+     * Directories the crawler MUST NOT enter. These either explode the
+     * indexed corpus (node_modules) or contain PII / agent internals that
+     * must not bleed into runtime memory (.notes is the local agent plan;
+     * .kovael is the per-cycle workspace; .tsupgrader holds tooling KB).
+     */
+    private static readonly SKIP_DIRS: ReadonlySet<string> = new Set([
+        'node_modules', '.git', 'dist', '.notes', '.kovael', '.tsupgrader',
+        '.next', 'build', 'coverage',
+    ]);
+
     private crawl(dir: string) {
         if (!fs.existsSync(dir)) return;
 
@@ -45,10 +56,9 @@ export class SemanticIngestor {
 
         for (const entry of entries) {
             const fullPath = path.join(dir, entry.name);
-            
+
             if (entry.isDirectory()) {
-                // Skip common large/irrelevant directories
-                if (entry.name === 'node_modules' || entry.name === '.git' || entry.name === 'dist') continue;
+                if (SemanticIngestor.SKIP_DIRS.has(entry.name)) continue;
                 this.crawl(fullPath);
             } else if (entry.isFile()) {
                 const ext = path.extname(entry.name);
