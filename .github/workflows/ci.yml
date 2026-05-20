@@ -27,7 +27,7 @@ jobs:
         working-directory: packages/spatial-war-room
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-      - uses: actions/setup-node@1d0ff469b62b6d0ad9b0af0fb3b1e40be53ce9b9 # v4.2.0
+      - uses: actions/setup-node@1d0ff469b7ec7b3cb9d8673fde0c81c44821de2a # v4.2.0
         with:
           node-version: '22'
           cache: 'npm'
@@ -43,7 +43,7 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-      - uses: actions/setup-node@1d0ff469b62b6d0ad9b0af0fb3b1e40be53ce9b9 # v4.2.0
+      - uses: actions/setup-node@1d0ff469b7ec7b3cb9d8673fde0c81c44821de2a # v4.2.0
         with:
           node-version: '22'
           cache: 'npm'
@@ -58,11 +58,14 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-      - uses: actions/setup-node@1d0ff469b62b6d0ad9b0af0fb3b1e40be53ce9b9 # v4.2.0
+      - uses: actions/setup-node@1d0ff469b7ec7b3cb9d8673fde0c81c44821de2a # v4.2.0
         with:
           node-version: '22'
           cache: 'npm'
       - name: Install
         run: npm ci --no-audit --no-fund
+      - name: Install frontend deps (cockpit.spec.ts vite build gate)
+        run: npm ci --no-audit --no-fund
+        working-directory: packages/spatial-war-room
       - name: Run tests
         run: npx vitest run --reporter=default
