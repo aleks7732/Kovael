@@ -63,6 +63,8 @@ export interface AgentRosterCard {
   trust_tier?: number;
   status: 'online' | 'idle' | 'dispatching' | 'offline';
   lastSeen?: number;
+  portrait_url?: string;
+  accent_hex?: string;
   /** Chair Beacon Protocol presence — independent of dispatch status. */
   chair?: {
     sessionId: string;
@@ -400,6 +402,8 @@ export const useWarRoomStore = create<WarRoomState>((set, get) => ({
         trust_tier: card.trust_tier,
         status: 'online',
         lastSeen: Date.now(),
+        portrait_url: card.portrait_url,
+        accent_hex: card.accent_hex,
       };
       const rosterExists = state.agentRoster.some(r => r.id === card.id);
       const nextRoster = rosterExists

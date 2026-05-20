@@ -18,6 +18,8 @@ export interface AgentCard {
   trust_tier: number;
   /** Chair beacon integration hint shown in /docs/CHAIRS.md. */
   beacon_hint?: string;
+  portrait_url?: string;
+  accent_hex?: string;
 }
 
 export const AgentCards: Record<string, AgentCard> = {
@@ -30,6 +32,8 @@ export const AgentCards: Record<string, AgentCard> = {
     vram_requirements: "32GB (RTX 5090)",
     trust_tier: 1,
     beacon_hint: "Workspace startup hook → curl /api/v1/chairs/claim",
+    portrait_url: "/agents/nyx-antigravity.png",
+    accent_hex: "#d97706",
   },
   "nyx-claude-code": {
     id: "nyx-claude-code",
@@ -40,6 +44,8 @@ export const AgentCards: Record<string, AgentCard> = {
     vram_requirements: "0GB (cloud)",
     trust_tier: 1,
     beacon_hint: "One-shot Bash curl on session start; release on /exit",
+    portrait_url: "/agents/nyx-claude-code.png",
+    accent_hex: "#c2410c",
   },
   "nyx-cli": {
     id: "nyx-cli",
@@ -50,6 +56,8 @@ export const AgentCards: Record<string, AgentCard> = {
     vram_requirements: "8GB",
     trust_tier: 1,
     beacon_hint: "kovael-chair wrapper around CLI invocation",
+    portrait_url: "/agents/nyx-cli.png",
+    accent_hex: "#0891b2",
   },
   "nyx-agcli": {
     id: "nyx-agcli",
@@ -60,6 +68,8 @@ export const AgentCards: Record<string, AgentCard> = {
     vram_requirements: "0GB (cloud)",
     trust_tier: 1,
     beacon_hint: "Session-start hook in .agcli/init",
+    portrait_url: "/agents/nyx-agcli.png",
+    accent_hex: "#0284c7",
   },
   "nyx-adk": {
     id: "nyx-adk",
@@ -70,6 +80,8 @@ export const AgentCards: Record<string, AgentCard> = {
     vram_requirements: "0GB (cloud)",
     trust_tier: 2,
     beacon_hint: "scripts/kovael_chair.py imported as an ADK tool",
+    portrait_url: "/agents/nyx-adk.png",
+    accent_hex: "#4f46e5",
   },
   "nyx-codex": {
     id: "nyx-codex",
@@ -80,6 +92,8 @@ export const AgentCards: Record<string, AgentCard> = {
     vram_requirements: "0GB (cloud)",
     trust_tier: 2,
     beacon_hint: "Post-exec hook calls scripts/kovael-chair.mjs",
+    portrait_url: "/agents/nyx-codex.png",
+    accent_hex: "#7c3aed",
   },
   "nyx-openclaw": {
     id: "nyx-openclaw",
@@ -90,6 +104,8 @@ export const AgentCards: Record<string, AgentCard> = {
     vram_requirements: "16GB",
     trust_tier: 2,
     beacon_hint: "Sandbox boot script claims chair, releases on container exit",
+    portrait_url: "/agents/nyx-openclaw.png",
+    accent_hex: "#9333ea",
   },
   "nyx-cw": {
     id: "nyx-cw",
@@ -100,6 +116,8 @@ export const AgentCards: Record<string, AgentCard> = {
     vram_requirements: "0GB (cloud)",
     trust_tier: 2,
     beacon_hint: "IDE startup script invokes kovael-chair on workspace open",
+    portrait_url: "/agents/nyx-cw.png",
+    accent_hex: "#ea580c",
   },
   "shaev": {
     id: "shaev",
@@ -110,5 +128,7 @@ export const AgentCards: Record<string, AgentCard> = {
     vram_requirements: "24GB",
     trust_tier: 3,
     beacon_hint: "Hermes pre-turn tool call hits chairs/heartbeat",
+    portrait_url: "/agents/shaev.png",
+    accent_hex: "#059669",
   },
 };

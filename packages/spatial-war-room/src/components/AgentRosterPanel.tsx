@@ -1,5 +1,6 @@
 import { memo, useEffect, useState } from 'react';
 import type { AgentRosterCard, HardwareTelemetry, RateLimitSnapshot } from '../store/useWarRoomStore';
+import { AgentAvatarFallback } from './AgentAvatarFallback';
 
 interface AgentRosterPanelProps {
   roster: AgentRosterCard[];
@@ -91,45 +92,73 @@ ChairBeaconPill.displayName = 'AgentRosterPanel.ChairBeaconPill';
 const AgentCard = memo(({ card, rate }: { card: AgentRosterCard; rate?: RateLimitSnapshot }) => {
   const status = STATUS_STYLE[card.status];
   const hasLiveBeacon = card.chair?.presence === 'live';
+  const [imgError, setImgError] = useState(false);
+
   return (
-  <div className={`glass-panel p-3 transition-colors duration-300 ${hasLiveBeacon ? 'ring-1 ring-emerald-500/15' : ''}`}>
-    <div className="flex items-start justify-between gap-2 mb-2">
-      <div className="flex items-center gap-2 min-w-0">
-        <div className={`w-2 h-2 rounded-full shrink-0 ${status.dot}`} />
-        <div className="font-display font-bold text-[14px] text-command-warm-white leading-none truncate">{card.name}</div>
-      </div>
-      <div className="flex items-center gap-1.5 shrink-0">
-        <ChairBeaconPill card={card} />
-        {rate && (
-          <span
-            className={`t-mono text-[8.5px] font-semibold tracking-wide px-1.5 py-0.5 rounded tabular-nums ${
-              rate.blocked
-                ? 'bg-red-500/15 text-red-300'
-                : rate.inWindow / rate.capacity > 0.7
-                  ? 'bg-amber-500/15 text-amber-300'
-                  : 'bg-emerald-500/10 text-emerald-300/80'
-            }`}
-            title={`Rate-limit: ${rate.inWindow} of ${rate.capacity} dispatches in last ${Math.round(rate.windowMs / 1000)}s`}
-          >
-            {rate.inWindow}/{rate.capacity}
-          </span>
+  <div 
+    className={`glass-panel p-3 transition-all duration-300 relative overflow-hidden ${
+      hasLiveBeacon ? 'ring-1 ring-emerald-500/15' : ''
+    }`}
+    style={card.accent_hex && hasLiveBeacon ? { borderLeft: `3px solid ${card.accent_hex}` } : undefined}
+  >
+    <div className="flex items-start gap-3 mb-2">
+      {/* 36x36 Avatar */}
+      <div className="shrink-0 w-9 h-9 relative">
+        {!imgError && card.portrait_url ? (
+          <img
+            src={card.portrait_url}
+            alt={`${card.name} avatar`}
+            className="w-9 h-9 rounded-full object-cover border border-white/10 shadow-md"
+            onError={() => setImgError(true)}
+          />
+        ) : (
+          <AgentAvatarFallback agentId={card.id} size={36} />
         )}
-        {card.trust_tier !== undefined && (
-          <div className="t-mono text-[9px] text-command-accent/85 font-bold tracking-wider" title={TRUST_LABEL[card.trust_tier] ?? `Trust tier ${card.trust_tier}`}>
-            T{card.trust_tier}
+        {/* Status indicator sitting on the avatar */}
+        <div className={`absolute -bottom-0.5 -right-0.5 w-3 h-3 rounded-full border-2 border-[#121212] shrink-0 ${status.dot}`} />
+      </div>
+
+      <div className="flex-1 min-w-0">
+        <div className="flex items-start justify-between gap-2">
+          <div className="font-display font-bold text-[14px] text-command-warm-white leading-none truncate">
+            {card.name}
           </div>
-        )}
+          <div className="flex items-center gap-1.5 shrink-0">
+            <ChairBeaconPill card={card} />
+            {rate && (
+              <span
+                className={`t-mono text-[8.5px] font-semibold tracking-wide px-1.5 py-0.5 rounded tabular-nums ${
+                  rate.blocked
+                    ? 'bg-red-500/15 text-red-300'
+                    : rate.inWindow / rate.capacity > 0.7
+                      ? 'bg-amber-500/15 text-amber-300'
+                      : 'bg-emerald-500/10 text-emerald-300/80'
+                }`}
+                title={`Rate-limit: ${rate.inWindow} of ${rate.capacity} dispatches in last ${Math.round(rate.windowMs / 1000)}s`}
+              >
+                {rate.inWindow}/{rate.capacity}
+              </span>
+            )}
+            {card.trust_tier !== undefined && (
+              <div className="t-mono text-[9px] text-command-accent/85 font-bold tracking-wider" title={TRUST_LABEL[card.trust_tier] ?? `Trust tier ${card.trust_tier}`}>
+                T{card.trust_tier}
+              </div>
+            )}
+          </div>
+        </div>
+
+        <div className="flex items-center justify-between mt-1">
+          <span className={`text-[10.5px] font-semibold ${status.text}`}>{status.label}</span>
+          <span className="t-mono text-[9px] text-command-warm-white/45 truncate ml-2">{card.provider}</span>
+        </div>
       </div>
     </div>
-    <div className="flex items-center justify-between mb-2">
-      <span className={`text-[10.5px] font-semibold ${status.text}`}>{status.label}</span>
-      <span className="t-mono text-[9px] text-command-warm-white/45 truncate ml-2">{card.provider}</span>
-    </div>
+
     {card.description && (
-      <div className="text-[10px] text-command-warm-white/65 leading-snug mb-2">{card.description}</div>
+      <div className="text-[10px] text-command-warm-white/65 leading-snug mb-2 pl-[48px]">{card.description}</div>
     )}
     {card.mcp_capabilities && card.mcp_capabilities.length > 0 && (
-      <div className="flex flex-wrap gap-1 mb-2">
+      <div className="flex flex-wrap gap-1 mb-2 pl-[48px]">
         {card.mcp_capabilities.slice(0, 6).map((cap) => (
           <span
             key={cap}
@@ -140,7 +169,7 @@ const AgentCard = memo(({ card, rate }: { card: AgentRosterCard; rate?: RateLimi
         ))}
       </div>
     )}
-    <div className="flex items-center justify-between pt-1.5 border-t border-white/5">
+    <div className="flex items-center justify-between pt-1.5 border-t border-white/5 pl-[48px]">
       {card.vram_requirements && (
         <span className="t-mono text-[9px] text-command-warm-white/55">VRAM · {card.vram_requirements}</span>
       )}
