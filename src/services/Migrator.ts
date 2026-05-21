@@ -141,4 +141,65 @@ export const ORCHESTRATOR_MIGRATIONS: Migration[] = [
             `);
         },
     },
+    {
+        version: 3,
+        name: 'cycle_events_log',
+        up: (db) => {
+            db.exec(`
+                CREATE TABLE IF NOT EXISTS cycle_events (
+                    cycle_id TEXT NOT NULL,
+                    seq INTEGER NOT NULL,
+                    kind TEXT NOT NULL,
+                    timestamp INTEGER NOT NULL,
+                    actor TEXT NOT NULL,
+                    payload TEXT NOT NULL DEFAULT '{}',
+                    PRIMARY KEY (cycle_id, seq)
+                ) STRICT
+            `);
+            db.exec(`
+                CREATE INDEX IF NOT EXISTS idx_cycle_events_kind
+                ON cycle_events(kind)
+            `);
+        },
+    },
+    {
+        version: 4,
+        name: 'episodic_memory',
+        up: (db) => {
+            db.exec(`
+                CREATE TABLE IF NOT EXISTS episodic_memories (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    cycle_id TEXT NOT NULL,
+                    agent_id TEXT NOT NULL,
+                    task_class TEXT NOT NULL,
+                    summary TEXT NOT NULL,
+                    outcome TEXT NOT NULL,
+                    confidence REAL NOT NULL,
+                    timestamp INTEGER NOT NULL,
+                    metadata TEXT NOT NULL DEFAULT '{}'
+                ) STRICT
+            `);
+            db.exec(`
+                CREATE INDEX IF NOT EXISTS idx_episodic_agent
+                ON episodic_memories(agent_id, timestamp)
+            `);
+            db.exec(`
+                CREATE VIRTUAL TABLE IF NOT EXISTS episodic_memories_fts
+                USING fts5(summary, task_class, content=episodic_memories, content_rowid=id)
+            `);
+            // Triggers to keep FTS in sync with the content table.
+            db.exec(`
+                CREATE TRIGGER IF NOT EXISTS episodic_ai AFTER INSERT ON episodic_memories BEGIN
+                    INSERT INTO episodic_memories_fts(rowid, summary, task_class)
+                    VALUES (new.id, new.summary, new.task_class);
+                END
+            `);
+            db.exec(`
+                CREATE TRIGGER IF NOT EXISTS episodic_ad AFTER DELETE ON episodic_memories BEGIN
+                    INSERT INTO episodic_memories_fts(episodic_memories_fts, rowid, summary, task_class)
+                    VALUES ('delete', old.id, old.summary, old.task_class);
+                END
+            `);
+        },
+    },
 ];

@@ -28,6 +28,11 @@ import { ApiTokenGate } from './services/ApiTokenGate.js';
 import { RateLimiter, RateLimiterConfig } from './services/RateLimiter.js';
 import { HealthEndpoints } from './services/HealthEndpoints.js';
 import { openOrchestratorDb } from './services/OrchestratorDb.js';
+import { CycleLog } from './services/CycleLog.js';
+import { BudgetTracker } from './services/BudgetTracker.js';
+import { RoutingPolicy } from './services/RoutingPolicy.js';
+import { EpisodicMemory } from './services/EpisodicMemory.js';
+import { enrichWithAgUi } from './services/AgUiEventStream.js';
 
 
 export interface HttpTimeouts {
@@ -88,6 +93,10 @@ export class MeshOrchestrator extends EventEmitter {
     private rateLimits: RateLimitTracker;
     private chairs: ChairRegistry;
     private conversationBus: ConversationBus;
+    private cycleLog: CycleLog;
+    private budgetTracker: BudgetTracker;
+    private routingPolicy: RoutingPolicy;
+    private episodicMemory: EpisodicMemory;
     private log: Logger = rootLogger;
     private agentCards: any[] = [];
     private nodeCache: Map<string, any> = new Map();
@@ -253,6 +262,12 @@ export class MeshOrchestrator extends EventEmitter {
             port
         );
         this.mevBridge.setRateLimitTracker(this.rateLimits);
+
+        // Frontier services — Track A/B/C/D.
+        this.cycleLog = new CycleLog(this.memoryDb);
+        this.budgetTracker = new BudgetTracker();
+        this.routingPolicy = new RoutingPolicy();
+        this.episodicMemory = new EpisodicMemory(this.memoryDb);
 
         this.loadAgentCards();
         this.initializeBus();
@@ -860,7 +875,7 @@ export class MeshOrchestrator extends EventEmitter {
 
     private initializeBus() {
         this.conversationBus.on('bus_event', (event) => {
-            this.broadcast(event);
+            this.broadcast(enrichWithAgUi(event));
         });
 
         // cycle_complete is subscribed in wireMevBridge() where it owns token
