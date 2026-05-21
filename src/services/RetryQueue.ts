@@ -49,6 +49,9 @@ export class RetryQueue extends EventEmitter {
         super();
         this.claims = claims;
         this.cfg = { ...DEFAULT_RETRY_CONFIG, ...cfg };
+        if (this.cfg.maxAttempts < 1) throw new RangeError('RetryQueue maxAttempts must be >= 1');
+        if (this.cfg.baseMs <= 0) throw new RangeError('RetryQueue baseMs must be > 0');
+        if (this.cfg.factor < 1) throw new RangeError('RetryQueue factor must be >= 1');
     }
 
     public bind(dispatcher: (goal: string) => Promise<unknown>): void {
@@ -142,13 +145,20 @@ export class RetryQueue extends EventEmitter {
                 this.claims.release(record.taskHash, 'retry_due_without_payload');
                 continue;
             }
+            // Remove from pending before dispatch to prevent duplicate sweep
+            // dispatch. The goal is captured in a local variable so recovery
+            // can still proceed via the retry_dispatch_error event.
             this.pending.delete(record.taskHash);
             this.emit('retry_dispatching', pending.dispatch);
             // Fire-and-forget — the dispatcher (orchestrator.injectTask) will
             // run a fresh tryClaim → markRunning → release cycle, and on
             // failure call back into enqueueFailure if attempts remain.
             this.dispatcher(pending.goal).catch((err) => {
-                this.emit('retry_dispatch_error', { taskHash: record.taskHash, error: (err as Error).message });
+                this.emit('retry_dispatch_error', {
+                    taskHash: record.taskHash,
+                    goal: pending.goal,
+                    error: err instanceof Error ? err.message : String(err),
+                });
             });
         }
     }

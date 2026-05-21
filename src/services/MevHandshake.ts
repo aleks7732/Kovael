@@ -24,7 +24,6 @@ export class MevHandshake extends EventEmitter {
                 'Content-Type': 'text/event-stream',
                 'Cache-Control': 'no-cache',
                 'Connection': 'keep-alive',
-                'Access-Control-Allow-Origin': '*'
             });
 
             // Keep-alive heartbeat every 30 seconds
@@ -35,13 +34,13 @@ export class MevHandshake extends EventEmitter {
             res.write('event: open\ndata: {"status":"connected", "channel":"mev_handshake"}\n\n');
 
             this.clients.add(res);
-            console.log(`[MevHandshake] New participant joined. Total: ${this.clients.size}`);
 
-            req.on('close', () => {
+            const cleanup = () => {
                 clearInterval(heartbeat);
                 this.clients.delete(res);
-                console.log(`[MevHandshake] Participant disconnected. Total: ${this.clients.size}`);
-            });
+            };
+            req.on('close', cleanup);
+            req.on('error', cleanup);
         } else {
             // Return 404 so unmatched HTTP connections are not left hanging
             res.writeHead(404, { 'Content-Type': 'text/plain' });
@@ -58,11 +57,10 @@ export class MevHandshake extends EventEmitter {
             timestamp: Date.now()
         });
         
-        this.clients.forEach(client => {
+        // Snapshot clients to avoid mutation during iteration.
+        for (const client of [...this.clients]) {
             client.write(`event: blueprint_validation\ndata: ${payload}\n\n`);
-        });
-        
-        console.log(`[MevHandshake] Broadcasted blueprint for validation: ${blueprint.id}`);
+        }
     }
 
     /**
@@ -70,7 +68,6 @@ export class MevHandshake extends EventEmitter {
      * In a full implementation, this would await a validation event back from the mesh.
      */
     public async validateSynchronous(blueprint: Blueprint): Promise<boolean> {
-        console.log(`[MevHandshake] Initiating synchronous handshake for: ${blueprint.id}`);
         this.broadcastBlueprint(blueprint);
         
         // Synchronous validation logic would go here

@@ -42,16 +42,28 @@ export class HealthEndpoints {
     }
 
     public readyz(res: ServerResponse): void {
-        const chairsReady = this.snapshot().chairsActive >= this.minReadyChairs;
-        const ready = this.ready && chairsReady;
-        const status = ready ? 200 : 503;
-        res.writeHead(status, { 'content-type': 'application/json' });
-        res.end(JSON.stringify({ status: ready ? 'ok' : 'pending', min_ready_chairs: this.minReadyChairs }));
+        try {
+            const chairsReady = this.snapshot().chairsActive >= this.minReadyChairs;
+            const ready = this.ready && chairsReady;
+            const status = ready ? 200 : 503;
+            res.writeHead(status, { 'content-type': 'application/json' });
+            res.end(JSON.stringify({ status: ready ? 'ok' : 'pending', min_ready_chairs: this.minReadyChairs }));
+        } catch {
+            res.writeHead(500, { 'content-type': 'application/json' });
+            res.end(JSON.stringify({ status: 'error' }));
+        }
     }
 
     public metrics(res: ServerResponse): void {
         const mem = process.memoryUsage();
-        const snap = this.snapshot();
+        let snap;
+        try {
+            snap = this.snapshot();
+        } catch {
+            res.writeHead(500, { 'content-type': 'application/json' });
+            res.end(JSON.stringify({ status: 'error' }));
+            return;
+        }
         const body = [
             '# HELP kovael_uptime_seconds Seconds since the orchestrator started.',
             '# TYPE kovael_uptime_seconds counter',

@@ -265,6 +265,20 @@ export class ChairBridgeProvider implements ModelProvider {
             throw new Error(`Chair Bridge failure: Agent "${agentId}" is offline or has no inboxUrl registered.`);
         }
 
+        // Guard against SSRF — only allow http/https URLs to prevent
+        // exfiltration via file://, data:, or other exotic protocols.
+        try {
+            const parsed = new URL(claim.inboxUrl);
+            if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+                throw new Error(`Chair Bridge failure: Agent "${agentId}" inboxUrl uses disallowed protocol "${parsed.protocol}".`);
+            }
+        } catch (err) {
+            if (err instanceof TypeError) {
+                throw new Error(`Chair Bridge failure: Agent "${agentId}" inboxUrl is not a valid URL.`);
+            }
+            throw err;
+        }
+
         const key = `${topicId}:${agentId}`;
 
         // Reply timeout captured here so the dispatch-failure path can
