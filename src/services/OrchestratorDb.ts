@@ -28,14 +28,24 @@ export function openOrchestratorDb(opts: OpenOrchestratorDbOptions = {}): {
         const dir = path.dirname(resolved);
         fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
         // mkdirSync only honors `mode` when the directory is freshly created;
-        // an existing loose dir would silently retain its old perms.
-        try { fs.chmodSync(dir, 0o700); } catch { /* best-effort on shared mounts */ }
+        // an existing loose dir would silently retain its old perms. Chmod and
+        // verify — secrets live in this dir, so a world-readable parent must
+        // surface as a hard failure, not a swallowed best-effort warning.
+        fs.chmodSync(dir, 0o700);
+        const dirMode = fs.statSync(dir).mode & 0o777;
+        if (dirMode !== 0o700) {
+            throw new Error(`orchestrator db parent dir ${dir} has mode 0o${dirMode.toString(8)}, expected 0o700`);
+        }
 
         if (!fs.existsSync(resolved)) {
             const fd = fs.openSync(resolved, 'a', 0o600);
             fs.closeSync(fd);
         } else {
-            try { fs.chmodSync(resolved, 0o600); } catch { /* best-effort */ }
+            fs.chmodSync(resolved, 0o600);
+        }
+        const fileMode = fs.statSync(resolved).mode & 0o777;
+        if (fileMode !== 0o600) {
+            throw new Error(`orchestrator db file ${resolved} has mode 0o${fileMode.toString(8)}, expected 0o600`);
         }
     }
 
