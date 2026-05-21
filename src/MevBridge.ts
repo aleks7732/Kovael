@@ -4,6 +4,7 @@ import crypto from 'node:crypto';
 import { TriadStateMachine, TriadPhase, PhaseEvent } from './protocols/TriadStateMachine.js';
 import type { RateLimitTracker } from './services/RateLimitTracker.js';
 import type { PersonaLoader } from './services/PersonaLoader.js';
+import type { TracingBridge } from './services/Tracing.js';
 
 /**
  * Token accounting per Symphony §13 — every receipt carries the cycle's
@@ -75,6 +76,7 @@ export class MevBridge extends EventEmitter {
     private fallbackAgent: string = NYX_CLI_AGENT;
     private keepRecentTurns: number = 3;
     private personaLoader: PersonaLoader | null = null;
+    private tracing: TracingBridge | null = null;
 
     constructor(dbPath: string = 'mev_bridge.db') {
         super();
@@ -84,6 +86,10 @@ export class MevBridge extends EventEmitter {
 
     public setPersonaLoader(loader: PersonaLoader): void {
         this.personaLoader = loader;
+    }
+
+    public setTracingBridge(bridge: TracingBridge | null): void {
+        this.tracing = bridge;
     }
 
     private initializeDatabase() {
@@ -209,25 +215,70 @@ export class MevBridge extends EventEmitter {
             });
         }
 
+        const cycleSpan = this.tracing
+            ? this.tracing.startCycle({ cycleId, taskHash })
+            : null;
+
+        const baseTriadAttrs = {
+            cycleId,
+            taskHash,
+            agentId: routing.agent,
+            system: 'kovael-stub',
+            model: 'stub-markov-v1',
+        };
+
         try {
             machine.transition(TriadPhase.DispatchToArchitect, { routedAgent: routing.agent, note: routing.rationale });
             machine.transition(TriadPhase.ArchitectStreaming);
-            const blueprint = await this.architect(task, contextForArchitect, routing.agent);
+            const architectPrompt = task + contextForArchitect.map(m => (m?.content ?? '')).join('\n');
+            const architectInputTokens = estimateTokens(architectPrompt);
+            const blueprint = cycleSpan
+                ? await cycleSpan.runTriadPhase(
+                      'triad.architect',
+                      baseTriadAttrs,
+                      () => this.architect(task, contextForArchitect, routing.agent),
+                      (bp) => ({
+                          inputTokens: architectInputTokens,
+                          outputTokens: estimateTokens(JSON.stringify(bp)),
+                      }),
+                  )
+                : await this.architect(task, contextForArchitect, routing.agent);
 
             machine.transition(TriadPhase.DispatchToOperator);
             machine.transition(TriadPhase.OperatorExecuting);
-            const executionResult = await this.operator(blueprint);
+            const operatorAttrs = { ...baseTriadAttrs, agentId: 'operator-v1-nyx' };
+            const operatorInputTokens = estimateTokens(JSON.stringify(blueprint));
+            const executionResult = cycleSpan
+                ? await cycleSpan.runTriadPhase(
+                      'triad.operator',
+                      operatorAttrs,
+                      () => this.operator(blueprint),
+                      (er) => ({
+                          inputTokens: operatorInputTokens,
+                          outputTokens: estimateTokens(JSON.stringify(er)),
+                      }),
+                  )
+                : await this.operator(blueprint);
 
             machine.transition(TriadPhase.DispatchToVerifier);
             machine.transition(TriadPhase.VerifierAuditing);
-            const verification = await this.verifier(blueprint, executionResult);
+            const verifierAttrs = { ...baseTriadAttrs, agentId: 'verifier-v1-nyx' };
+            const verifierInputTokens = estimateTokens(JSON.stringify(blueprint) + JSON.stringify(executionResult));
+            const verification = cycleSpan
+                ? await cycleSpan.runTriadPhase(
+                      'triad.verifier',
+                      verifierAttrs,
+                      () => this.verifier(blueprint, executionResult),
+                      (v) => ({
+                          inputTokens: verifierInputTokens,
+                          outputTokens: estimateTokens(JSON.stringify(v.details)),
+                      }),
+                  )
+                : await this.verifier(blueprint, executionResult);
 
             machine.transition(TriadPhase.IssuingReceipt);
 
-            // Symphony §13 — token accounting. No real LLM is wired today;
-            // we estimate from prompt + response character length so the
-            // shape is correct when a provider returns usage later.
-            const promptText = task + contextForArchitect.map(m => (m?.content ?? '')).join('\n');
+            const promptText = architectPrompt;
             const responseText = JSON.stringify(blueprint) + JSON.stringify(executionResult) + JSON.stringify(verification.details);
             const input = estimateTokens(promptText);
             const output = estimateTokens(responseText);
@@ -273,6 +324,8 @@ export class MevBridge extends EventEmitter {
             this.storeReceipt(receipt);
             this.emit('cycle_complete', receipt);
 
+            cycleSpan?.end(verification.success ? 'ok' : 'error', verification.success ? undefined : 'verification_failed');
+
             return receipt;
         } catch (error) {
             if (!machine.isTerminal()) {
@@ -283,6 +336,7 @@ export class MevBridge extends EventEmitter {
                     });
                 } catch { /* swallow */ }
             }
+            cycleSpan?.end('error', (error as Error).message);
             console.error('[MevBridge] Loop failure:', error);
             throw error;
         }
