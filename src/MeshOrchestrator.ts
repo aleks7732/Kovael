@@ -261,6 +261,15 @@ export class MeshOrchestrator extends EventEmitter {
             if (outcome.selectedSubprotocol) {
                 (req as any).__kovaelSelectedSubprotocol = outcome.selectedSubprotocol;
             }
+            // Scrub the ?token= query param so the secret can't leak to
+            // downstream handlers, access logs, or anything that reads req.url.
+            if (req.url && req.url.includes('token=')) {
+                const u = new URL(req.url, 'http://localhost');
+                if (u.searchParams.has('token')) {
+                    u.searchParams.delete('token');
+                    req.url = u.pathname + (u.search ? u.search : '');
+                }
+            }
             this.wss.handleUpgrade(req, socket as Socket, head, (ws) => {
                 this.wss.emit('connection', ws, req);
             });

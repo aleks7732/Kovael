@@ -408,4 +408,23 @@ describe('MeshOrchestrator · WebSocket gate (loop iter 09)', () => {
         });
         expect(opened).toBe(true);
     });
+
+    it('scrubs ?token= from req.url after successful auth so the secret cannot leak downstream', async () => {
+        const seenUrls: string[] = [];
+        const wss = (gated as any).wss;
+        const capture = (_ws: unknown, req: { url?: string }) => { if (req.url) seenUrls.push(req.url); };
+        wss.on('connection', capture);
+        try {
+            const { opened } = await probe(`ws://localhost:${GATED_PORT}/?token=${encodeURIComponent(WS_TOKEN)}&nodeId=scrub-check`);
+            expect(opened).toBe(true);
+            expect(seenUrls.length).toBeGreaterThan(0);
+            const lastUrl = seenUrls[seenUrls.length - 1];
+            expect(lastUrl).not.toContain('token=');
+            expect(lastUrl).not.toContain(WS_TOKEN);
+            // Sibling query params must survive the scrub.
+            expect(lastUrl).toContain('nodeId=scrub-check');
+        } finally {
+            wss.off('connection', capture);
+        }
+    });
 });
