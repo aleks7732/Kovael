@@ -3,6 +3,8 @@ import type { IncomingMessage } from 'node:http';
 import { RateLimiter, DEFAULT_RATE_LIMITER_CONFIG } from '../services/RateLimiter.js';
 import { MeshOrchestrator } from '../MeshOrchestrator.js';
 
+process.env.KOVAEL_ALLOW_UNAUTHENTICATED = 'true';
+
 /**
  * Build a minimal IncomingMessage-like object — only the fields the limiter
  * actually reads. Avoids spinning up a real net.Socket per call.

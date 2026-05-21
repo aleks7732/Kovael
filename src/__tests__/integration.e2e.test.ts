@@ -16,6 +16,8 @@ import { MeshOrchestrator } from '../MeshOrchestrator.js';
 import { WebSocket } from 'ws';
 import * as http from 'node:http';
 
+process.env.KOVAEL_ALLOW_UNAUTHENTICATED = 'true';
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------

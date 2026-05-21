@@ -2,6 +2,9 @@ import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import { MeshOrchestrator, DEFAULT_HTTP_TIMEOUTS } from '../MeshOrchestrator.js';
 import { WebSocket } from 'ws';
 import net from 'node:net';
+import { ApiTokenGate } from '../services/ApiTokenGate.js';
+
+process.env.KOVAEL_ALLOW_UNAUTHENTICATED = 'true';
 
 describe('MeshOrchestrator', () => {
     let orchestrator: MeshOrchestrator;
@@ -248,6 +251,7 @@ describe('MeshOrchestrator · ApiTokenGate (loop iter 04)', () => {
 
     beforeAll(async () => {
         process.env.KOVAEL_API_TOKEN = TOKEN;
+        process.env.KOVAEL_ALLOWED_ORIGINS = 'http://allowed.example';
         secured = new MeshOrchestrator(SECURED_PORT);
         await secured.ready();
     });
@@ -255,6 +259,13 @@ describe('MeshOrchestrator · ApiTokenGate (loop iter 04)', () => {
     afterAll(() => {
         secured.close();
         delete process.env.KOVAEL_API_TOKEN;
+        delete process.env.KOVAEL_ALLOWED_ORIGINS;
+    });
+
+    it('is secure-by-default when unauthenticated mode is not explicitly allowed', () => {
+        const gate = new ApiTokenGate('KOVAEL_API_TOKEN', {});
+        expect(gate.enabled).toBe(true);
+        expect(gate.verify({ headers: {}, url: '/', socket: {} } as any)).toBe(false);
     });
 
     it('rejects /api/v1/state without a bearer header', async () => {
@@ -310,12 +321,57 @@ describe('MeshOrchestrator · ApiTokenGate (loop iter 04)', () => {
         expect(valid.status).toBe(200);
     });
 
-    it('leaves non-/api routes ungated (handshake / WS upgrade path)', async () => {
-        // The handshake endpoint is hit through `this.handshake.handleRequest`
-        // — it should respond regardless of token presence.
-        const res = await fetch(`http://localhost:${SECURED_PORT}/`);
-        // Whatever the handshake returns (likely 200 or 404 depending on impl),
-        // it must not be the gate's 401 with unauthorized payload.
-        expect(res.status).not.toBe(401);
+    it('requires bearer token for the SSE handshake endpoint', async () => {
+        const missing = await fetch(`http://localhost:${SECURED_PORT}/mev/handshake`);
+        expect(missing.status).toBe(401);
+
+        const controller = new AbortController();
+        const valid = await fetch(`http://localhost:${SECURED_PORT}/mev/handshake`, {
+            headers: { Authorization: `Bearer ${TOKEN}` },
+            signal: controller.signal,
+        });
+        expect(valid.status).toBe(200);
+        expect(valid.headers.get('content-type')).toContain('text/event-stream');
+        controller.abort();
+    });
+
+    it('requires token for WebSocket upgrades', async () => {
+        const rejected = new WebSocket(`ws://localhost:${SECURED_PORT}?nodeId=missing-token`);
+        const rejectedOpened = await new Promise<boolean>((resolve) => {
+            rejected.on('open', () => resolve(true));
+            rejected.on('error', () => resolve(false));
+            rejected.on('close', () => resolve(false));
+        });
+        expect(rejectedOpened).toBe(false);
+
+        const accepted = new WebSocket(`ws://localhost:${SECURED_PORT}?nodeId=valid-token&token=${encodeURIComponent(TOKEN)}`);
+        const acceptedOpened = await new Promise<boolean>((resolve) => {
+            accepted.on('open', () => {
+                accepted.close();
+                resolve(true);
+            });
+            accepted.on('error', () => resolve(false));
+        });
+        expect(acceptedOpened).toBe(true);
+    });
+
+    it('only emits CORS headers for explicitly allowed origins', async () => {
+        const allowed = await fetch(`http://localhost:${SECURED_PORT}/api/v1/state`, {
+            headers: {
+                Authorization: `Bearer ${TOKEN}`,
+                Origin: 'http://allowed.example',
+            },
+        });
+        expect(allowed.status).toBe(200);
+        expect(allowed.headers.get('access-control-allow-origin')).toBe('http://allowed.example');
+
+        const blocked = await fetch(`http://localhost:${SECURED_PORT}/api/v1/state`, {
+            headers: {
+                Authorization: `Bearer ${TOKEN}`,
+                Origin: 'http://blocked.example',
+            },
+        });
+        expect(blocked.status).toBe(403);
+        expect(blocked.headers.get('access-control-allow-origin')).toBeNull();
     });
 });
