@@ -46,46 +46,27 @@ export class ConversationBus extends EventEmitter {
         public orchestratorPort: number
     ) {
         super();
-        this.initializeDatabase();
+        // Schema is owned by Migrator (src/services/Migrator.ts) and applied
+        // when the orchestrator db is opened. ConversationBus assumes the
+        // required tables/views already exist.
+        this.hydrateActiveTopics();
     }
 
-    private initializeDatabase() {
-        // 1. Create conversation tables
-        this.db.exec(`
-            CREATE TABLE IF NOT EXISTS conversation_topics (
-                id TEXT PRIMARY KEY,
-                title TEXT,
-                participants TEXT,
-                active INTEGER
-            ) STRICT
-        `);
-
-        this.db.exec(`
-            CREATE TABLE IF NOT EXISTS conversation_messages (
-                id TEXT PRIMARY KEY,
-                topic_id TEXT,
-                sender_id TEXT,
-                role TEXT,
-                content TEXT,
-                timestamp INTEGER,
-                FOREIGN KEY(topic_id) REFERENCES conversation_topics(id) ON DELETE CASCADE
-            ) STRICT
-        `);
-
-        // 2. Create the sequencing view as specified in the brief
-        this.db.exec(`
-            CREATE VIEW IF NOT EXISTS conversation_topics_seq AS
-            SELECT 
-                t.id, 
-                t.title, 
-                t.participants, 
-                t.active, 
-                COUNT(m.id) as message_count, 
-                MAX(m.timestamp) as last_activity
-            FROM conversation_topics t
-            LEFT JOIN conversation_messages m ON t.id = m.topic_id
-            GROUP BY t.id
-        `);
+    private hydrateActiveTopics() {
+        const rows = this.db
+            .prepare('SELECT id, title, participants FROM conversation_topics WHERE active = 1')
+            .all() as Array<{ id: string; title: string; participants: string }>;
+        for (const row of rows) {
+            let participants: string[] = [];
+            try { participants = JSON.parse(row.participants); } catch { participants = []; }
+            this.activeTopics.set(row.id, {
+                id: row.id,
+                title: row.title,
+                participants,
+                active: true,
+                tokenBudgets: new Map(participants.map((p) => [p, 4000])),
+            });
+        }
     }
 
     /**
