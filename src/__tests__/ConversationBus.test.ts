@@ -4,6 +4,7 @@ import { ChairRegistry } from '../services/ChairRegistry.js';
 import { PersonaLoader } from '../services/PersonaLoader.js';
 import { ConversationBus } from '../services/ConversationBus.js';
 import { ChairBridgeProvider } from '../services/ModelProvider.js';
+import { openOrchestratorDb } from '../services/OrchestratorDb.js';
 
 describe('ConversationBus', () => {
     let db: DatabaseSync;
@@ -12,8 +13,8 @@ describe('ConversationBus', () => {
     let bus: ConversationBus;
 
     beforeEach(() => {
-        db = new DatabaseSync(':memory:');
-        chairs = new ChairRegistry();
+        db = openOrchestratorDb({ path: ':memory:' }).db;
+        chairs = new ChairRegistry({}, db);
         chairs.start();
 
         // Instantiate PersonaLoader pointing to a mock or empty dir for test isolation

@@ -26,6 +26,7 @@ import { ConversationBus } from './services/ConversationBus.js';
 import { ChairBridgeProvider } from './services/ModelProvider.js';
 import { ApiTokenGate } from './services/ApiTokenGate.js';
 import { HealthEndpoints } from './services/HealthEndpoints.js';
+import { openOrchestratorDb } from './services/OrchestratorDb.js';
 
 
 export interface HttpTimeouts {
@@ -53,6 +54,8 @@ export interface OrchestratorConfig {
     httpTimeouts?: Partial<HttpTimeouts>;
     /** Minimum online chairs before /readyz returns 200. Default 1. */
     minReadyChairs?: number;
+    /** Override orchestrator db path. Defaults to KOVAEL_DB_PATH env or '.kovael/orchestrator.db'. */
+    dbPath?: string;
 }
 
 /**
@@ -208,8 +211,8 @@ export class MeshOrchestrator extends EventEmitter {
 
         this.wss = new WebSocketServer({ server: this.server });
 
-        // Native, zero-dependency, in-memory semantic storage
-        this.memoryDb = new DatabaseSync(':memory:');
+        const { db: orchestratorDb } = openOrchestratorDb({ path: cfg.dbPath });
+        this.memoryDb = orchestratorDb;
         this.ingestor = new SemanticIngestor(this.memoryDb);
         this.mevBridge = new MevBridge(':memory:');
         this.personaLoader = new PersonaLoader();
@@ -224,7 +227,7 @@ export class MeshOrchestrator extends EventEmitter {
         this.hooks = new HookRunner();
         this.workflowLoader = new WorkflowLoader();
         this.rateLimits = new RateLimitTracker();
-        this.chairs = new ChairRegistry(cfg.chairRegistry ?? {});
+        this.chairs = new ChairRegistry(cfg.chairRegistry ?? {}, this.memoryDb);
         this.conversationBus = new ConversationBus(
             this.memoryDb,
             this.chairs,

@@ -1,5 +1,6 @@
 import { EventEmitter } from 'node:events';
 import crypto from 'node:crypto';
+import type { DatabaseSync, StatementSync } from 'node:sqlite';
 
 /**
  * Chair Beacon Protocol — runtime presence tracking for live agents.
@@ -67,10 +68,105 @@ export class ChairRegistry extends EventEmitter {
     private cfg: ChairRegistryConfig;
     private chairs: Map<string, ChairClaim> = new Map();
     private sweeper: NodeJS.Timeout | null = null;
+    private db: DatabaseSync | null = null;
+    private upsertStmt: StatementSync | null = null;
+    private deleteStmt: StatementSync | null = null;
 
-    constructor(config: Partial<ChairRegistryConfig> = {}) {
+    constructor(config: Partial<ChairRegistryConfig> = {}, db?: DatabaseSync) {
         super();
         this.cfg = { ...DEFAULT_CHAIR_REGISTRY_CONFIG, ...config };
+        if (db) {
+            this.attachDb(db);
+        }
+    }
+
+    private attachDb(db: DatabaseSync): void {
+        this.db = db;
+        this.upsertStmt = db.prepare(`
+            INSERT INTO chair_claims (
+                agent_id, session_id, provider, capabilities, trust_tier,
+                claimed_at, last_beacon_at, status, host, note, inbox_url
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(agent_id) DO UPDATE SET
+                session_id = excluded.session_id,
+                provider = excluded.provider,
+                capabilities = excluded.capabilities,
+                trust_tier = excluded.trust_tier,
+                claimed_at = excluded.claimed_at,
+                last_beacon_at = excluded.last_beacon_at,
+                status = excluded.status,
+                host = excluded.host,
+                note = excluded.note,
+                inbox_url = excluded.inbox_url
+        `);
+        this.deleteStmt = db.prepare('DELETE FROM chair_claims WHERE agent_id = ?');
+        this.hydrate();
+    }
+
+    private hydrate(): void {
+        if (!this.db) return;
+        const cutoff = Date.now() - this.cfg.offlineMs;
+        // Claims older than offlineMs would have been evicted by sweep() if the
+        // process had stayed alive; on cold start we treat them the same.
+        const rows = this.db
+            .prepare(`
+                SELECT agent_id, session_id, provider, capabilities, trust_tier,
+                       claimed_at, last_beacon_at, status, host, note, inbox_url
+                FROM chair_claims
+            `)
+            .all() as Array<{
+                agent_id: string; session_id: string; provider: string;
+                capabilities: string; trust_tier: number; claimed_at: number;
+                last_beacon_at: number; status: string; host: string | null;
+                note: string | null; inbox_url: string | null;
+            }>;
+
+        for (const row of rows) {
+            if (row.last_beacon_at < cutoff) {
+                this.deleteStmt!.run(row.agent_id);
+                continue;
+            }
+            let capabilities: string[] = [];
+            try { capabilities = JSON.parse(row.capabilities); } catch { capabilities = []; }
+            const claim: ChairClaim = {
+                agentId: row.agent_id,
+                sessionId: row.session_id,
+                provider: row.provider,
+                capabilities,
+                trustTier: row.trust_tier,
+                claimedAt: row.claimed_at,
+                lastBeaconAt: row.last_beacon_at,
+                // Persisted claim is pending fresh heartbeat; downgrade until proven live.
+                status: 'stale',
+                host: row.host ?? undefined,
+                note: row.note ?? undefined,
+                inboxUrl: row.inbox_url ?? undefined,
+            };
+            this.chairs.set(claim.agentId, claim);
+            this.persist(claim);
+        }
+    }
+
+    private persist(c: ChairClaim): void {
+        if (!this.upsertStmt) return;
+        this.upsertStmt.run(
+            c.agentId,
+            c.sessionId,
+            c.provider,
+            JSON.stringify(c.capabilities),
+            c.trustTier,
+            c.claimedAt,
+            c.lastBeaconAt,
+            c.status,
+            c.host ?? null,
+            c.note ?? null,
+            c.inboxUrl ?? null,
+        );
+    }
+
+    private erase(agentId: string): void {
+        if (!this.deleteStmt) return;
+        this.deleteStmt.run(agentId);
     }
 
     public start(): void {
@@ -127,6 +223,7 @@ export class ChairRegistry extends EventEmitter {
             inboxUrl: input.inboxUrl,
         };
         this.chairs.set(claim.agentId, claim);
+        this.persist(claim);
         this.emit('chair_event', {
             kind: 'claimed',
             agentId: claim.agentId,
@@ -153,6 +250,7 @@ export class ChairRegistry extends EventEmitter {
         if (note !== undefined) chair.note = note;
         const previousStatus = chair.status;
         chair.status = 'online';
+        this.persist(chair);
 
         this.emit('chair_event', {
             kind: previousStatus === 'online' ? 'heartbeat' : 'claimed',
@@ -174,6 +272,7 @@ export class ChairRegistry extends EventEmitter {
         if (!chair) return false;
         if (chair.sessionId !== sessionId) return false;
         this.chairs.delete(agentId);
+        this.erase(agentId);
         this.emit('chair_event', {
             kind: 'released',
             agentId,
@@ -200,6 +299,7 @@ export class ChairRegistry extends EventEmitter {
             const age = now - chair.lastBeaconAt;
             if (age >= this.cfg.offlineMs) {
                 this.chairs.delete(chair.agentId);
+                this.erase(chair.agentId);
                 this.emit('chair_event', {
                     kind: 'expired',
                     agentId: chair.agentId,
@@ -212,6 +312,7 @@ export class ChairRegistry extends EventEmitter {
             }
             if (age >= this.cfg.healthyMs && chair.status !== 'stale') {
                 chair.status = 'stale';
+                this.persist(chair);
                 this.emit('chair_event', {
                     kind: 'stale',
                     agentId: chair.agentId,

@@ -8,6 +8,11 @@ export default defineConfig({
     plugins: [react()],
     test: {
         globals: false,
+        env: {
+            // Tests must NEVER touch a real on-disk db; each describe block
+            // gets a fresh in-memory orchestrator.
+            KOVAEL_DB_PATH: ':memory:',
+        },
         // Default environment is node for the orchestrator + the cockpit's
         // build-and-curl smoke test. Component tests opt into happy-dom via
         // a per-file `// @vitest-environment happy-dom` directive so React
