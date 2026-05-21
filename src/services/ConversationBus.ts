@@ -89,6 +89,15 @@ export class ConversationBus extends EventEmitter {
     }
 
     /**
+     * Number of in-memory active topics. Exposed for /metrics — counting
+     * `activeTopics.size` from outside the class would force the field
+     * public.
+     */
+    public activeTopicCount(): number {
+        return this.activeTopics.size;
+    }
+
+    /**
      * Open a new conversation topic thread.
      */
     public createTopic(title: string, participants: string[]): ConversationTopic {

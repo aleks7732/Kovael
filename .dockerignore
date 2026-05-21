@@ -1,0 +1,49 @@
+# Build artifacts and dependency trees — let the builder produce them
+node_modules
+dist
+build
+packages/*/node_modules
+packages/*/dist
+
+# VCS, IDE, OS
+.git
+.gitignore
+.gitattributes
+.github
+.vscode
+.idea
+.DS_Store
+
+# Tooling state and notes that aren't part of the image
+.claude
+.notes
+.kovael
+.gemini
+.geminiignore
+MEMORY.md
+GEMINI.md
+
+# Cockpit lives in packages/spatial-war-room — it is built and served
+# separately. Keeping it out of the orchestrator image cuts ~250 MB.
+packages
+
+# Logs, scratch databases, vault material — never bake these in
+*.log
+VRAM_logs
+storage
+*.db
+*.sqlite
+*.sqlite3
+nyx_vault
+.env
+.env.*
+
+# Docker itself
+Dockerfile
+.dockerignore
+
+# Tests don't run inside the production image
+**/__tests__
+**/*.test.ts
+**/*.spec.ts
+coverage

@@ -141,14 +141,35 @@ export class StubMarkovProvider implements ModelProvider {
  * Dispatches prompt payload to the chair's inboxUrl and suspends until the chair
  * returns its response via the orchestrator HTTP webhook interface.
  */
+export interface DispatchPolicy {
+    /** Cap on a single POST attempt (connect + headers + first byte). */
+    dispatchTimeoutMs: number;
+    /** Total attempts. 1 = no retry. Default 3 = initial + 2 retries. */
+    maxAttempts: number;
+    /** Base for full-jitter exponential backoff. Delay = rand(0, base * 2^attempt). */
+    baseBackoffMs: number;
+}
+
+export const DEFAULT_DISPATCH_POLICY: DispatchPolicy = {
+    dispatchTimeoutMs: 10_000,
+    maxAttempts: 3,
+    baseBackoffMs: 250,
+};
+
+const RETRYABLE_STATUS: ReadonlySet<number> = new Set([429, 502, 503, 504]);
+
 export class ChairBridgeProvider implements ModelProvider {
     private static pendingReplies = new Map<string, (reply: string) => void>();
+    private readonly policy: DispatchPolicy;
 
     constructor(
         public id: string,
         private chairs: ChairRegistry,
-        private orchestratorPort: number
-    ) {}
+        private orchestratorPort: number,
+        policy: Partial<DispatchPolicy> = {},
+    ) {
+        this.policy = { ...DEFAULT_DISPATCH_POLICY, ...policy };
+    }
 
     /**
      * Receive and route reply from HTTP webhook endpoint back to the suspended stream promise.
@@ -164,6 +185,68 @@ export class ChairBridgeProvider implements ModelProvider {
         return false;
     }
 
+    /**
+     * POST to the chair's inboxUrl with a per-attempt AbortController and
+     * full-jitter exponential backoff. Retries on network errors and on
+     * the transient-server status codes (429, 502, 503, 504). 4xx other
+     * than 429 surface immediately — a 400 won't get better on retry.
+     */
+    private async postWithRetry(
+        url: string,
+        body: string,
+        parentSignal: AbortSignal | undefined,
+    ): Promise<void> {
+        let lastErr: Error = new Error('chair bridge dispatch: no attempts ran');
+        for (let attempt = 0; attempt < this.policy.maxAttempts; attempt += 1) {
+            if (parentSignal?.aborted) {
+                throw new Error('chair bridge dispatch: aborted by caller');
+            }
+
+            const ctrl = new AbortController();
+            const timer = setTimeout(() => ctrl.abort(), this.policy.dispatchTimeoutMs);
+            // Chain parent abort → this attempt's abort.
+            const onParentAbort = () => ctrl.abort();
+            parentSignal?.addEventListener('abort', onParentAbort, { once: true });
+
+            let response: Response | null = null;
+            try {
+                response = await fetch(url, {
+                    method: 'POST',
+                    headers: { 'content-type': 'application/json' },
+                    body,
+                    signal: ctrl.signal,
+                });
+            } catch (err) {
+                lastErr = err instanceof Error ? err : new Error(String(err));
+                // AbortError from caller-signal must surface immediately —
+                // it is not a transient failure, it is intent.
+                if (parentSignal?.aborted) throw lastErr;
+            } finally {
+                clearTimeout(timer);
+                parentSignal?.removeEventListener('abort', onParentAbort);
+            }
+
+            if (response) {
+                if (response.ok) return;
+                // Non-retryable status — surface immediately. Don't burn
+                // attempts on a 400/401/403/404; the upstream isn't going
+                // to start agreeing with us.
+                if (!RETRYABLE_STATUS.has(response.status)) {
+                    throw new Error(`upstream returned non-retryable ${response.status}`);
+                }
+                lastErr = new Error(`upstream returned retryable ${response.status}`);
+            }
+
+            // Don't sleep after the last attempt — fall through to throw.
+            if (attempt < this.policy.maxAttempts - 1) {
+                const cap = this.policy.baseBackoffMs * Math.pow(2, attempt);
+                const delay = Math.floor(Math.random() * cap);
+                await new Promise((resolve) => setTimeout(resolve, delay));
+            }
+        }
+        throw lastErr;
+    }
+
     public async *stream(opts: ModelProviderOptions): AsyncIterable<{ delta: string; usage?: TokenUsage }> {
         const startTime = Date.now();
         const topicId = opts.topicId || 'default-topic';
@@ -176,7 +259,6 @@ export class ChairBridgeProvider implements ModelProvider {
         }
 
         const key = `${topicId}:${agentId}`;
-        let replyPromise: Promise<string>;
 
         // Set up the reply receiver promise
         const replyReceived = new Promise<string>((resolve, reject) => {
@@ -202,18 +284,7 @@ export class ChairBridgeProvider implements ModelProvider {
                 replyUrl,
             };
 
-            const response = await fetch(claim.inboxUrl, {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                },
-                body: JSON.stringify(payload),
-                signal: opts.signal,
-            });
-
-            if (!response.ok) {
-                throw new Error(`External agent inboxUrl returned status ${response.status}`);
-            }
+            await this.postWithRetry(claim.inboxUrl, JSON.stringify(payload), opts.signal);
         } catch (err: any) {
             ChairBridgeProvider.pendingReplies.delete(key);
             throw new Error(`Chair Bridge dispatch failed for agent "${agentId}": ${err.message}`);

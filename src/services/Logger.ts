@@ -93,6 +93,32 @@ export class Logger {
     }
 }
 
+import { NdjsonFileSink, teeSink } from './FileSink.js';
+
+/**
+ * Build the default sink. If `KOVAEL_LOG_FILE` is set, tee to both
+ * stdout AND that file (so a sidecar collector — Vector, Alloy, Fluent
+ * Bit — can tail it inside a Pod without losing console visibility).
+ * Default (env unset) is stdout-only.
+ */
+function buildDefaultSink(): (line: string) => void {
+    const stdoutSink = (line: string) => process.stdout.write(line + '\n');
+    const filePath = process.env.KOVAEL_LOG_FILE;
+    if (!filePath) return stdoutSink;
+    try {
+        const fileSink = new NdjsonFileSink({ path: filePath });
+        return teeSink(stdoutSink, (line) => fileSink.write(line));
+    } catch (err) {
+        // File sink couldn't initialize (directory permissions, etc.) —
+        // fall back to stdout-only and emit one warning line so the
+        // misconfiguration is visible.
+        process.stderr.write(
+            `kovael-logger: failed to open KOVAEL_LOG_FILE=${filePath}: ${(err as Error).message}\n`,
+        );
+        return stdoutSink;
+    }
+}
+
 /**
  * The shared application logger. Components that don't need a scoped logger
  * (boot code, top-level utilities) can import this directly. Components
@@ -101,4 +127,5 @@ export class Logger {
 export const rootLogger = new Logger({
     service: 'kovael-mesh',
     minLevel: (process.env.KOVAEL_LOG_LEVEL as LogLevel) ?? 'info',
+    sink: buildDefaultSink(),
 });
