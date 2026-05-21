@@ -227,7 +227,44 @@ export class MeshOrchestrator extends EventEmitter {
             socket.on('close', () => this.disarmHeaderDeadline(socket));
         });
 
-        this.wss = new WebSocketServer({ server: this.server });
+        this.wss = new WebSocketServer({
+            noServer: true,
+            handleProtocols: (offered: Set<string>, req: http.IncomingMessage) => {
+                const picked = (req as any).__kovaelSelectedSubprotocol;
+                if (typeof picked === 'string') return picked;
+                // Rejected-but-upgrading: echo any offered value so ws does not
+                // abort the handshake before the client can receive our 4401
+                // close frame. Returning the first offered value is harmless —
+                // the socket closes immediately after.
+                if ((req as any).__kovaelGateRejected) {
+                    const first = offered.values().next().value;
+                    return typeof first === 'string' ? first : false;
+                }
+                return false;
+            },
+        });
+        this.server.on('upgrade', (req, socket, head) => {
+            const outcome = this.apiGate.verifyWebSocketUpgrade(req);
+            if (!outcome.allowed) {
+                // 4401 is a private-use WS close code (4000-4999 reserved for
+                // applications). Completing the upgrade lets the client read
+                // the close code via the standard `close` event; a raw HTTP
+                // 401 would surface as the opaque 1006 abnormal-closure code.
+                // We close before emitting `connection` so no orchestrator
+                // state is ever associated with the rejected session.
+                (req as any).__kovaelGateRejected = true;
+                this.wss.handleUpgrade(req, socket as Socket, head, (ws) => {
+                    ws.close(4401, 'unauthorized');
+                });
+                return;
+            }
+            if (outcome.selectedSubprotocol) {
+                (req as any).__kovaelSelectedSubprotocol = outcome.selectedSubprotocol;
+            }
+            this.wss.handleUpgrade(req, socket as Socket, head, (ws) => {
+                this.wss.emit('connection', ws, req);
+            });
+        });
 
         const { db: orchestratorDb } = openOrchestratorDb({ path: cfg.dbPath });
         this.memoryDb = orchestratorDb;

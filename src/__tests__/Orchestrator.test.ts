@@ -310,12 +310,102 @@ describe('MeshOrchestrator · ApiTokenGate (loop iter 04)', () => {
         expect(valid.status).toBe(200);
     });
 
-    it('leaves non-/api routes ungated (handshake / WS upgrade path)', async () => {
-        // The handshake endpoint is hit through `this.handshake.handleRequest`
-        // — it should respond regardless of token presence.
+    it('leaves non-/api HTTP routes ungated (handshake)', async () => {
         const res = await fetch(`http://localhost:${SECURED_PORT}/`);
-        // Whatever the handshake returns (likely 200 or 404 depending on impl),
-        // it must not be the gate's 401 with unauthorized payload.
         expect(res.status).not.toBe(401);
+    });
+});
+
+describe('MeshOrchestrator · WebSocket gate (loop iter 09)', () => {
+    let gated: MeshOrchestrator;
+    let open: MeshOrchestrator;
+    const GATED_PORT = 8084;
+    const OPEN_PORT = 8085;
+    const WS_TOKEN = 'ws-gate-test-token-DO-NOT-USE-IN-PROD';
+
+    beforeAll(async () => {
+        process.env.KOVAEL_API_TOKEN = WS_TOKEN;
+        gated = new MeshOrchestrator(GATED_PORT);
+        await gated.ready();
+        delete process.env.KOVAEL_API_TOKEN;
+        open = new MeshOrchestrator(OPEN_PORT);
+        await open.ready();
+    });
+
+    afterAll(() => {
+        gated.close();
+        open.close();
+    });
+
+    // Resolves to { opened, code } so each test can assert without
+    // worrying about cleanup or hanging sockets.
+    function probe(url: string, opts: { protocols?: string | string[] } = {}, timeoutMs = 2000): Promise<{ opened: boolean; code: number | null }> {
+        return new Promise((resolve) => {
+            const ws = opts.protocols !== undefined
+                ? new WebSocket(url, opts.protocols)
+                : new WebSocket(url);
+            let opened = false;
+            const done = (code: number | null) => {
+                try { ws.close(); } catch { /* already closed */ }
+                resolve({ opened, code });
+            };
+            const timer = setTimeout(() => done(null), timeoutMs);
+            ws.on('open', () => { opened = true; });
+            ws.on('close', (code) => { clearTimeout(timer); done(code); });
+            ws.on('error', () => { /* close fires next */ });
+        });
+    }
+
+    it('rejects WS upgrade with no token (gate enabled) — close code 4401', async () => {
+        const { code } = await probe(`ws://localhost:${GATED_PORT}/?nodeId=no-token`);
+        expect(code).toBe(4401);
+    });
+
+    it('accepts WS upgrade with valid query-param token', async () => {
+        const { opened, code } = await probe(`ws://localhost:${GATED_PORT}/?token=${encodeURIComponent(WS_TOKEN)}&nodeId=q`);
+        expect(opened).toBe(true);
+        expect(code).not.toBe(4401);
+    });
+
+    it('rejects WS upgrade with invalid subprotocol token — close code 4401', async () => {
+        const { code } = await probe(`ws://localhost:${GATED_PORT}/?nodeId=bad-proto`, {
+            protocols: 'bearer.not-the-real-token',
+        });
+        expect(code).toBe(4401);
+    });
+
+    it('accepts WS upgrade via valid Sec-WebSocket-Protocol subprotocol', async () => {
+        const ws = new WebSocket(`ws://localhost:${GATED_PORT}/?nodeId=proto-ok`, [`bearer.${WS_TOKEN}`]);
+        const result = await new Promise<{ opened: boolean; selected: string }>((resolve) => {
+            const t = setTimeout(() => resolve({ opened: false, selected: '' }), 2000);
+            ws.on('open', () => {
+                clearTimeout(t);
+                const selected = ws.protocol;
+                ws.close();
+                resolve({ opened: true, selected });
+            });
+            ws.on('error', () => { clearTimeout(t); resolve({ opened: false, selected: '' }); });
+        });
+        expect(result.opened).toBe(true);
+        expect(result.selected).toBe(`bearer.${WS_TOKEN}`);
+    });
+
+    it('accepts WS upgrade with gate disabled regardless of token presence', async () => {
+        const { opened: noToken } = await probe(`ws://localhost:${OPEN_PORT}/?nodeId=open-1`);
+        expect(noToken).toBe(true);
+        const { opened: bogus } = await probe(`ws://localhost:${OPEN_PORT}/?token=bogus&nodeId=open-2`);
+        expect(bogus).toBe(true);
+    });
+
+    it('accepts WS upgrade via valid Authorization: Bearer header', async () => {
+        const ws = new WebSocket(`ws://localhost:${GATED_PORT}/?nodeId=hdr`, {
+            headers: { Authorization: `Bearer ${WS_TOKEN}` },
+        });
+        const opened = await new Promise<boolean>((resolve) => {
+            const t = setTimeout(() => resolve(false), 2000);
+            ws.on('open', () => { clearTimeout(t); ws.close(); resolve(true); });
+            ws.on('error', () => { clearTimeout(t); resolve(false); });
+        });
+        expect(opened).toBe(true);
     });
 });
