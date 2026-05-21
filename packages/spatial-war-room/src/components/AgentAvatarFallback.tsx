@@ -1,4 +1,4 @@
-import { memo } from 'react';
+import { memo, type ReactNode } from 'react';
 
 interface AgentAvatarFallbackProps {
   agentId: string;
@@ -25,7 +25,7 @@ export const AgentAvatarFallback = memo(({ agentId, size = 36 }: AgentAvatarFall
 
   // Pick deterministic shape paths based on hash to draw a premium tech background grid
   const patternIndex = hash % 3;
-  let pattern = null;
+  let pattern: ReactNode;
 
   if (patternIndex === 0) {
     // Cyber concentric rings

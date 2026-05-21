@@ -74,8 +74,8 @@ export const ConvenePanel = memo(({ roster, onTopicCreated }: ConvenePanelProps)
       if (onTopicCreated && res.topic?.id) {
         onTopicCreated(res.topic.id);
       }
-    } catch (err: any) {
-      setError(err.message || 'Failed to convene panel.');
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : 'Failed to convene panel.');
     } finally {
       setLoading(false);
     }

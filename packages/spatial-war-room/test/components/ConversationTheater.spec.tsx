@@ -3,7 +3,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { render, cleanup, screen, fireEvent, waitFor } from '@testing-library/react';
 import { ConversationTheater } from '../../src/components/theater/ConversationTheater';
 import { useWarRoomStore } from '../../src/store/useWarRoomStore';
-import type { AgentRosterCard, ConversationMessage, ConversationTopic } from '../../src/store/useWarRoomStore';
+import type { AgentRosterCard, ConversationMessage, ConversationTopic, WarRoomState } from '../../src/store/useWarRoomStore';
 
 // happy-dom omits scrollIntoView; MessageList calls it on every render.
 beforeEach(() => {
@@ -29,7 +29,7 @@ afterEach(() => {
         conversationStoppingCriterion: {},
         activeTopicId: null,
         agentRoster: [],
-    } as any);
+    } satisfies Partial<WarRoomState>);
 });
 
 function makeCard(id: string, overrides: Partial<AgentRosterCard> = {}): AgentRosterCard {
@@ -65,12 +65,12 @@ function seed(state: Partial<{
     activeTopicId: string | null;
     agentRoster: AgentRosterCard[];
 }>) {
-    useWarRoomStore.setState(state as any);
+    useWarRoomStore.setState(state);
 }
 
 // Stub the mount-time fetch from /api/v1/state so component renders in
 // isolation. Each test installs the mock; restoreAllMocks() runs after.
-function stubFetchOk(body: any = {}) {
+function stubFetchOk(body: unknown = {}) {
     const fetchMock = vi.fn().mockResolvedValue({
         ok: true,
         json: () => Promise.resolve(body),
@@ -164,13 +164,13 @@ describe('ConversationTheater', () => {
         // try/finally so we don't leak the spy into siblings (afterEach
         // only resets data state, not actions).
         const originalSelectTopic = useWarRoomStore.getState().selectTopic;
-        useWarRoomStore.setState({ selectTopic } as any);
+        useWarRoomStore.setState({ selectTopic } satisfies Partial<WarRoomState>);
         try {
             render(<ConversationTheater />);
             fireEvent.click(screen.getByText('second'));
             expect(selectTopic).toHaveBeenCalledWith('t2');
         } finally {
-            useWarRoomStore.setState({ selectTopic: originalSelectTopic } as any);
+            useWarRoomStore.setState({ selectTopic: originalSelectTopic } satisfies Partial<WarRoomState>);
         }
     });
 

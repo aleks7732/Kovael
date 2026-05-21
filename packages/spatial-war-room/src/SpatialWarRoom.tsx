@@ -32,7 +32,7 @@ const nodeTypes = {
 };
 
 const PRESSURE_VALVE_INTERVAL_MS = 100;
-const SpatialWarRoom = () => {
+function SpatialWarRoom() {
   const nodes = useWarRoomStore((s) => s.nodes);
   const edges = useWarRoomStore((s) => s.edges);
   const hardware = useWarRoomStore((s) => s.hardware);
@@ -96,7 +96,7 @@ const SpatialWarRoom = () => {
 
   useEffect(() => {
     let active = true;
-    let reconnectTimeout: any = null;
+    let reconnectTimeout: ReturnType<typeof setTimeout> | null = null;
     let currentWs: WebSocket | null = null;
     // Exponential backoff with full jitter so a fleet of dropped clients
     // doesn't synchronize their reconnect attempts onto the same tick.
@@ -334,10 +334,12 @@ const SpatialWarRoom = () => {
       <StatusLegend />
     </div>
   );
-};
+}
 
-export default () => (
+export default function SpatialWarRoomProvider() {
+  return (
   <ReactFlowProvider>
     <SpatialWarRoom />
   </ReactFlowProvider>
-);
+  );
+}

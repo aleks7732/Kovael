@@ -3,6 +3,8 @@ import { Handle, Position, type NodeProps } from '@xyflow/react';
 import { ANXDisplay } from './ANXDisplay';
 
 type AnyNodeProps = NodeProps & { data: Record<string, unknown> };
+type ReceiptSummary = { id: string; status: string; timestamp: string | number };
+type TaskNode = { name: string; progress: number; subTasks?: TaskNode[] };
 
 /**
  * AgentHeartbeatNode
@@ -14,7 +16,7 @@ export const AgentHeartbeatNode = memo(({ data }: AnyNodeProps) => {
   const label = String(data.label ?? '');
   const isOnline = status !== 'OFFLINE';
   const telemetry = data.telemetry as { cpu?: number; mem?: number } | undefined;
-  const receipts = data.receipts as Array<{ id: string; status: string; timestamp: string }> | undefined;
+  const receipts = data.receipts as ReceiptSummary[] | undefined;
 
   return (
     <div className="glass-panel p-4 min-w-[200px] transition-all duration-300 hover:border-command-accent/50 group">
@@ -63,7 +65,7 @@ export const AgentHeartbeatNode = memo(({ data }: AnyNodeProps) => {
                   <span className="text-command-warm-white/60">{String(r.id).slice(0, 8)}</span>
                 </div>
                 <span className="opacity-30">
-                  {typeof r.timestamp === 'string' ? r.timestamp.split('T')[1]?.split('.')[0] : new Date(r.timestamp as any).toISOString().split('T')[1].split('.')[0]}
+                  {typeof r.timestamp === 'string' ? r.timestamp.split('T')[1]?.split('.')[0] : new Date(r.timestamp).toISOString().split('T')[1].split('.')[0]}
                 </span>
               </div>
             ))}
@@ -83,10 +85,10 @@ AgentHeartbeatNode.displayName = 'AgentHeartbeatNode';
  * Visualizes recursive task groupings within a tactical matrix.
  */
 export const TaskClusterNode = memo(({ data }: AnyNodeProps) => {
-  const tasks = (data.tasks as any[]) || [];
+  const tasks = (Array.isArray(data.tasks) ? data.tasks : []) as TaskNode[];
   const label = String(data.label ?? '');
 
-  const renderTasks = (taskList: any[], depth = 0) => {
+  const renderTasks = (taskList: TaskNode[], depth = 0) => {
     return taskList.map((task, idx) => (
       <div key={`${depth}-${idx}`} className={`flex flex-col gap-1 ${depth > 0 ? 'mt-2 ml-3' : 'mt-3'} pl-3 border-l border-white/5`}>
         <div className="flex justify-between items-center t-mono text-[10px]">
