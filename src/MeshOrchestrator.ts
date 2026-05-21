@@ -25,6 +25,7 @@ import { PersonaLoader } from './services/PersonaLoader.js';
 import { ConversationBus } from './services/ConversationBus.js';
 import { ChairBridgeProvider } from './services/ModelProvider.js';
 import { ApiTokenGate } from './services/ApiTokenGate.js';
+import { RateLimiter, RateLimiterConfig } from './services/RateLimiter.js';
 import { HealthEndpoints } from './services/HealthEndpoints.js';
 import { openOrchestratorDb } from './services/OrchestratorDb.js';
 
@@ -56,6 +57,8 @@ export interface OrchestratorConfig {
     minReadyChairs?: number;
     /** Override orchestrator db path. Defaults to KOVAEL_DB_PATH env or '.kovael/orchestrator.db'. */
     dbPath?: string;
+    /** Per-IP token-bucket rate limit for /api/v1/*. Default 60 cap, 1/sec refill, 10k LRU. */
+    rateLimit?: Partial<RateLimiterConfig>;
 }
 
 /**
@@ -68,6 +71,7 @@ export class MeshOrchestrator extends EventEmitter {
     private wss: WebSocketServer;
     private server: http.Server;
     private apiGate: ApiTokenGate;
+    private rateLimiter: RateLimiter;
     private health: HealthEndpoints;
     private memoryDb: DatabaseSync;
     private mevBridge: MevBridge;
@@ -135,6 +139,7 @@ export class MeshOrchestrator extends EventEmitter {
         super();
         this.handshake = new MevHandshake();
         this.apiGate = new ApiTokenGate();
+        this.rateLimiter = new RateLimiter(cfg.rateLimit ?? {});
         this.health = new HealthEndpoints(
             () => ({
                 chairsActive: this.chairs.stats().online,
@@ -166,6 +171,19 @@ export class MeshOrchestrator extends EventEmitter {
             }
 
             if (url.startsWith('/api/v1/')) {
+                // Rate limit BEFORE auth so a flood of unauthenticated
+                // requests cannot burn the bearer-token comparison loop.
+                const key = this.rateLimiter.clientKey(req);
+                const decision = this.rateLimiter.consume(key);
+                if (!decision.allowed) {
+                    res.writeHead(429, {
+                        'Content-Type': 'application/json',
+                        'Cache-Control': 'no-store',
+                        'Retry-After': String(decision.retryAfterS),
+                    });
+                    res.end(JSON.stringify({ error: 'rate_limited', retry_after_s: decision.retryAfterS }));
+                    return;
+                }
                 if (!this.apiGate.verify(req)) {
                     const reason = req.headers['authorization'] ? 'invalid' : 'missing';
                     this.apiGate.respond401(res, reason);
