@@ -179,7 +179,8 @@ export class RoutingPolicy extends EventEmitter {
         }
         const d = shape - 1 / 3;
         const c = 1 / Math.sqrt(9 * d);
-        while (true) {
+        const MAX_ITERATIONS = 1000;
+        for (let iter = 0; iter < MAX_ITERATIONS; iter++) {
             let x: number;
             let v: number;
             do {
@@ -191,6 +192,8 @@ export class RoutingPolicy extends EventEmitter {
             if (u < 1 - 0.0331 * (x * x) * (x * x)) return d * v;
             if (Math.log(u) < 0.5 * x * x + d * (1 - v + Math.log(v))) return d * v;
         }
+        // Fallback — should be statistically unreachable.
+        return d;
     }
 
     /**

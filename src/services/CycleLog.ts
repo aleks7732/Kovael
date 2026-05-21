@@ -2,6 +2,15 @@ import { EventEmitter } from 'node:events';
 import crypto from 'node:crypto';
 import type { DatabaseSync, StatementSync } from 'node:sqlite';
 
+/** Safe JSON.parse that returns the raw string on parse failure. */
+function safeParse(raw: string): Record<string, unknown> {
+    try {
+        return JSON.parse(raw);
+    } catch {
+        return { _raw: raw };
+    }
+}
+
 /**
  * CycleLog — append-only event ledger for durable orchestration.
  *
@@ -127,7 +136,7 @@ export class CycleLog extends EventEmitter {
             kind: r.kind as CycleEventKind,
             timestamp: r.timestamp,
             actor: r.actor,
-            payload: JSON.parse(r.payload),
+            payload: safeParse(r.payload),
         }));
     }
 
@@ -143,8 +152,15 @@ export class CycleLog extends EventEmitter {
                 MAX(e.seq) AS max_seq,
                 COUNT(*) AS event_count,
                 MIN(e.timestamp) AS started_at,
-                MAX(e.timestamp) AS last_event_at
+                MAX(e.timestamp) AS last_event_at,
+                last_e.kind AS last_kind,
+                last_e.actor AS last_actor
             FROM cycle_events e
+            JOIN cycle_events last_e
+              ON last_e.cycle_id = e.cycle_id
+             AND last_e.seq = (
+                 SELECT MAX(seq) FROM cycle_events WHERE cycle_id = e.cycle_id
+             )
             WHERE e.cycle_id NOT IN (
                 SELECT DISTINCT cycle_id FROM cycle_events
                 WHERE kind IN ('cycle_sealed', 'cycle_failed')
@@ -153,24 +169,17 @@ export class CycleLog extends EventEmitter {
         `).all() as Array<{
             cycle_id: string; max_seq: number; event_count: number;
             started_at: number; last_event_at: number;
+            last_kind: string; last_actor: string;
         }>;
 
-        return rows.map((r) => {
-            // Find the last event to determine current phase.
-            const lastEvent = this.db.prepare(`
-                SELECT kind, actor FROM cycle_events
-                WHERE cycle_id = ? AND seq = ?
-            `).get(r.cycle_id, r.max_seq) as { kind: string; actor: string };
-
-            return {
-                cycleId: r.cycle_id,
-                lastPhase: lastEvent.kind,
-                lastActor: lastEvent.actor,
-                eventCount: r.event_count,
-                startedAt: r.started_at,
-                lastEventAt: r.last_event_at,
-            };
-        });
+        return rows.map((r) => ({
+            cycleId: r.cycle_id,
+            lastPhase: r.last_kind,
+            lastActor: r.last_actor,
+            eventCount: r.event_count,
+            startedAt: r.started_at,
+            lastEventAt: r.last_event_at,
+        }));
     }
 
     /**

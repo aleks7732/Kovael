@@ -1,6 +1,15 @@
 import { EventEmitter } from 'node:events';
 import type { DatabaseSync } from 'node:sqlite';
 
+/** Safe JSON.parse that returns an empty object on failure. */
+function safeParseMetadata(raw: string): Record<string, unknown> {
+    try {
+        return JSON.parse(raw);
+    } catch {
+        return {};
+    }
+}
+
 /**
  * EpisodicMemory — cross-cycle knowledge store with full-text search.
  *
@@ -34,6 +43,28 @@ export interface EpisodicEntry {
 export interface RecallResult {
     entry: EpisodicEntry;
     rank: number;
+}
+
+/** Raw row shape from the episodic_memories table. */
+interface EpisodicRow {
+    id: number; cycle_id: string; agent_id: string; task_class: string;
+    summary: string; outcome: string; confidence: number;
+    timestamp: number; metadata: string;
+}
+
+/** Map a raw DB row to a typed EpisodicEntry. */
+function rowToEntry(r: EpisodicRow): EpisodicEntry {
+    return {
+        id: r.id,
+        cycleId: r.cycle_id,
+        agentId: r.agent_id,
+        taskClass: r.task_class,
+        summary: r.summary,
+        outcome: r.outcome as 'success' | 'failure' | 'partial',
+        confidence: r.confidence,
+        timestamp: r.timestamp,
+        metadata: safeParseMetadata(r.metadata),
+    };
 }
 
 export class EpisodicMemory extends EventEmitter {
@@ -107,24 +138,10 @@ export class EpisodicMemory extends EventEmitter {
             WHERE episodic_memories_fts MATCH ?
             ORDER BY rank
             LIMIT ?
-        `).all(query, limit) as Array<{
-            id: number; cycle_id: string; agent_id: string; task_class: string;
-            summary: string; outcome: string; confidence: number;
-            timestamp: number; metadata: string; rank: number;
-        }>;
+        `).all(query, limit) as unknown as Array<EpisodicRow & { rank: number }>;
 
         return rows.map((r) => ({
-            entry: {
-                id: r.id,
-                cycleId: r.cycle_id,
-                agentId: r.agent_id,
-                taskClass: r.task_class,
-                summary: r.summary,
-                outcome: r.outcome as 'success' | 'failure' | 'partial',
-                confidence: r.confidence,
-                timestamp: r.timestamp,
-                metadata: JSON.parse(r.metadata),
-            },
+            entry: rowToEntry(r),
             rank: r.rank,
         }));
     }
@@ -144,24 +161,10 @@ export class EpisodicMemory extends EventEmitter {
               AND m.agent_id = ?
             ORDER BY rank
             LIMIT ?
-        `).all(query, agentId, limit) as Array<{
-            id: number; cycle_id: string; agent_id: string; task_class: string;
-            summary: string; outcome: string; confidence: number;
-            timestamp: number; metadata: string; rank: number;
-        }>;
+        `).all(query, agentId, limit) as unknown as Array<EpisodicRow & { rank: number }>;
 
         return rows.map((r) => ({
-            entry: {
-                id: r.id,
-                cycleId: r.cycle_id,
-                agentId: r.agent_id,
-                taskClass: r.task_class,
-                summary: r.summary,
-                outcome: r.outcome as 'success' | 'failure' | 'partial',
-                confidence: r.confidence,
-                timestamp: r.timestamp,
-                metadata: JSON.parse(r.metadata),
-            },
+            entry: rowToEntry(r),
             rank: r.rank,
         }));
     }
@@ -177,23 +180,9 @@ export class EpisodicMemory extends EventEmitter {
             WHERE agent_id = ?
             ORDER BY timestamp DESC
             LIMIT ?
-        `).all(agentId, limit) as Array<{
-            id: number; cycle_id: string; agent_id: string; task_class: string;
-            summary: string; outcome: string; confidence: number;
-            timestamp: number; metadata: string;
-        }>;
+        `).all(agentId, limit) as unknown as Array<EpisodicRow>;
 
-        return rows.map((r) => ({
-            id: r.id,
-            cycleId: r.cycle_id,
-            agentId: r.agent_id,
-            taskClass: r.task_class,
-            summary: r.summary,
-            outcome: r.outcome as 'success' | 'failure' | 'partial',
-            confidence: r.confidence,
-            timestamp: r.timestamp,
-            metadata: JSON.parse(r.metadata),
-        }));
+        return rows.map(rowToEntry);
     }
 
     /**

@@ -98,6 +98,7 @@ export class BudgetTracker extends EventEmitter {
         input: number,
         output: number,
     ): BudgetExceededReceipt | null {
+        if (input < 0 || output < 0) throw new RangeError('Token counts must be non-negative');
         let state = this.cycles.get(cycleId);
         if (!state) {
             this.startCycle(cycleId);

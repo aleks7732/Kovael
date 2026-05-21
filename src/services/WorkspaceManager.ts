@@ -74,8 +74,16 @@ export class WorkspaceManager {
         if (!ws) {
             throw new WorkspaceError(`No active workspace for cycle ${cycleId}`, 'no_workspace');
         }
-        const resolved = path.resolve(candidate);
-        const rel = path.relative(ws, resolved);
+        // Resolve symlinks to prevent escaping via symlink chains.
+        let resolved: string;
+        try {
+            resolved = fs.realpathSync(path.resolve(candidate));
+        } catch {
+            // If path doesn't exist yet, fall back to lexical resolution.
+            resolved = path.resolve(candidate);
+        }
+        const resolvedWs = fs.realpathSync(ws);
+        const rel = path.relative(resolvedWs, resolved);
         if (rel.startsWith('..') || path.isAbsolute(rel)) {
             throw new WorkspaceError(
                 `cwd ${candidate} is outside workspace ${ws}`,
