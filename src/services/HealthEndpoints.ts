@@ -9,9 +9,9 @@ import type { ServerResponse } from 'node:http';
  *   GET /readyz  → 200 once setReady() has fired, else 503
  *   GET /metrics → Prometheus text exposition format
  *
- * All three live outside `/api/v1/*` so the bearer-token gate (iter 04)
- * does not apply — Kubernetes probes and Prometheus scrapers don't
- * carry auth headers.
+ * These routes live outside `/api/v1/*`; `/livez` and `/readyz` stay
+ * probe-friendly, while `/metrics` may still be token-gated at the
+ * orchestrator router.
  */
 
 export interface MetricsSnapshot {
@@ -19,11 +19,18 @@ export interface MetricsSnapshot {
     topicsActive: number;
 }
 
+export interface HealthEndpointOptions {
+    minReadyChairs?: number;
+}
+
 export class HealthEndpoints {
     private ready = false;
     private readonly startedAt = Date.now();
+    private readonly minReadyChairs: number;
 
-    constructor(private readonly snapshot: () => MetricsSnapshot) {}
+    constructor(private readonly snapshot: () => MetricsSnapshot, opts: HealthEndpointOptions = {}) {
+        this.minReadyChairs = Math.max(0, opts.minReadyChairs ?? 1);
+    }
 
     public setReady(): void {
         this.ready = true;
@@ -35,9 +42,11 @@ export class HealthEndpoints {
     }
 
     public readyz(res: ServerResponse): void {
-        const status = this.ready ? 200 : 503;
+        const chairsReady = this.snapshot().chairsActive >= this.minReadyChairs;
+        const ready = this.ready && chairsReady;
+        const status = ready ? 200 : 503;
         res.writeHead(status, { 'content-type': 'application/json' });
-        res.end(JSON.stringify({ status: this.ready ? 'ok' : 'pending' }));
+        res.end(JSON.stringify({ status: ready ? 'ok' : 'pending', min_ready_chairs: this.minReadyChairs }));
     }
 
     public metrics(res: ServerResponse): void {

@@ -46,4 +46,6 @@ Dockerfile
 **/__tests__
 **/*.test.ts
 **/*.spec.ts
+**/fixtures
+**/fixtures/**
 coverage

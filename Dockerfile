@@ -30,7 +30,7 @@ RUN npm prune --omit=dev
 # Distroless ships only the Node 22 binary, ICU data, ca-certificates,
 # and the `nonroot` user. No shell, no apt, no busybox — anything we
 # need at runtime has to come from the builder or be COPY'd explicitly.
-FROM gcr.io/distroless/nodejs22-debian12:nonroot AS runtime
+FROM gcr.io/distroless/nodejs22-debian12:nonroot@sha256:13593b7570658e8477de39e2f4a1dd25db2f836d68a0ba771251572d23bb4f8e AS runtime
 
 WORKDIR /app
 

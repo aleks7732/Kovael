@@ -6,7 +6,7 @@ metadata:
     app.kubernetes.io/name: kovael-orchestrator
     app.kubernetes.io/component: mesh
 spec:
-  replicas: 1
+  replicas: 2
   revisionHistoryLimit: 5
   progressDeadlineSeconds: 300
   strategy:
