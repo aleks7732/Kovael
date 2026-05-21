@@ -144,8 +144,16 @@ const SPAN_KIND_INTERNAL = 1;
 
 const ATTR_GEN_AI_SYSTEM = 'gen_ai.system';
 const ATTR_GEN_AI_REQUEST_MODEL = 'gen_ai.request.model';
-const ATTR_GEN_AI_INPUT_TOKENS = 'gen_ai.response.input_tokens';
-const ATTR_GEN_AI_OUTPUT_TOKENS = 'gen_ai.response.output_tokens';
+// Use kovael.* namespace + an explicit `estimated` flag rather than the
+// official OTel GenAI keys (gen_ai.response.input_tokens / output_tokens),
+// because today's counts are char/4 estimates. Setting them under the
+// official names would make downstream tools (Jaeger, Grafana, cost
+// pipelines) treat them as authoritative provider-reported counts.
+// When ChairBridge starts reporting real counts, flip these to the
+// canonical gen_ai.* names and drop the estimate flag.
+const ATTR_KOVAEL_INPUT_TOKENS_EST = 'kovael.gen_ai.response.estimated_input_tokens';
+const ATTR_KOVAEL_OUTPUT_TOKENS_EST = 'kovael.gen_ai.response.estimated_output_tokens';
+const ATTR_KOVAEL_TOKEN_COUNT_ESTIMATED = 'kovael.gen_ai.token_count_estimated';
 const ATTR_KOVAEL_CYCLE_ID = 'kovael.cycle.id';
 const ATTR_KOVAEL_TASK_HASH = 'kovael.task.hash';
 const ATTR_KOVAEL_AGENT_ID = 'kovael.agent.id';
@@ -181,13 +189,16 @@ export class TracingBridge {
      */
     public async start(): Promise<boolean> {
         if (this.ready) return true;
-        try {
-            const api = await import('@opentelemetry/api');
-            const sdk = await import('@opentelemetry/sdk-trace-node');
+        // SDK imports are NOT wrapped — @opentelemetry/api and sdk-trace-node
+        // are required runtime deps; a missing module means broken install
+        // and must surface as a hard rejection at the caller. Only the OTLP
+        // exporter import below is wrapped, because OTLP is legitimately
+        // opt-in (gated by OTEL_EXPORTER_OTLP_ENDPOINT) and a broken
+        // collector should not poison startup.
+        const api = await import('@opentelemetry/api');
+        const sdk = await import('@opentelemetry/sdk-trace-node');
 
-            const provider = new sdk.NodeTracerProvider();
-
-            const ring = this.ring;
+        const ring = this.ring;
             const spansByTrace = this.spansByTrace;
             const cycleByTraceRoot = this.cycleByTraceRoot;
 
@@ -270,14 +281,8 @@ export class TracingBridge {
 
             this.provider = providerWithProcessors;
             this.tracer = api.trace.getTracer(this.serviceName);
-            void provider;
             this.ready = true;
             return true;
-        } catch (err) {
-            console.warn('[tracing] OTel SDK unavailable; running without spans', err);
-            this.ready = false;
-            return false;
-        }
     }
 
     public async shutdown(): Promise<void> {
@@ -362,10 +367,13 @@ class RealCycleSpanHandle implements CycleSpanHandle {
             const result = await api.context.with(api.trace.setSpan(parentCtx, child), fn);
             const usage = usageOf ? usageOf(result) : undefined;
             if (usage?.inputTokens !== undefined) {
-                child.setAttribute(ATTR_GEN_AI_INPUT_TOKENS, usage.inputTokens);
+                child.setAttribute(ATTR_KOVAEL_INPUT_TOKENS_EST, usage.inputTokens);
             }
             if (usage?.outputTokens !== undefined) {
-                child.setAttribute(ATTR_GEN_AI_OUTPUT_TOKENS, usage.outputTokens);
+                child.setAttribute(ATTR_KOVAEL_OUTPUT_TOKENS_EST, usage.outputTokens);
+            }
+            if (usage?.inputTokens !== undefined || usage?.outputTokens !== undefined) {
+                child.setAttribute(ATTR_KOVAEL_TOKEN_COUNT_ESTIMATED, true);
             }
             child.setStatus({ code: 1 });
             return result;
@@ -402,8 +410,9 @@ function hrToNs(t: any): number {
 export const __TRACING_INTERNALS__ = {
     ATTR_GEN_AI_SYSTEM,
     ATTR_GEN_AI_REQUEST_MODEL,
-    ATTR_GEN_AI_INPUT_TOKENS,
-    ATTR_GEN_AI_OUTPUT_TOKENS,
+    ATTR_KOVAEL_INPUT_TOKENS_EST,
+    ATTR_KOVAEL_OUTPUT_TOKENS_EST,
+    ATTR_KOVAEL_TOKEN_COUNT_ESTIMATED,
     ATTR_KOVAEL_CYCLE_ID,
     ATTR_KOVAEL_TASK_HASH,
     ATTR_KOVAEL_AGENT_ID,

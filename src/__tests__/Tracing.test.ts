@@ -102,8 +102,15 @@ describe('TracingBridge + MevBridge integration', () => {
         for (const span of [arch!, op!, ver!]) {
             expect(span.attributes['gen_ai.system']).toBe('kovael-stub');
             expect(span.attributes['gen_ai.request.model']).toBe('stub-markov-v1');
-            expect(span.attributes['gen_ai.response.input_tokens']).toBeTypeOf('number');
-            expect(span.attributes['gen_ai.response.output_tokens']).toBeTypeOf('number');
+            // Token counts are estimates (char/4) until ChairBridge reports
+            // real values, so they live under the kovael.* namespace with an
+            // explicit `estimated` flag. NOT the official gen_ai.response.*
+            // names — that would mislead cost / dashboard pipelines.
+            expect(span.attributes['kovael.gen_ai.response.estimated_input_tokens']).toBeTypeOf('number');
+            expect(span.attributes['kovael.gen_ai.response.estimated_output_tokens']).toBeTypeOf('number');
+            expect(span.attributes['kovael.gen_ai.token_count_estimated']).toBe(true);
+            expect(span.attributes['gen_ai.response.input_tokens']).toBeUndefined();
+            expect(span.attributes['gen_ai.response.output_tokens']).toBeUndefined();
             expect(span.attributes['kovael.cycle.id']).toBe(receipt.cycleId);
             expect(span.attributes['kovael.task.hash']).toBe(receipt.taskHash);
             expect(span.attributes['kovael.agent.id']).toBeTypeOf('string');

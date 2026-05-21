@@ -261,13 +261,21 @@ export class MeshOrchestrator extends EventEmitter {
         this.mevBridge.setRateLimitTracker(this.rateLimits);
 
         this.tracing = new TracingBridge();
-        void this.tracing.start().then((ok) => {
+        this.tracing.start().then((ok) => {
             if (ok) {
                 this.mevBridge.setTracingBridge(this.tracing);
                 this.log.info('tracing_ready', { exporter: process.env.OTEL_EXPORTER_OTLP_ENDPOINT ? 'otlp_http' : 'ring_buffer_only' });
-            } else {
-                this.log.warn('tracing_unavailable', {});
             }
+        }).catch((err) => {
+            // SDK import or provider construction failed — observability is
+            // not load-bearing, so we keep the orchestrator running, but log
+            // at `error` so the failure shows up in alerting instead of
+            // silently degrading. A missing dep should never reach prod, but
+            // if it does, ops sees it.
+            this.log.error('tracing_init_failed', {
+                error: err instanceof Error ? err.message : String(err),
+                exporter: process.env.OTEL_EXPORTER_OTLP_ENDPOINT ? 'otlp_http' : 'ring_buffer_only',
+            });
         });
 
         this.loadAgentCards();
