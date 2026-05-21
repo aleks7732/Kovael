@@ -1,6 +1,7 @@
 import { EventEmitter } from 'node:events';
 import { WebSocketServer, WebSocket } from 'ws';
 import { DatabaseSync } from 'node:sqlite';
+import type { Socket } from 'node:net';
 import { MevBridge, VerificationReceipt } from './MevBridge.js';
 import { MevHandshake } from './services/MevHandshake.js';
 import { SemanticIngestor } from './services/SemanticIngestor.js';
@@ -23,12 +24,35 @@ import { AgentCards } from './AgentCards.js';
 import { PersonaLoader } from './services/PersonaLoader.js';
 import { ConversationBus } from './services/ConversationBus.js';
 import { ChairBridgeProvider } from './services/ModelProvider.js';
+import { ApiTokenGate } from './services/ApiTokenGate.js';
+import { HealthEndpoints } from './services/HealthEndpoints.js';
 
+
+export interface HttpTimeouts {
+    headersTimeout: number;
+    requestTimeout: number;
+    keepAliveTimeout: number;
+}
+
+// Hardened defaults vs. Node's stock 60s/300s/5s. Block slow-drip
+// header attacks (slowloris) on the loopback bus while leaving headroom
+// for a slow client on a busy machine. Node requires
+// requestTimeout === 0 || requestTimeout > headersTimeout. Keep-alive must
+// stay below headersTimeout so idle keep-alive sockets cannot outlive the
+// header-read budget.
+export const DEFAULT_HTTP_TIMEOUTS: HttpTimeouts = {
+    headersTimeout: 12_000,
+    requestTimeout: 30_000,
+    keepAliveTimeout: 10_000,
+};
 
 export interface OrchestratorConfig {
     retryQueue?: Partial<RetryConfig>;
     reconciler?: Partial<ReconcilerConfig>;
     chairRegistry?: Partial<ChairRegistryConfig>;
+    httpTimeouts?: Partial<HttpTimeouts>;
+    /** Minimum online chairs before /readyz returns 200. Default 1. */
+    minReadyChairs?: number;
 }
 
 /**
@@ -40,6 +64,8 @@ export interface OrchestratorConfig {
 export class MeshOrchestrator extends EventEmitter {
     private wss: WebSocketServer;
     private server: http.Server;
+    private apiGate: ApiTokenGate;
+    private health: HealthEndpoints;
     private memoryDb: DatabaseSync;
     private mevBridge: MevBridge;
     private handshake: MevHandshake;
@@ -69,6 +95,7 @@ export class MeshOrchestrator extends EventEmitter {
     private currentTechnicalIndex: number = 0;
     private currentInterestsIndex: number = 0;
     private banterTopicId: string | null = null;
+    private headerDeadlineTimers = new Map<Socket, NodeJS.Timeout>();
 
     // Banter content is scrubbed of personal references for the public repo —
     // no operator handle, no biographical details, no biology-domain identifiers.
@@ -104,22 +131,79 @@ export class MeshOrchestrator extends EventEmitter {
     constructor(port: number, cfg: OrchestratorConfig = {}) {
         super();
         this.handshake = new MevHandshake();
+        this.apiGate = new ApiTokenGate();
+        this.health = new HealthEndpoints(
+            () => ({
+                chairsActive: this.chairs.stats().online,
+                topicsActive: this.conversationBus.activeTopicCount(),
+            }),
+            { minReadyChairs: cfg.minReadyChairs },
+        );
 
         // Host SSE Handshake + observability snapshot endpoint
         this.server = http.createServer((req, res) => {
-            if (req.url && req.url.startsWith('/api/v1/state')) {
+            const socket = req.socket as Socket;
+            this.disarmHeaderDeadline(socket);
+            res.on('finish', () => {
+                if (!socket.destroyed) this.armHeaderDeadline(socket, timeouts.headersTimeout);
+            });
+
+            const url = req.url ?? '';
+            // Probe endpoints are always ungated so kubelet can call them.
+            if (url === '/livez') { this.health.livez(res); return; }
+            if (url === '/readyz') { this.health.readyz(res); return; }
+            if (url === '/metrics') {
+                if (!this.apiGate.verify(req)) {
+                    const reason = req.headers['authorization'] ? 'invalid' : 'missing';
+                    this.apiGate.respond401(res, reason);
+                    return;
+                }
+                this.health.metrics(res);
+                return;
+            }
+
+            if (url.startsWith('/api/v1/')) {
+                if (!this.apiGate.verify(req)) {
+                    const reason = req.headers['authorization'] ? 'invalid' : 'missing';
+                    this.apiGate.respond401(res, reason);
+                    return;
+                }
+            }
+            if (url.startsWith('/api/v1/state')) {
                 this.handleStateSnapshot(req, res);
                 return;
             }
-            if (req.url && req.url.startsWith('/api/v1/chairs')) {
+            if (url.startsWith('/api/v1/chairs')) {
                 this.handleChairRequest(req, res);
                 return;
             }
-            if (req.url && req.url.startsWith('/api/v1/conversations')) {
+            if (url.startsWith('/api/v1/conversations')) {
                 this.handleConversationRequest(req, res);
                 return;
             }
             this.handshake.handleRequest(req, res);
+        });
+
+        const timeouts: HttpTimeouts = { ...DEFAULT_HTTP_TIMEOUTS, ...(cfg.httpTimeouts ?? {}) };
+        if (timeouts.requestTimeout !== 0 && timeouts.requestTimeout <= timeouts.headersTimeout) {
+            throw new Error(
+                `OrchestratorConfig.httpTimeouts.requestTimeout (${timeouts.requestTimeout}) ` +
+                    `must be 0 or greater than headersTimeout (${timeouts.headersTimeout}). ` +
+                    `Node will otherwise silently clamp requestTimeout to headersTimeout + 1ms.`,
+            );
+        }
+        if (timeouts.keepAliveTimeout >= timeouts.headersTimeout) {
+            throw new Error(
+                `OrchestratorConfig.httpTimeouts.keepAliveTimeout (${timeouts.keepAliveTimeout}) ` +
+                    `must be less than headersTimeout (${timeouts.headersTimeout}).`,
+            );
+        }
+        this.server.headersTimeout = timeouts.headersTimeout;
+        this.server.requestTimeout = timeouts.requestTimeout;
+        this.server.keepAliveTimeout = timeouts.keepAliveTimeout;
+        this.server.on('connection', (socket) => {
+            this.armHeaderDeadline(socket, timeouts.headersTimeout);
+            socket.on('close', () => this.disarmHeaderDeadline(socket));
         });
 
         this.wss = new WebSocketServer({ server: this.server });
@@ -171,11 +255,32 @@ export class MeshOrchestrator extends EventEmitter {
             const addr = this.server.address();
             const boundPort = addr && typeof addr === 'object' ? addr.port : port;
             this.conversationBus.orchestratorPort = boundPort;
-            this.log.info('orchestrator_listening', { port: boundPort, surfaces: ['ws', 'sse', '/api/v1/state'] });
+            this.log.info('orchestrator_listening', { port: boundPort, surfaces: ['ws', 'sse', '/api/v1/state', '/livez', '/readyz', '/metrics'] });
         });
 
         this.hardware.start();
         this.triggerIngest();
+
+        // All services wired and listening — flip readiness so /readyz
+        // starts returning 200. Liveness has been 200 since construction.
+        this.health.setReady();
+    }
+
+    private armHeaderDeadline(socket: Socket, timeoutMs: number): void {
+        this.disarmHeaderDeadline(socket);
+        const timer = setTimeout(() => {
+            this.headerDeadlineTimers.delete(socket);
+            if (!socket.destroyed) socket.destroy();
+        }, timeoutMs);
+        timer.unref();
+        this.headerDeadlineTimers.set(socket, timer);
+    }
+
+    private disarmHeaderDeadline(socket: Socket): void {
+        const timer = this.headerDeadlineTimers.get(socket);
+        if (!timer) return;
+        clearTimeout(timer);
+        this.headerDeadlineTimers.delete(socket);
     }
 
     private wireHardware() {
@@ -1062,6 +1167,10 @@ export class MeshOrchestrator extends EventEmitter {
     }
 
     public close() {
+        for (const timer of this.headerDeadlineTimers.values()) {
+            clearTimeout(timer);
+        }
+        this.headerDeadlineTimers.clear();
         this.stopInterAgentChatLoop();
         this.personaLoader.stop();
         this.workflowLoader.stop();

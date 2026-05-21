@@ -95,6 +95,48 @@ node scripts/kovael-chair.mjs \
 
 The cockpit roster lights up the matching chair within 100 ms.
 
+## Run it as a container
+
+The orchestrator ships as a distroless multi-stage Docker image — Node
+22 LTS in the builder, `gcr.io/distroless/nodejs22-debian12:nonroot`
+in the runtime. No shell, no package manager, runs as uid 65532.
+
+```bash
+# Build
+docker build -t kovael:latest .
+
+# Run (orchestrator only — cockpit is built separately)
+docker run --rm -p 8080:8080 --init kovael:latest
+```
+
+The image carries `dist/`, production-pruned `node_modules/`,
+`personas/`, and `WORKFLOW.md`. Cockpit assets (`packages/spatial-war-room/`)
+are excluded by `.dockerignore` and built separately for static hosting.
+
+`scripts/lint-dockerfile.mjs` is a daemon-free sanity check that asserts
+the multi-stage / distroless / non-root / `npm ci` / prune invariants on
+every commit — run it locally before touching the Dockerfile.
+
+### Kubernetes
+
+Production-shaped manifests live under [`deploy/k8s/`](./deploy/k8s/):
+
+- `deployment.yaml` — single replica by default, distroless image,
+  `runAsNonRoot: true`, `readOnlyRootFilesystem: true`, ALL capabilities
+  dropped, `seccompProfile: RuntimeDefault`, startup + liveness +
+  readiness probes wired to `/livez` and `/readyz`.
+- `service.yaml` — `ClusterIP` on 8080. Front with an authenticating
+  ingress (TLS + token gate via `KOVAEL_API_TOKEN`) to expose outside
+  the cluster.
+- `hpa.yaml` — `HorizontalPodAutoscaler` 1→5 replicas on CPU 70% +
+  memory 80%, with `scaleDown.stabilizationWindowSeconds: 300` to
+  prevent thrashing.
+
+`scripts/lint-k8s-manifests.mjs` is the daemon-free counterpart — it
+asserts probes point at the live endpoints, no `:latest` image tag,
+`runAsNonRoot`, cap-drop, HPA target matches the Deployment, and the
+Prometheus scrape annotations are present.
+
 ## The nine chairs
 
 Provider strings match the canonical `AgentCards` (`src/AgentCards.ts`)
@@ -133,7 +175,12 @@ expertise, disposition) and a 512² portrait under
   used in the cockpit demo) and `ChairBridgeProvider` (POSTs to a
   chair's `inboxUrl`, suspends until reply at
   `/api/v1/chairs/reply` — lets a real Claude Code / Codex /
-  Antigravity chair answer back through the same protocol).
+  Antigravity chair answer back through the same protocol). The
+  ChairBridge POST is hardened with a per-attempt
+  `dispatchTimeoutMs` (default 10s), full-jitter exponential
+  backoff, and retry-on-transient (429/502/503/504); non-retryable
+  4xx surface immediately. Override per provider via the
+  `DispatchPolicy` constructor argument.
 - **Symphony services** — `TaskClaimMachine`, `RetryQueue`,
   `Reconciler`, `WorkspaceManager`, `HookRunner`, `RateLimitTracker`,
   `WorkflowLoader`, `PersonaLoader`, `HardwareMonitor`,
@@ -141,6 +188,35 @@ expertise, disposition) and a 512² portrait under
 - **Cockpit** (`packages/spatial-war-room/`) — React 19 + Vite 8 +
   Tailwind v4 (Oxide) + xyflow 12 + Zustand 5. Two tabs (canvas,
   theater), one pressure valve.
+
+## Observability
+
+Cloud-native probe + scrape endpoints on the orchestrator port. Probes
+stay ungated, while `/metrics` follows the API token gate when
+`KOVAEL_API_TOKEN` is set.
+
+| Path | Returns | Use |
+|---|---|---|
+| `GET /livez` | `200 {status:"ok", uptime_s:N}` | Liveness probe |
+| `GET /readyz` | `200` once wiring is done **and** at least one chair is online, else `503` | Readiness probe |
+| `GET /metrics` | Prometheus text format (`401` when token gate is enabled and token is missing/invalid) | Scrape target |
+
+Exposed metrics: `kovael_uptime_seconds`, `kovael_chairs_active`,
+`kovael_topics_active`, `kovael_process_resident_memory_bytes`,
+`kovael_process_heap_used_bytes`, `kovael_process_heap_total_bytes`.
+
+### Log shipping
+
+Logs are NDJSON to stdout by default. Set `KOVAEL_LOG_FILE` to
+also tee every line into a rotating file — convenient when a sidecar
+log collector (Vector, Grafana Alloy, Fluent Bit) is tailing the
+container filesystem. Rotation defaults to 50 MiB per file, 5 files
+retained.
+
+Inside the K8s manifests, mount a writable `emptyDir` (or a PVC) at
+the log directory — the default Deployment runs with
+`readOnlyRootFilesystem: true`, so the log path must live on a
+writable volume.
 
 ## Status
 
@@ -169,6 +245,24 @@ expertise, disposition) and a 512² portrait under
 See [`docs/briefs/2026-05-ag-nyx-phoenix-deep.md`](./docs/briefs/2026-05-ag-nyx-phoenix-deep.md)
 for the Day 5-7 deep dive.
 
+## End-to-end validation
+
+`scripts/validate-all-chairs.mjs` is a real-network validation that
+boots the orchestrator on an ephemeral port, claims all 9 canonical
+chairs over HTTP with live fake-inbox servers, dispatches to each via
+`ChairBridgeProvider`, drives a small bus convene, and runs a Triad
+task — then prints a per-agent pass/fail table. Exits non-zero on any
+miss.
+
+```bash
+npm run build
+node scripts/validate-all-chairs.mjs
+```
+
+Captures the truth that a unit test can't: every chair really claims,
+really receives a POST on its inbox URL, and really routes a reply
+through `/api/v1/chairs/reply`.
+
 ## Tests
 
 ```bash
@@ -187,6 +281,17 @@ every PR.
 Kovael runs with a **localhost trust posture**. Chair endpoints,
 conversation endpoints, and the WebSocket bus assume same-host access;
 exposing them publicly requires an authenticating reverse proxy.
+
+The HTTP server ships with hardened slow-drip timeouts —
+`headersTimeout: 12s`, `requestTimeout: 30s` — versus Node's 60s/300s
+defaults. Override per deployment via
+`new MeshOrchestrator(port, { httpTimeouts: { ... } })`.
+
+Set `KOVAEL_API_TOKEN=<secret>` to require `Authorization: Bearer
+<secret>` on every `/api/v1/*` request and `/metrics` (constant-time
+compare, 401 on miss). Unset by default — behavior is unchanged unless
+you opt in.
+Generate a token with `node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"`.
 
 PII discipline is enforced by three coordinated layers — pre-commit
 hooks on the contributor's machine, a `pii-guard.yml` workflow on every

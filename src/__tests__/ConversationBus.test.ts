@@ -76,6 +76,23 @@ describe('ConversationBus', () => {
         expect(history[1].name).toBe('nyx-cli');
     });
 
+    it('getHistory returns the most recent N messages, in chronological order', () => {
+        const topic = bus.createTopic('Sharding Sanity', ['nyx-cli']);
+
+        // Post 10 messages in order; timestamps are auto from Date.now() so we
+        // assert ordering by content.
+        for (let i = 0; i < 10; i++) {
+            bus.postMessage(topic.id, 'nyx-cli', 'assistant', `turn ${i}`);
+        }
+
+        const recent3 = bus.getHistory(topic.id, 3);
+        expect(recent3).toHaveLength(3);
+        // Most-recent-3 should be turns 7, 8, 9 in ASC order — NOT 0, 1, 2.
+        expect(recent3[0].content).toBe('turn 7');
+        expect(recent3[1].content).toBe('turn 8');
+        expect(recent3[2].content).toBe('turn 9');
+    });
+
     it('correctly parses @mention tokens in message content', () => {
         const text = 'Hey @shaev, check out @nyx-cli hoodie details!';
         const mentions = bus.parseMentions(text);
@@ -158,5 +175,135 @@ describe('ConversationBus', () => {
         const agentReply = history.find((h) => h.name === 'nyx-openclaw');
         expect(agentReply).toBeDefined();
         expect(agentReply!.content).toBe(replyText);
+    });
+});
+
+describe('ChairBridgeProvider · dispatch policy (loop iter 08)', () => {
+    let chairs: ChairRegistry;
+    const ORCH_PORT = 0; // /api/v1/chairs/reply isn't called in these tests
+
+    beforeEach(() => {
+        chairs = new ChairRegistry();
+        chairs.start();
+        chairs.claim({
+            agentId: 'nyx-dispatch-test',
+            provider: 'OpenAI GPT-4',
+            inboxUrl: 'http://localhost:9999/inbox',
+        });
+    });
+
+    afterEach(() => {
+        chairs.stop();
+    });
+
+    async function consumeStream(it: AsyncIterable<{ delta: string }>) {
+        const out: string[] = [];
+        for await (const d of it) out.push(d.delta);
+        return out;
+    }
+
+    it('retries on 503 and succeeds on the second attempt', async () => {
+        const calls: string[] = [];
+        const originalFetch = global.fetch;
+        let attempt = 0;
+        global.fetch = (async (url: any) => {
+            calls.push(String(url));
+            attempt += 1;
+            if (attempt === 1) {
+                return new Response('', { status: 503 });
+            }
+            return new Response('', { status: 200 });
+        }) as typeof fetch;
+
+        try {
+            const provider = new ChairBridgeProvider(
+                'nyx-dispatch-test',
+                chairs,
+                ORCH_PORT,
+                { dispatchTimeoutMs: 1000, maxAttempts: 3, baseBackoffMs: 5 },
+            );
+
+            // Fire dispatch on a background promise; resolve the reply
+            // manually so the stream completes.
+            const streamPromise = consumeStream(provider.stream({
+                system: 'sys',
+                messages: [{ role: 'user', content: 'hi' }],
+                topicId: 'topic-dispatch-503',
+                agentId: 'nyx-dispatch-test',
+            } as any));
+
+            // Wait long enough for the retry to fire, then deliver the reply.
+            await new Promise((r) => setTimeout(r, 100));
+            ChairBridgeProvider.submitReply('topic-dispatch-503', 'nyx-dispatch-test', 'ack');
+
+            const deltas = await streamPromise;
+            expect(deltas.join('')).toContain('ack');
+            expect(calls.length).toBe(2); // one retry
+        } finally {
+            global.fetch = originalFetch;
+        }
+    });
+
+    it('does NOT retry on 400 (non-retryable status)', async () => {
+        const originalFetch = global.fetch;
+        let attempts = 0;
+        global.fetch = (async () => {
+            attempts += 1;
+            return new Response('bad request', { status: 400 });
+        }) as typeof fetch;
+
+        try {
+            const provider = new ChairBridgeProvider(
+                'nyx-dispatch-test',
+                chairs,
+                ORCH_PORT,
+                { dispatchTimeoutMs: 1000, maxAttempts: 5, baseBackoffMs: 5 },
+            );
+
+            await expect(consumeStream(provider.stream({
+                system: 's',
+                messages: [{ role: 'user', content: 'hi' }],
+                topicId: 'topic-dispatch-400',
+                agentId: 'nyx-dispatch-test',
+            } as any))).rejects.toThrow(/non-retryable 400/);
+
+            expect(attempts).toBe(1);
+        } finally {
+            global.fetch = originalFetch;
+        }
+    });
+
+    it('times out a single attempt and retries (network black hole)', async () => {
+        const originalFetch = global.fetch;
+        let attempts = 0;
+        // Simulate a black-hole upstream: never resolve, must be aborted.
+        global.fetch = ((_url: any, init: any) => {
+            attempts += 1;
+            return new Promise((_, reject) => {
+                init?.signal?.addEventListener('abort', () => {
+                    reject(new DOMException('aborted', 'AbortError'));
+                });
+            });
+        }) as typeof fetch;
+
+        try {
+            const provider = new ChairBridgeProvider(
+                'nyx-dispatch-test',
+                chairs,
+                ORCH_PORT,
+                { dispatchTimeoutMs: 50, maxAttempts: 2, baseBackoffMs: 5 },
+            );
+
+            await expect(consumeStream(provider.stream({
+                system: 's',
+                messages: [{ role: 'user', content: 'hi' }],
+                topicId: 'topic-dispatch-blackhole',
+                agentId: 'nyx-dispatch-test',
+            } as any))).rejects.toThrow(/Chair Bridge dispatch failed/);
+
+            expect(attempts).toBe(2); // exhausted both attempts on timeout
+        } finally {
+            global.fetch = originalFetch;
+        }
     });
 });
