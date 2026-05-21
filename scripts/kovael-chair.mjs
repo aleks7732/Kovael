@@ -16,9 +16,16 @@
  * One-shot probe mode (claim+release immediately, no heartbeat loop):
  *   node scripts/kovael-chair.mjs --id nyx-codex --provider "Codex" --probe
  *
+ * Bearer-token auth (opt-in; required when the orchestrator runs with
+ * KOVAEL_API_TOKEN set):
+ *   --with-token             read the token from $KOVAEL_TOKEN
+ *   --token <value>          pass the token literally (overrides env)
+ * Without either flag, no Authorization header is sent — backwards
+ * compatible with ungated orchestrators.
+ *
  * Environment overrides:
  *   KOVAEL_HOST    default orchestrator host (e.g. http://localhost:8080)
- *   KOVAEL_TOKEN   optional bearer token (forwarded as Authorization)
+ *   KOVAEL_TOKEN   bearer token source for --with-token
  */
 
 import process from 'node:process';
@@ -35,6 +42,10 @@ function parseArgs(argv) {
             args.probe = true;
             continue;
         }
+        if (key === 'with-token') {
+            args.withToken = true;
+            continue;
+        }
         if (!takesValue) continue;
         i++;
         if (key === 'capabilities') {
@@ -49,21 +60,32 @@ function parseArgs(argv) {
     return args;
 }
 
+function resolveBearerToken(args) {
+    if (typeof args.token === 'string' && args.token.length > 0) return args.token;
+    if (args.withToken) {
+        const env = process.env.KOVAEL_TOKEN;
+        if (typeof env === 'string' && env.length > 0) return env;
+        console.error('kovael-chair: --with-token set but $KOVAEL_TOKEN is empty');
+        process.exit(2);
+    }
+    return null;
+}
+
 function usageAndExit(reason) {
     if (reason) console.error(`kovael-chair: ${reason}`);
-    console.error('Usage: node scripts/kovael-chair.mjs --id <agent-id> --provider "<human-readable>" [--capabilities a,b,c] [--trust 1|2|3] [--host http://localhost:8080] [--note "..."] [--probe]');
+    console.error('Usage: node scripts/kovael-chair.mjs --id <agent-id> --provider "<human-readable>" [--capabilities a,b,c] [--trust 1|2|3] [--host http://localhost:8080] [--note "..."] [--probe] [--with-token | --token <value>]');
     process.exit(2);
 }
 
-async function postJson(host, path, body) {
+async function postJson(host, path, body, bearerToken) {
     const url = new URL(path, host);
     const payload = JSON.stringify(body);
     const headers = {
         'Content-Type': 'application/json',
         'Content-Length': String(Buffer.byteLength(payload)),
     };
-    if (process.env.KOVAEL_TOKEN) {
-        headers['Authorization'] = `Bearer ${process.env.KOVAEL_TOKEN}`;
+    if (bearerToken) {
+        headers['Authorization'] = `Bearer ${bearerToken}`;
     }
     const res = await fetch(url, { method: 'POST', headers, body: payload });
     const text = await res.text();
@@ -80,6 +102,7 @@ async function main() {
     if (!args.provider) usageAndExit('--provider is required');
 
     const host = args.host || process.env.KOVAEL_HOST || 'http://localhost:8080';
+    const bearerToken = resolveBearerToken(args);
     const claimBody = {
         agentId: args.id,
         provider: args.provider,
@@ -90,7 +113,7 @@ async function main() {
 
     let claim;
     try {
-        claim = await postJson(host, '/api/v1/chairs/claim', claimBody);
+        claim = await postJson(host, '/api/v1/chairs/claim', claimBody, bearerToken);
     } catch (err) {
         console.error(`kovael-chair: claim failed (network): ${err.message}`);
         process.exit(1);
@@ -103,7 +126,7 @@ async function main() {
     console.error(`kovael-chair: ${args.id} claimed (session=${sessionId.slice(0, 8)}…, ttl=${ttlMs}ms, beacon=${heartbeatIntervalMs}ms)`);
 
     if (args.probe) {
-        const released = await postJson(host, '/api/v1/chairs/release', { agentId: args.id, sessionId }).catch(() => null);
+        const released = await postJson(host, '/api/v1/chairs/release', { agentId: args.id, sessionId }, bearerToken).catch(() => null);
         console.error(`kovael-chair: probe complete (released=${released?.body?.released ?? false})`);
         process.exit(0);
     }
@@ -113,7 +136,7 @@ async function main() {
         if (stopping) return;
         stopping = true;
         try {
-            await postJson(host, '/api/v1/chairs/release', { agentId: args.id, sessionId });
+            await postJson(host, '/api/v1/chairs/release', { agentId: args.id, sessionId }, bearerToken);
             console.error(`kovael-chair: released (${reason})`);
         } catch (err) {
             console.error(`kovael-chair: release error (${reason}): ${err.message}`);
@@ -131,7 +154,7 @@ async function main() {
             const r = await postJson(host, '/api/v1/chairs/heartbeat', {
                 agentId: args.id,
                 sessionId,
-            });
+            }, bearerToken);
             if (r.status === 409) {
                 console.error('kovael-chair: session superseded — exiting');
                 process.exit(0);
