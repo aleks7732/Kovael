@@ -146,6 +146,26 @@ describe('RateLimiter · token-bucket semantics', () => {
         const req = fakeReq(undefined);
         expect(limiter.clientKey(req)).toBe('unknown');
     });
+
+    it('clientKey ignores non-IP X-Forwarded-For tokens (RFC 7239 obfuscation must not bypass the limit)', () => {
+        const limiter = new RateLimiter({}, { KOVAEL_TRUST_PROXY: 'true' } as NodeJS.ProcessEnv);
+        // `unknown`, `_anon`, or any other non-IP token would collapse all such
+        // clients into one shared bucket. Must fall back to socket address.
+        expect(limiter.clientKey(fakeReq('203.0.113.10', 'unknown'))).toBe('203.0.113.10');
+        expect(limiter.clientKey(fakeReq('203.0.113.10', '_anon, 10.0.0.1'))).toBe('203.0.113.10');
+        expect(limiter.clientKey(fakeReq('203.0.113.10', 'not-an-ip'))).toBe('203.0.113.10');
+    });
+
+    it('clientKey normalizes IPv4-mapped IPv6 so dual-stack clients share one bucket', () => {
+        const limiter = new RateLimiter({}, {} as NodeJS.ProcessEnv);
+        expect(limiter.clientKey(fakeReq('::ffff:1.2.3.4'))).toBe('1.2.3.4');
+        expect(limiter.clientKey(fakeReq('1.2.3.4'))).toBe('1.2.3.4');
+        // Native IPv6 is left alone.
+        expect(limiter.clientKey(fakeReq('2001:db8::1'))).toBe('2001:db8::1');
+        // Same normalization on the trust-proxy path.
+        const trusted = new RateLimiter({}, { KOVAEL_TRUST_PROXY: 'true' } as NodeJS.ProcessEnv);
+        expect(trusted.clientKey(fakeReq('10.0.0.1', '::ffff:198.51.100.7'))).toBe('198.51.100.7');
+    });
 });
 
 describe('MeshOrchestrator · /api/v1/* rate limit (iter 15)', () => {

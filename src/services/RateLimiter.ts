@@ -1,4 +1,15 @@
 import type { IncomingMessage } from 'node:http';
+import { isIP } from 'node:net';
+
+// Strip the IPv4-mapped IPv6 prefix so 1.2.3.4 and ::ffff:1.2.3.4 share a
+// single bucket — otherwise a dual-stack client gets two full quotas.
+function normalizeIp(addr: string): string {
+    if (addr.startsWith('::ffff:')) {
+        const v4 = addr.slice('::ffff:'.length);
+        if (isIP(v4) === 4) return v4;
+    }
+    return addr;
+}
 
 export interface RateLimiterConfig {
     /** Maximum tokens a bucket can hold (burst capacity). Default 60. */
@@ -90,12 +101,16 @@ export class RateLimiter {
             const xff = req.headers['x-forwarded-for'];
             const raw = Array.isArray(xff) ? xff[0] : xff;
             if (typeof raw === 'string' && raw.length > 0) {
-                // RFC 7239: leftmost entry is the original client.
                 const first = raw.split(',')[0]?.trim();
-                if (first) return first;
+                // RFC 7239 allows obfuscated identifiers (`unknown`, `_anon`)
+                // that aren't IPs. Honoring those would collapse every such
+                // client into one shared bucket — trivial limit bypass.
+                if (first && isIP(first) !== 0) return normalizeIp(first);
             }
         }
-        return req.socket?.remoteAddress ?? 'unknown';
+        const remote = req.socket?.remoteAddress;
+        if (remote && isIP(remote) !== 0) return normalizeIp(remote);
+        return remote ?? 'unknown';
     }
 
     /**
