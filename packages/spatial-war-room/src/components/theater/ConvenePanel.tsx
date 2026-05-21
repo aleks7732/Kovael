@@ -1,5 +1,6 @@
 import { memo, useState } from 'react';
 import type { AgentRosterCard } from '../../store/useWarRoomStore';
+import { ORCHESTRATOR_HTTP_URL, authHeaders } from '../../apiConfig';
 
 interface ConvenePanelProps {
   roster: AgentRosterCard[];
@@ -45,10 +46,11 @@ export const ConvenePanel = memo(({ roster, onTopicCreated }: ConvenePanelProps)
     setError(null);
 
     try {
-      const response = await fetch('http://localhost:8080/api/v1/conversations', {
+      const response = await fetch(`${ORCHESTRATOR_HTTP_URL}/api/v1/conversations`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
+          ...authHeaders(),
         },
         body: JSON.stringify({
           title: title.trim(),

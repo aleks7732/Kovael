@@ -23,6 +23,7 @@ import { ToastStack } from './components/ToastStack.js';
 import { CycleInspector } from './components/CycleInspector.js';
 import { StatusLegend } from './components/StatusLegend.js';
 import { ConversationTheater } from './components/theater/ConversationTheater.js';
+import { websocketUrl } from './apiConfig.js';
 
 const nodeTypes = {
   agentHeartbeat: AgentHeartbeatNode,
@@ -31,8 +32,6 @@ const nodeTypes = {
 };
 
 const PRESSURE_VALVE_INTERVAL_MS = 100;
-const ORCHESTRATOR_URL = 'ws://localhost:8080';
-
 const SpatialWarRoom = () => {
   const nodes = useWarRoomStore((s) => s.nodes);
   const edges = useWarRoomStore((s) => s.edges);
@@ -118,7 +117,7 @@ const SpatialWarRoom = () => {
 
     const connect = () => {
       console.log('Connecting to WebSocket...');
-      const ws = new WebSocket(ORCHESTRATOR_URL);
+      const ws = new WebSocket(websocketUrl());
       currentWs = ws;
       wsRef.current = ws;
 

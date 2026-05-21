@@ -5,6 +5,7 @@ import { MessageList } from './MessageList';
 import { ConvenePanel } from './ConvenePanel';
 import { StoppingCard } from './StoppingCard';
 import { TraceBreadcrumb } from './TraceBreadcrumb';
+import { ORCHESTRATOR_HTTP_URL, authHeaders } from '../../apiConfig';
 
 export const ConversationTheater = memo(() => {
   const topics = useWarRoomStore((s) => s.topics);
@@ -36,7 +37,9 @@ export const ConversationTheater = memo(() => {
   useEffect(() => {
     const fetchHistory = async () => {
       try {
-        const response = await fetch('http://localhost:8080/api/v1/state');
+        const response = await fetch(`${ORCHESTRATOR_HTTP_URL}/api/v1/state`, {
+          headers: authHeaders(),
+        });
         if (response.ok) {
           const state = await response.json();
           // Backfill topics if they exist in state
@@ -63,8 +66,9 @@ export const ConversationTheater = memo(() => {
     e.stopPropagation();
     setClosingId(topicId);
     try {
-      const response = await fetch(`http://localhost:8080/api/v1/conversations/${topicId}/close`, {
+      const response = await fetch(`${ORCHESTRATOR_HTTP_URL}/api/v1/conversations/${topicId}/close`, {
         method: 'POST',
+        headers: authHeaders(),
       });
       if (!response.ok) {
         throw new Error('Failed to close thread.');

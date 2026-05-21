@@ -2,12 +2,11 @@ import * as crypto from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 
 /**
- * Opt-in bearer-token guard for the orchestrator's /api/v1/* surface.
+ * Bearer-token guard for the orchestrator's protected control surfaces.
  *
- * Default-off feature flag (Symphony pre-approved scope: "Feature
- * flags behind defaults that match current behavior"). If the env var
- * is unset, `enabled` is false and `verify()` returns true for every
- * request — the orchestrator runs exactly as it did before iter 04.
+ * Secure-by-default: protected surfaces require `KOVAEL_API_TOKEN`.
+ * Local development can explicitly opt out with
+ * `KOVAEL_ALLOW_UNAUTHENTICATED=true`.
  *
  * When the env var is set, every `/api/v1/*` request must carry
  *
@@ -21,10 +20,9 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
  * back for guesses of different sizes. Pre-image resistance of SHA-256
  * means equal digests imply equal tokens.
  *
- * The WebSocket upgrade path is intentionally **not** gated here —
- * the WS handshake passes through a different code path and would
- * need a token-bearing query param or a custom upgrade header. Tracked
- * for a separate iteration.
+ * HTTP APIs use the `Authorization` header only. Browser WebSocket and
+ * EventSource clients cannot set custom headers, so those upgrade/stream
+ * paths may opt in to accepting a `token` query parameter.
  */
 export class ApiTokenGate {
     public readonly enabled: boolean;
@@ -32,32 +30,46 @@ export class ApiTokenGate {
 
     constructor(envVarName = 'KOVAEL_API_TOKEN', env: NodeJS.ProcessEnv = process.env) {
         const raw = env[envVarName];
+        const allowUnauthenticated = env.KOVAEL_ALLOW_UNAUTHENTICATED === 'true';
         if (raw && raw.length > 0) {
             this.enabled = true;
             this.expectedHash = crypto.createHash('sha256').update(raw, 'utf8').digest();
         } else {
-            this.enabled = false;
+            this.enabled = !allowUnauthenticated;
             this.expectedHash = null;
         }
     }
 
     /**
-     * Returns true iff the request is allowed through. Gate-disabled →
-     * always true. Gate-enabled → header is hashed and compared to the
-     * stored hash in constant time, regardless of presented length.
+     * Returns true iff the request is allowed through. Explicitly disabled →
+     * always true. Enabled with no configured token → deny. Enabled with a
+     * token → hash and compare in constant time, regardless of length.
      */
-    public verify(req: IncomingMessage): boolean {
-        if (!this.enabled || this.expectedHash === null) return true;
+    public verify(req: IncomingMessage, options: { allowQueryToken?: boolean } = {}): boolean {
+        if (!this.enabled) return true;
+        if (this.expectedHash === null) return false;
 
-        const header = req.headers['authorization'];
-        if (typeof header !== 'string') return false;
+        const presented = this.presentedToken(req, options.allowQueryToken === true);
+        if (typeof presented !== 'string') return false;
 
-        const prefix = 'Bearer ';
-        if (!header.startsWith(prefix)) return false;
-
-        const presented = header.slice(prefix.length);
         const presentedHash = crypto.createHash('sha256').update(presented, 'utf8').digest();
         return crypto.timingSafeEqual(presentedHash, this.expectedHash);
+    }
+
+    private presentedToken(req: IncomingMessage, allowQueryToken: boolean): string | null {
+        const header = req.headers['authorization'];
+        const prefix = 'Bearer ';
+        if (typeof header === 'string' && header.startsWith(prefix)) {
+            return header.slice(prefix.length);
+        }
+
+        if (!allowQueryToken) return null;
+        try {
+            const url = new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`);
+            return url.searchParams.get('token');
+        } catch {
+            return null;
+        }
     }
 
     /**

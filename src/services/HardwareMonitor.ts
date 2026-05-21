@@ -16,6 +16,7 @@ const SMI_ARGS = [
     '--query-gpu=memory.free,memory.used,memory.total,utilization.gpu',
     '--format=csv,noheader,nounits',
 ];
+const MAX_SMI_OUTPUT_BYTES = 64 * 1024;
 
 /**
  * HardwareMonitor: VRAM-aware sensor for the Sovereign Mesh.
@@ -66,7 +67,20 @@ export class HardwareMonitor extends EventEmitter {
 
         let stdout = '';
         let stderr = '';
-        let child;
+        let child: ReturnType<typeof spawn> | null = null;
+        let outputBytes = 0;
+        let killedForOutputLimit = false;
+
+        const appendBounded = (target: 'stdout' | 'stderr', chunk: Buffer): void => {
+            outputBytes += chunk.byteLength;
+            if (outputBytes > MAX_SMI_OUTPUT_BYTES) {
+                killedForOutputLimit = true;
+                child?.kill();
+                return;
+            }
+            if (target === 'stdout') stdout += chunk.toString('utf8');
+            else stderr += chunk.toString('utf8');
+        };
 
         try {
             child = spawn('nvidia-smi', SMI_ARGS, { stdio: ['ignore', 'pipe', 'pipe'] });
@@ -76,8 +90,8 @@ export class HardwareMonitor extends EventEmitter {
             return;
         }
 
-        child.stdout.on('data', (chunk) => { stdout += chunk.toString(); });
-        child.stderr.on('data', (chunk) => { stderr += chunk.toString(); });
+        child.stdout!.on('data', (chunk: Buffer) => appendBounded('stdout', chunk));
+        child.stderr!.on('data', (chunk: Buffer) => appendBounded('stderr', chunk));
 
         child.on('error', () => {
             this.inFlight = false;
@@ -86,6 +100,10 @@ export class HardwareMonitor extends EventEmitter {
 
         child.on('close', (code) => {
             this.inFlight = false;
+            if (killedForOutputLimit) {
+                this.publishUnavailable('nvidia-smi_output_limit');
+                return;
+            }
             if (code !== 0) {
                 this.publishUnavailable(stderr.trim().split('\n')[0] || `exit_${code}`);
                 return;

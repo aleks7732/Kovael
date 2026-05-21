@@ -18,13 +18,14 @@ export class MevHandshake extends EventEmitter {
     /**
      * Handles SSE connection requests.
      */
-    public handleRequest(req: IncomingMessage, res: ServerResponse) {
-        if (req.url === '/mev/handshake') {
+    public handleRequest(req: IncomingMessage, res: ServerResponse, headers: Record<string, string> = {}) {
+        const pathname = new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`).pathname;
+        if (pathname === '/mev/handshake') {
             res.writeHead(200, {
                 'Content-Type': 'text/event-stream',
                 'Cache-Control': 'no-cache',
                 'Connection': 'keep-alive',
-                'Access-Control-Allow-Origin': '*'
+                ...headers,
             });
 
             // Keep-alive heartbeat every 30 seconds

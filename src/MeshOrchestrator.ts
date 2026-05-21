@@ -59,6 +59,8 @@ export interface OrchestratorConfig {
     dbPath?: string;
     /** Per-IP token-bucket rate limit for /api/v1/*. Default 60 cap, 1/sec refill, 10k LRU. */
     rateLimit?: Partial<RateLimiterConfig>;
+    /** Explicit browser origins allowed to read protected HTTP surfaces. Default from KOVAEL_ALLOWED_ORIGINS or none. */
+    allowedOrigins?: string[];
 }
 
 /**
@@ -89,6 +91,7 @@ export class MeshOrchestrator extends EventEmitter {
     private chairs: ChairRegistry;
     private conversationBus: ConversationBus;
     private log: Logger = rootLogger;
+    private readonly allowedOrigins: Set<string>;
     private agentCards: any[] = [];
     private nodeCache: Map<string, any> = new Map();
     private taskCache: any[] = [];
@@ -139,6 +142,7 @@ export class MeshOrchestrator extends EventEmitter {
         super();
         this.handshake = new MevHandshake();
         this.apiGate = new ApiTokenGate();
+        this.allowedOrigins = new Set((cfg.allowedOrigins ?? MeshOrchestrator.allowedOriginsFromEnv()).filter(Boolean));
         this.rateLimiter = new RateLimiter(cfg.rateLimit ?? {});
         this.health = new HealthEndpoints(
             () => ({
@@ -157,6 +161,15 @@ export class MeshOrchestrator extends EventEmitter {
             });
 
             const url = req.url ?? '';
+            if (!this.isOriginAllowed(req)) {
+                this.respondCorsForbidden(res);
+                return;
+            }
+            if (req.method === 'OPTIONS') {
+                this.respondOptions(req, res);
+                return;
+            }
+
             // Probe endpoints are always ungated so kubelet can call them.
             if (url === '/livez') { this.health.livez(res); return; }
             if (url === '/readyz') { this.health.readyz(res); return; }
@@ -202,6 +215,15 @@ export class MeshOrchestrator extends EventEmitter {
                 this.handleConversationRequest(req, res);
                 return;
             }
+            if (url.startsWith('/mev/handshake')) {
+                if (!this.apiGate.verify(req, { allowQueryToken: true })) {
+                    const reason = req.headers['authorization'] || new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`).searchParams.has('token') ? 'invalid' : 'missing';
+                    this.apiGate.respond401(res, reason);
+                    return;
+                }
+                this.handshake.handleRequest(req, res, this.corsHeaders(req));
+                return;
+            }
             this.handshake.handleRequest(req, res);
         });
 
@@ -227,7 +249,23 @@ export class MeshOrchestrator extends EventEmitter {
             socket.on('close', () => this.disarmHeaderDeadline(socket));
         });
 
-        this.wss = new WebSocketServer({ server: this.server });
+        this.wss = new WebSocketServer({ noServer: true });
+        this.server.on('upgrade', (req, socket, head) => {
+            this.disarmHeaderDeadline(socket as Socket);
+            if (!this.isOriginAllowed(req)) {
+                socket.write('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n');
+                socket.destroy();
+                return;
+            }
+            if (!this.apiGate.verify(req, { allowQueryToken: true })) {
+                socket.write('HTTP/1.1 401 Unauthorized\r\nConnection: close\r\nWWW-Authenticate: Bearer realm="kovael"\r\n\r\n');
+                socket.destroy();
+                return;
+            }
+            this.wss.handleUpgrade(req, socket, head, (ws) => {
+                this.wss.emit('connection', ws, req);
+            });
+        });
 
         const { db: orchestratorDb } = openOrchestratorDb({ path: cfg.dbPath });
         this.memoryDb = orchestratorDb;
@@ -302,6 +340,46 @@ export class MeshOrchestrator extends EventEmitter {
         if (!timer) return;
         clearTimeout(timer);
         this.headerDeadlineTimers.delete(socket);
+    }
+
+    private static allowedOriginsFromEnv(env: NodeJS.ProcessEnv = process.env): string[] {
+        return (env.KOVAEL_ALLOWED_ORIGINS ?? '')
+            .split(',')
+            .map((origin) => origin.trim())
+            .filter((origin) => origin.length > 0 && origin !== '*');
+    }
+
+    private isOriginAllowed(req: http.IncomingMessage): boolean {
+        const origin = req.headers.origin;
+        if (typeof origin !== 'string') return true;
+        return this.allowedOrigins.has(origin);
+    }
+
+    private corsHeaders(req: http.IncomingMessage): Record<string, string> {
+        const origin = req.headers.origin;
+        if (typeof origin !== 'string' || !this.allowedOrigins.has(origin)) return {};
+        return {
+            'Access-Control-Allow-Origin': origin,
+            'Access-Control-Allow-Headers': 'Authorization, Content-Type',
+            'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+            'Vary': 'Origin',
+        };
+    }
+
+    private respondCorsForbidden(res: http.ServerResponse): void {
+        res.writeHead(403, {
+            'Content-Type': 'application/json',
+            'Cache-Control': 'no-store',
+        });
+        res.end(JSON.stringify({ error: 'origin_not_allowed' }));
+    }
+
+    private respondOptions(req: http.IncomingMessage, res: http.ServerResponse): void {
+        res.writeHead(204, {
+            ...this.corsHeaders(req),
+            'Cache-Control': 'no-store',
+        });
+        res.end();
     }
 
     private wireHardware() {
@@ -530,7 +608,7 @@ export class MeshOrchestrator extends EventEmitter {
             res.writeHead(status, {
                 'Content-Type': 'application/json',
                 'Cache-Control': 'no-store',
-                'Access-Control-Allow-Origin': '*',
+                ...this.corsHeaders(req),
             });
             res.end(JSON.stringify(body));
         };
@@ -664,7 +742,7 @@ export class MeshOrchestrator extends EventEmitter {
             res.writeHead(status, {
                 'Content-Type': 'application/json',
                 'Cache-Control': 'no-store',
-                'Access-Control-Allow-Origin': '*',
+                ...this.corsHeaders(req),
             });
             res.end(JSON.stringify(body));
         };
@@ -788,7 +866,7 @@ export class MeshOrchestrator extends EventEmitter {
         });
     }
 
-    private handleStateSnapshot(_req: http.IncomingMessage, res: http.ServerResponse): void {
+    private handleStateSnapshot(req: http.IncomingMessage, res: http.ServerResponse): void {
         const snapshot = {
             timestamp: Date.now(),
             agentCards: this.agentCards.length,
@@ -828,7 +906,7 @@ export class MeshOrchestrator extends EventEmitter {
         res.writeHead(200, {
             'Content-Type': 'application/json',
             'Cache-Control': 'no-store',
-            'Access-Control-Allow-Origin': '*',
+            ...this.corsHeaders(req),
         });
         res.end(JSON.stringify(snapshot));
     }

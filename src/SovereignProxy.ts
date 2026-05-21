@@ -11,13 +11,30 @@ import { z } from "zod";
  * Implements MCP for LLM interaction and PII scrubbing for safety.
  */
 
+const MAX_ENV_REGEX_LENGTH = 256;
+const RISKY_REGEX_SHAPE = /\([^)]*(?:[+*]|\{\d*,?\d*\})[^)]*\)(?:[+*]|\{\d*,?\d*\})/;
+
+function compileEnvPattern(value: string | undefined, flags: string): RegExp | null {
+  if (!value) return null;
+  if (value.length > MAX_ENV_REGEX_LENGTH || RISKY_REGEX_SHAPE.test(value)) {
+    console.error("Skipping unsafe PII scrub pattern from environment");
+    return null;
+  }
+  try {
+    return new RegExp(value, flags);
+  } catch {
+    console.error("Skipping invalid PII scrub pattern from environment");
+    return null;
+  }
+}
+
 // PII Scrubbing Rules - Loaded from environment to prevent repo leakage
 const FORBIDDEN_PATTERNS = [
-  process.env.VPC_PII_NAME_PATTERN ? new RegExp(process.env.VPC_PII_NAME_PATTERN, 'gi') : null,
-  process.env.VPC_PII_EMAIL_PATTERN ? new RegExp(process.env.VPC_PII_EMAIL_PATTERN, 'gi') : null,
-  process.env.VPC_PII_MAC_PATTERN ? new RegExp(process.env.VPC_PII_MAC_PATTERN, 'gi') : null,
-  process.env.VPC_PII_TELEGRAM_PATTERN ? new RegExp(process.env.VPC_PII_TELEGRAM_PATTERN, 'g') : null,
-  process.env.VPC_PII_PATH_PATTERN ? new RegExp(process.env.VPC_PII_PATH_PATTERN, 'gi') : null,
+  compileEnvPattern(process.env.VPC_PII_NAME_PATTERN, 'gi'),
+  compileEnvPattern(process.env.VPC_PII_EMAIL_PATTERN, 'gi'),
+  compileEnvPattern(process.env.VPC_PII_MAC_PATTERN, 'gi'),
+  compileEnvPattern(process.env.VPC_PII_TELEGRAM_PATTERN, 'g'),
+  compileEnvPattern(process.env.VPC_PII_PATH_PATTERN, 'gi'),
 ].filter(Boolean) as RegExp[];
 
 /**
