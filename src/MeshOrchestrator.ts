@@ -28,6 +28,7 @@ import { ApiTokenGate } from './services/ApiTokenGate.js';
 import { RateLimiter, RateLimiterConfig } from './services/RateLimiter.js';
 import { HealthEndpoints } from './services/HealthEndpoints.js';
 import { openOrchestratorDb } from './services/OrchestratorDb.js';
+import { TracingBridge } from './services/Tracing.js';
 
 
 export interface HttpTimeouts {
@@ -88,6 +89,7 @@ export class MeshOrchestrator extends EventEmitter {
     private rateLimits: RateLimitTracker;
     private chairs: ChairRegistry;
     private conversationBus: ConversationBus;
+    private tracing: TracingBridge;
     private log: Logger = rootLogger;
     private agentCards: any[] = [];
     private nodeCache: Map<string, any> = new Map();
@@ -202,6 +204,10 @@ export class MeshOrchestrator extends EventEmitter {
                 this.handleConversationRequest(req, res);
                 return;
             }
+            if (url.startsWith('/api/v1/traces')) {
+                this.handleTracesRequest(req, res);
+                return;
+            }
             this.handshake.handleRequest(req, res);
         });
 
@@ -253,6 +259,16 @@ export class MeshOrchestrator extends EventEmitter {
             port
         );
         this.mevBridge.setRateLimitTracker(this.rateLimits);
+
+        this.tracing = new TracingBridge();
+        void this.tracing.start().then((ok) => {
+            if (ok) {
+                this.mevBridge.setTracingBridge(this.tracing);
+                this.log.info('tracing_ready', { exporter: process.env.OTEL_EXPORTER_OTLP_ENDPOINT ? 'otlp_http' : 'ring_buffer_only' });
+            } else {
+                this.log.warn('tracing_unavailable', {});
+            }
+        });
 
         this.loadAgentCards();
         this.initializeBus();
@@ -646,6 +662,47 @@ export class MeshOrchestrator extends EventEmitter {
 
             writeJson(404, { error: 'unknown_conversation_action' });
         });
+    }
+
+    private handleTracesRequest(req: http.IncomingMessage, res: http.ServerResponse): void {
+        const writeJson = (status: number, body: Record<string, unknown> | Array<unknown>): void => {
+            res.writeHead(status, {
+                'Content-Type': 'application/json',
+                'Cache-Control': 'no-store',
+                'Access-Control-Allow-Origin': '*',
+            });
+            res.end(JSON.stringify(body));
+        };
+
+        if (req.method !== 'GET') {
+            writeJson(405, { error: 'method_not_allowed' });
+            return;
+        }
+
+        const url = new URL(req.url || '/', `http://${req.headers.host}`);
+        const detailMatch = url.pathname.match(/^\/api\/v1\/traces\/([^/]+)\/?$/);
+        if (detailMatch) {
+            const cycleId = detailMatch[1];
+            const trace = this.tracing?.ring.get(cycleId);
+            if (!trace) {
+                writeJson(404, { error: 'trace_not_found', cycleId });
+                return;
+            }
+            writeJson(200, trace as unknown as Record<string, unknown>);
+            return;
+        }
+
+        const limitParam = url.searchParams.get('limit');
+        const limit = limitParam ? Math.max(1, Math.min(1000, Number.parseInt(limitParam, 10) || 20)) : 20;
+        const items = (this.tracing?.ring.list(limit) ?? []).map((t) => ({
+            cycleId: t.cycleId,
+            traceId: t.traceId,
+            startedAt: t.startedAt,
+            endedAt: t.endedAt,
+            durationMs: t.endedAt - t.startedAt,
+            spanCount: t.spans.length,
+        }));
+        writeJson(200, { items, stats: this.tracing?.ring.stats() ?? null });
     }
 
     /**
@@ -1199,6 +1256,7 @@ export class MeshOrchestrator extends EventEmitter {
         this.retryQueue.stop();
         this.hardware.stop();
         this.chairs.stop();
+        void this.tracing?.shutdown();
         this.wss.close();
         this.server.close();
         this.memoryDb.close();
