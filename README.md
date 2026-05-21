@@ -25,8 +25,10 @@ React 19 cockpit watches every cycle live.
  │   PersonaLoader   WorkflowLoader    Triad        │
  │   HardwareMonitor RetryQueue        Reconciler   │
  │   HookRunner      RateLimitTracker  Workspaces   │
+ │   CycleLog  BudgetTracker  RoutingPolicy         │
+ │   EpisodicMemory  AgUiEventStream                │
  │                                                  │
- │            in-memory SQLite (ephemeral)          │
+ │          SQLite (event-sourced CycleLog)          │
  └──────────┬───────────────────────────────────────┘
             │ Chair Beacon (HTTP claim/heartbeat)
  ┌──────────┴────────────────────────────────────────┐
@@ -167,7 +169,8 @@ expertise, disposition) and a 512² portrait under
   dispatch. Loadable persona system prompts via `PersonaLoader`.
 - **ConversationBus** (`src/services/ConversationBus.ts`) — multi-agent
   topic threads with `@mention` routing, streaming deltas in AG-UI
-  style, adaptive-stability stopping (ε = 0.05, K = 2, hard cap 6).
+  style, hybrid verifier-score + adaptive-stability stopping
+  (`verifier_confidence ≥ τ` AND stability, with ε-K fallback).
 - **ChairRegistry** (`src/services/ChairRegistry.ts`) — claim /
   heartbeat / release lifecycle with 15s healthy / 30s offline TTLs.
 - **ModelProvider** (`src/services/ModelProvider.ts`) — two
@@ -185,6 +188,27 @@ expertise, disposition) and a 512² portrait under
   `Reconciler`, `WorkspaceManager`, `HookRunner`, `RateLimitTracker`,
   `WorkflowLoader`, `PersonaLoader`, `HardwareMonitor`,
   `SemanticIngestor`.
+- **Frontier services** (2026 iteration):
+  - **CycleLog** (`src/services/CycleLog.ts`) — append-only event-sourced
+    ledger. Every Triad phase transition, claim, dispatch, and reply is
+    an immutable event keyed by `(cycle_id, seq)`. Sealed cycles get a
+    Merkle-rooted receipt signed with ed25519. Supports replay-on-boot
+    for durable execution without a Temporal/Restate dependency.
+  - **BudgetTracker** (`src/services/BudgetTracker.ts`) — per-cycle
+    token / USD / wall-clock governor. Emits 402-style structured
+    receipts when a cycle exceeds its budget. Configured via the
+    `budget:` block in `WORKFLOW.md`.
+  - **RoutingPolicy** (`src/services/RoutingPolicy.ts`) — Thompson-sampling
+    bandit over `(taskClass, chairId)` using verifier pass/fail as reward.
+    Static VRAM floor stays as a hard constraint; bandit picks among
+    feasible chairs. Falls back to static routing on cold start.
+  - **EpisodicMemory** (`src/services/EpisodicMemory.ts`) — FTS5-backed
+    cross-cycle knowledge store. Completed cycles are indexed; personas
+    can recall relevant past cycles via free-text search.
+  - **AG-UI Event Stream** (`src/services/AgUiEventStream.ts`) — maps
+    internal bus events to the AG-UI protocol vocabulary (`run.started`,
+    `message.delta`, `step.finished`, `run.finished`) so third-party
+    cockpits can attach to the WS bus.
 - **Cockpit** (`packages/spatial-war-room/`) — React 19 + Vite 8 +
   Tailwind v4 (Oxide) + xyflow 12 + Zustand 5. Two tabs (canvas,
   theater), one pressure valve.

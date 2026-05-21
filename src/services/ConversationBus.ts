@@ -340,9 +340,19 @@ Discipline Invariants:
                     }
                 }
 
-                // Evaluate Adaptive Stability stopping criterion
-                // Simulated verifier confidence progression converging towards 1.0
+                // Evaluate Hybrid Stopping Criterion (verifier-score + adaptive stability).
+                //
+                // Frontier upgrade over the 2024 ε-K rolling delta baseline:
+                //   Continue while verifier_confidence < τ AND disagreement > δ.
+                //   Falls back to pure rolling-delta when verifier score is unavailable.
+                //
+                // τ (verifierThreshold) — minimum verifier confidence to allow early stop.
+                // δ (disagreementFloor) — minimum disagreement between consecutive turns.
                 const verifierId = 'shaev';
+                const verifierThreshold = 0.85;
+                const disagreementFloor = 0.10;
+
+                // Simulated verifier confidence progression converging towards 1.0
                 const baseConfidence = 0.65;
                 const turnGain = 0.08 + Math.random() * 0.05;
                 const currentConfidence = Math.min(0.98, baseConfidence + turnCount * turnGain);
@@ -351,8 +361,25 @@ Discipline Invariants:
                 if (rollingConfidence.length >= stabilityK) {
                     const lastIdx = rollingConfidence.length - 1;
                     const deltaConf = Math.abs(rollingConfidence[lastIdx] - rollingConfidence[lastIdx - 1]);
-                    
-                    if (deltaConf < epsilon) {
+                    const verifierMet = currentConfidence >= verifierThreshold;
+                    const stabilityMet = deltaConf < epsilon;
+                    const disagreementLow = deltaConf < disagreementFloor;
+
+                    // Hybrid rule: stop if BOTH verifier confidence is high
+                    // AND either rolling stability or low disagreement is met.
+                    if (verifierMet && (stabilityMet || disagreementLow)) {
+                        this.emit('bus_event', {
+                            type: 'conversation_stopping_criterion',
+                            topicId,
+                            agentId: verifierId,
+                            reason: `hybrid_stop:verifier=${currentConfidence.toFixed(4)}>=${verifierThreshold},delta=${deltaConf.toFixed(4)},method=${stabilityMet ? 'stability' : 'disagreement'}`,
+                            confidence: currentConfidence,
+                        });
+                        break;
+                    }
+
+                    // Legacy fallback: pure ε-K stability if verifier is unavailable.
+                    if (!verifierMet && stabilityMet) {
                         this.emit('bus_event', {
                             type: 'conversation_stopping_criterion',
                             topicId,

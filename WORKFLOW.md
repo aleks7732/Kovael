@@ -19,6 +19,16 @@ routing:
   operator: nyx-cli
   verifier: nyx-cli
 
+budget:
+  tokens_per_cycle: 200000
+  usd_per_cycle: 2.00
+  wall_clock_ms: 300000
+
+routing_policy:
+  strategy: bandit
+  decay: 0.95
+  exploration_bonus: 1.0
+
 sharding:
   keep_recent_turns: 3
   pin_system_prompt: true
