@@ -25,7 +25,7 @@ const checks = [
     },
     {
         name: 'Runtime stage is distroless Node 22 nonroot pinned by digest',
-        pass: /FROM\s+gcr\.io\/distroless\/nodejs22-debian12:nonroot@sha256:[a-f0-9]{64}\s+AS\s+runtime/.test(dockerfile),
+        pass: /FROM\s+gcr\.io\/distroless\/nodejs22-debian12:nonroot@sha256:[a-fA-F0-9]{64}\s+AS\s+runtime/.test(dockerfile),
     },
     {
         name: 'npm ci is used (deterministic install, never npm install)',
@@ -117,7 +117,7 @@ if (failed > 0) {
     process.exit(1);
 }
 
-const dockerVersion = spawnSync('docker', ['version'], { stdio: 'pipe', encoding: 'utf8' });
+const dockerVersion = spawnSync('docker', ['version'], { stdio: 'pipe', encoding: 'utf8', timeout: 10_000 });
 if (dockerVersion.status !== 0) {
     process.stdout.write('[SKIP] Docker smoke test skipped (docker not available)\n');
     process.exit(0);
@@ -128,11 +128,13 @@ const build = spawnSync('docker', ['build', '-f', 'Dockerfile', '-t', imageTag, 
     cwd: repo,
     stdio: 'pipe',
     encoding: 'utf8',
+    timeout: 300_000,
 });
 if (build.status !== 0) {
     process.stdout.write('[FAIL] Docker smoke test build failed\n');
     if (build.stdout) process.stdout.write(build.stdout);
     if (build.stderr) process.stdout.write(build.stderr);
+    spawnSync('docker', ['rmi', '-f', imageTag], { stdio: 'pipe', timeout: 10_000 });
     process.exit(1);
 }
 
@@ -140,23 +142,25 @@ const containerName = `kovael-smoke-${Date.now()}`;
 const run = spawnSync('docker', ['run', '--rm', '-d', '--name', containerName, imageTag], {
     stdio: 'pipe',
     encoding: 'utf8',
+    timeout: 30_000,
 });
 if (run.status !== 0) {
     process.stdout.write('[FAIL] Docker smoke test run failed\n');
     if (run.stdout) process.stdout.write(run.stdout);
     if (run.stderr) process.stdout.write(run.stderr);
-    spawnSync('docker', ['rmi', '-f', imageTag], { stdio: 'pipe' });
+    spawnSync('docker', ['rmi', '-f', imageTag], { stdio: 'pipe', timeout: 10_000 });
     process.exit(1);
 }
 
 const inspect = spawnSync('docker', ['inspect', '-f', '{{.State.Running}}', containerName], {
     stdio: 'pipe',
     encoding: 'utf8',
+    timeout: 10_000,
 });
 const running = inspect.status === 0 && inspect.stdout.trim() === 'true';
 
-spawnSync('docker', ['stop', containerName], { stdio: 'pipe' });
-spawnSync('docker', ['rmi', '-f', imageTag], { stdio: 'pipe' });
+spawnSync('docker', ['stop', containerName], { stdio: 'pipe', timeout: 30_000 });
+spawnSync('docker', ['rmi', '-f', imageTag], { stdio: 'pipe', timeout: 10_000 });
 
 if (!running) {
     process.stdout.write('[FAIL] Docker smoke test container failed to stay up long enough to inspect\n');

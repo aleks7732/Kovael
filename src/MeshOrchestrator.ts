@@ -51,6 +51,8 @@ export interface OrchestratorConfig {
     reconciler?: Partial<ReconcilerConfig>;
     chairRegistry?: Partial<ChairRegistryConfig>;
     httpTimeouts?: Partial<HttpTimeouts>;
+    /** Minimum online chairs before /readyz returns 200. Default 1. */
+    minReadyChairs?: number;
 }
 
 /**
@@ -130,10 +132,13 @@ export class MeshOrchestrator extends EventEmitter {
         super();
         this.handshake = new MevHandshake();
         this.apiGate = new ApiTokenGate();
-        this.health = new HealthEndpoints(() => ({
-            chairsActive: this.chairs.stats().online,
-            topicsActive: this.conversationBus.activeTopicCount(),
-        }));
+        this.health = new HealthEndpoints(
+            () => ({
+                chairsActive: this.chairs.stats().online,
+                topicsActive: this.conversationBus.activeTopicCount(),
+            }),
+            { minReadyChairs: cfg.minReadyChairs },
+        );
 
         // Host SSE Handshake + observability snapshot endpoint
         this.server = http.createServer((req, res) => {

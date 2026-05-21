@@ -13,10 +13,13 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
  *
  *     Authorization: Bearer <KOVAEL_API_TOKEN>
  *
- * Verification uses `crypto.timingSafeEqual` to avoid leaking the
- * token via wall-clock side channels. Inputs are forced to equal
- * length before the compare so a wrong-length token returns 401, not
- * 500 (the underlying API throws on length mismatch).
+ * Verification hashes both the presented and expected tokens to a
+ * fixed-length SHA-256 digest and compares the digests via
+ * `crypto.timingSafeEqual`. Hashing first avoids the wall-clock side
+ * channel a length-equality short-circuit would leak: an attacker can
+ * no longer probe token length by measuring how quickly a 401 comes
+ * back for guesses of different sizes. Pre-image resistance of SHA-256
+ * means equal digests imply equal tokens.
  *
  * The WebSocket upgrade path is intentionally **not** gated here —
  * the WS handshake passes through a different code path and would
@@ -25,25 +28,26 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
  */
 export class ApiTokenGate {
     public readonly enabled: boolean;
-    private readonly expected: Buffer | null;
+    private readonly expectedHash: Buffer | null;
 
     constructor(envVarName = 'KOVAEL_API_TOKEN', env: NodeJS.ProcessEnv = process.env) {
         const raw = env[envVarName];
         if (raw && raw.length > 0) {
             this.enabled = true;
-            this.expected = Buffer.from(raw, 'utf8');
+            this.expectedHash = crypto.createHash('sha256').update(raw, 'utf8').digest();
         } else {
             this.enabled = false;
-            this.expected = null;
+            this.expectedHash = null;
         }
     }
 
     /**
      * Returns true iff the request is allowed through. Gate-disabled →
-     * always true. Gate-enabled → header must match in constant time.
+     * always true. Gate-enabled → header is hashed and compared to the
+     * stored hash in constant time, regardless of presented length.
      */
     public verify(req: IncomingMessage): boolean {
-        if (!this.enabled || this.expected === null) return true;
+        if (!this.enabled || this.expectedHash === null) return true;
 
         const header = req.headers['authorization'];
         if (typeof header !== 'string') return false;
@@ -51,10 +55,9 @@ export class ApiTokenGate {
         const prefix = 'Bearer ';
         if (!header.startsWith(prefix)) return false;
 
-        const presented = Buffer.from(header.slice(prefix.length), 'utf8');
-        if (presented.length !== this.expected.length) return false;
-
-        return crypto.timingSafeEqual(presented, this.expected);
+        const presented = header.slice(prefix.length);
+        const presentedHash = crypto.createHash('sha256').update(presented, 'utf8').digest();
+        return crypto.timingSafeEqual(presentedHash, this.expectedHash);
     }
 
     /**

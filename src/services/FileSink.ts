@@ -67,11 +67,13 @@ export class NdjsonFileSink {
     }
 
     public write(line: string): void {
-        this.queue.push(line);
-        if (this.queue.length > this.maxQueueLines) {
+        // Drop oldest BEFORE push so queue.length never exceeds the bound,
+        // even momentarily within a single synchronous write() call.
+        if (this.queue.length >= this.maxQueueLines) {
             this.queue.shift();
             this.droppedLines += 1;
         }
+        this.queue.push(line);
         if (this.flushIntervalMs === 0 || this.queue.length >= this.maxBatchLines) {
             this.flushNow();
         }

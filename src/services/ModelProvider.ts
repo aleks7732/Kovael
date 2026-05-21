@@ -267,15 +267,18 @@ export class ChairBridgeProvider implements ModelProvider {
 
         const key = `${topicId}:${agentId}`;
 
-        // Set up the reply receiver promise
+        // Reply timeout captured here so the dispatch-failure path can
+        // cancel it. Leaving it inside the Promise closure would leak a
+        // ghost 30s timer per failed dispatch.
+        let replyTimer: NodeJS.Timeout | undefined;
         const replyReceived = new Promise<string>((resolve, reject) => {
-            const timeout = setTimeout(() => {
+            replyTimer = setTimeout(() => {
                 ChairBridgeProvider.pendingReplies.delete(key);
                 reject(new Error(`Chair Bridge timeout: Agent "${agentId}" did not reply in 30 seconds.`));
             }, 30000);
 
             ChairBridgeProvider.pendingReplies.set(key, (content: string) => {
-                clearTimeout(timeout);
+                if (replyTimer) clearTimeout(replyTimer);
                 resolve(content);
             });
         });
@@ -294,6 +297,7 @@ export class ChairBridgeProvider implements ModelProvider {
 
             await this.postWithRetry(claim.inboxUrl, JSON.stringify(payload), opts.signal, payload.requestId);
         } catch (err: any) {
+            if (replyTimer) clearTimeout(replyTimer);
             ChairBridgeProvider.pendingReplies.delete(key);
             throw new Error(`Chair Bridge dispatch failed for agent "${agentId}": ${err.message}`);
         }

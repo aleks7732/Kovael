@@ -66,7 +66,8 @@ describe('NdjsonFileSink', () => {
         expect(existsSync(`${filePath}.3`)).toBe(false);
     });
 
-    it('creates files with owner-only permissions (0o600)', () => {
+    it.skipIf(process.platform === 'win32')('creates files with owner-only permissions (0o600)', () => {
+        // POSIX mode bits aren't enforced on Windows NTFS — skip there.
         const sink = new NdjsonFileSink({ path: filePath, flushIntervalMs: 0 });
         sink.write('{"a":1}');
         const perms = statSync(filePath).mode & 0o777;
