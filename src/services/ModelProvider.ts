@@ -1,4 +1,5 @@
 import { ChairRegistry } from './ChairRegistry.js';
+import crypto from 'node:crypto';
 
 export interface ChatMessage {
     role: 'system' | 'user' | 'assistant';
@@ -190,11 +191,14 @@ export class ChairBridgeProvider implements ModelProvider {
      * full-jitter exponential backoff. Retries on network errors and on
      * the transient-server status codes (429, 502, 503, 504). 4xx other
      * than 429 surface immediately — a 400 won't get better on retry.
+     * Delivery is at-least-once; the stable requestId lets chair inboxes
+     * dedupe retries if they support idempotency keys.
      */
     private async postWithRetry(
         url: string,
         body: string,
         parentSignal: AbortSignal | undefined,
+        requestId: string,
     ): Promise<void> {
         let lastErr: Error = new Error('chair bridge dispatch: no attempts ran');
         for (let attempt = 0; attempt < this.policy.maxAttempts; attempt += 1) {
@@ -212,7 +216,10 @@ export class ChairBridgeProvider implements ModelProvider {
             try {
                 response = await fetch(url, {
                     method: 'POST',
-                    headers: { 'content-type': 'application/json' },
+                    headers: {
+                        'content-type': 'application/json',
+                        'x-kovael-request-id': requestId,
+                    },
                     body,
                     signal: ctrl.signal,
                 });
@@ -260,15 +267,18 @@ export class ChairBridgeProvider implements ModelProvider {
 
         const key = `${topicId}:${agentId}`;
 
-        // Set up the reply receiver promise
+        // Reply timeout captured here so the dispatch-failure path can
+        // cancel it. Leaving it inside the Promise closure would leak a
+        // ghost 30s timer per failed dispatch.
+        let replyTimer: NodeJS.Timeout | undefined;
         const replyReceived = new Promise<string>((resolve, reject) => {
-            const timeout = setTimeout(() => {
+            replyTimer = setTimeout(() => {
                 ChairBridgeProvider.pendingReplies.delete(key);
                 reject(new Error(`Chair Bridge timeout: Agent "${agentId}" did not reply in 30 seconds.`));
             }, 30000);
 
             ChairBridgeProvider.pendingReplies.set(key, (content: string) => {
-                clearTimeout(timeout);
+                if (replyTimer) clearTimeout(replyTimer);
                 resolve(content);
             });
         });
@@ -282,10 +292,12 @@ export class ChairBridgeProvider implements ModelProvider {
                 topicId,
                 agentId,
                 replyUrl,
+                requestId: crypto.randomUUID(),
             };
 
-            await this.postWithRetry(claim.inboxUrl, JSON.stringify(payload), opts.signal);
+            await this.postWithRetry(claim.inboxUrl, JSON.stringify(payload), opts.signal, payload.requestId);
         } catch (err: any) {
+            if (replyTimer) clearTimeout(replyTimer);
             ChairBridgeProvider.pendingReplies.delete(key);
             throw new Error(`Chair Bridge dispatch failed for agent "${agentId}": ${err.message}`);
         }

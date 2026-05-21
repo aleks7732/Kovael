@@ -191,15 +191,15 @@ expertise, disposition) and a 512² portrait under
 
 ## Observability
 
-Cloud-native probe + scrape endpoints on the orchestrator port. None
-are gated by `KOVAEL_API_TOKEN` — Kubernetes probes and Prometheus
-scrapers don't carry auth headers by convention.
+Cloud-native probe + scrape endpoints on the orchestrator port. Probes
+stay ungated, while `/metrics` follows the API token gate when
+`KOVAEL_API_TOKEN` is set.
 
 | Path | Returns | Use |
 |---|---|---|
 | `GET /livez` | `200 {status:"ok", uptime_s:N}` | Liveness probe |
-| `GET /readyz` | `200` once wiring is done, `503` before | Readiness probe |
-| `GET /metrics` | Prometheus text format | Scrape target |
+| `GET /readyz` | `200` once wiring is done **and** at least one chair is online, else `503` | Readiness probe |
+| `GET /metrics` | Prometheus text format (`401` when token gate is enabled and token is missing/invalid) | Scrape target |
 
 Exposed metrics: `kovael_uptime_seconds`, `kovael_chairs_active`,
 `kovael_topics_active`, `kovael_process_resident_memory_bytes`,
@@ -288,8 +288,9 @@ defaults. Override per deployment via
 `new MeshOrchestrator(port, { httpTimeouts: { ... } })`.
 
 Set `KOVAEL_API_TOKEN=<secret>` to require `Authorization: Bearer
-<secret>` on every `/api/v1/*` request (constant-time compare, 401 on
-miss). Unset by default — behavior is unchanged unless you opt in.
+<secret>` on every `/api/v1/*` request and `/metrics` (constant-time
+compare, 401 on miss). Unset by default — behavior is unchanged unless
+you opt in.
 Generate a token with `node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"`.
 
 PII discipline is enforced by three coordinated layers — pre-commit

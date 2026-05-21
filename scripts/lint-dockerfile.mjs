@@ -10,6 +10,7 @@
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
+import { spawnSync } from 'node:child_process';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repo = resolve(here, '..');
@@ -23,8 +24,8 @@ const checks = [
         pass: /^FROM\s+node:22-[\w-]+\s+AS\s+builder/m.test(dockerfile),
     },
     {
-        name: 'Runtime stage is distroless Node 22 nonroot',
-        pass: /FROM\s+gcr\.io\/distroless\/nodejs22-debian12:nonroot/.test(dockerfile),
+        name: 'Runtime stage is distroless Node 22 nonroot pinned by digest',
+        pass: /FROM\s+gcr\.io\/distroless\/nodejs22-debian12:nonroot@sha256:[a-fA-F0-9]{64}\s+AS\s+runtime/.test(dockerfile),
     },
     {
         name: 'npm ci is used (deterministic install, never npm install)',
@@ -75,6 +76,18 @@ const checks = [
         pass: /^\.git$/m.test(dockerignore),
     },
     {
+        name: '.dockerignore excludes dist',
+        pass: /^dist$/m.test(dockerignore),
+    },
+    {
+        name: '.dockerignore excludes .claude',
+        pass: /^\.claude$/m.test(dockerignore),
+    },
+    {
+        name: '.dockerignore excludes test fixtures',
+        pass: /^\*\*\/fixtures$/m.test(dockerignore),
+    },
+    {
         name: '.dockerignore excludes .env files',
         pass: /^\.env$/m.test(dockerignore) && /^\.env\.\*$/m.test(dockerignore),
     },
@@ -100,4 +113,59 @@ for (const c of checks) {
 }
 
 process.stdout.write(`\n${checks.length - failed}/${checks.length} passed\n`);
-process.exit(failed === 0 ? 0 : 1);
+if (failed > 0) {
+    process.exit(1);
+}
+
+const dockerVersion = spawnSync('docker', ['version'], { stdio: 'pipe', encoding: 'utf8', timeout: 10_000 });
+if (dockerVersion.status !== 0) {
+    process.stdout.write('[SKIP] Docker smoke test skipped (docker not available)\n');
+    process.exit(0);
+}
+
+const imageTag = `kovael-docker-lint-smoke:${Date.now()}`;
+const build = spawnSync('docker', ['build', '-f', 'Dockerfile', '-t', imageTag, '.'], {
+    cwd: repo,
+    stdio: 'pipe',
+    encoding: 'utf8',
+    timeout: 300_000,
+});
+if (build.status !== 0) {
+    process.stdout.write('[FAIL] Docker smoke test build failed\n');
+    if (build.stdout) process.stdout.write(build.stdout);
+    if (build.stderr) process.stdout.write(build.stderr);
+    spawnSync('docker', ['rmi', '-f', imageTag], { stdio: 'pipe', timeout: 10_000 });
+    process.exit(1);
+}
+
+const containerName = `kovael-smoke-${Date.now()}`;
+const run = spawnSync('docker', ['run', '--rm', '-d', '--name', containerName, imageTag], {
+    stdio: 'pipe',
+    encoding: 'utf8',
+    timeout: 30_000,
+});
+if (run.status !== 0) {
+    process.stdout.write('[FAIL] Docker smoke test run failed\n');
+    if (run.stdout) process.stdout.write(run.stdout);
+    if (run.stderr) process.stdout.write(run.stderr);
+    spawnSync('docker', ['rmi', '-f', imageTag], { stdio: 'pipe', timeout: 10_000 });
+    process.exit(1);
+}
+
+const inspect = spawnSync('docker', ['inspect', '-f', '{{.State.Running}}', containerName], {
+    stdio: 'pipe',
+    encoding: 'utf8',
+    timeout: 10_000,
+});
+const running = inspect.status === 0 && inspect.stdout.trim() === 'true';
+
+spawnSync('docker', ['stop', containerName], { stdio: 'pipe', timeout: 30_000 });
+spawnSync('docker', ['rmi', '-f', imageTag], { stdio: 'pipe', timeout: 10_000 });
+
+if (!running) {
+    process.stdout.write('[FAIL] Docker smoke test container failed to stay up long enough to inspect\n');
+    process.exit(1);
+}
+
+process.stdout.write('[PASS] Docker smoke test (build + run --rm) passed\n');
+process.exit(0);
