@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef } from 'react';
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ReactFlow,
   Controls,
@@ -32,6 +32,7 @@ const nodeTypes = {
 
 const PRESSURE_VALVE_INTERVAL_MS = 100;
 const ORCHESTRATOR_URL = 'ws://localhost:8080';
+const ShortcutSheet = lazy(() => import('./components/theater/ShortcutSheet.js'));
 
 const SpatialWarRoom = () => {
   const nodes = useWarRoomStore((s) => s.nodes);
@@ -55,6 +56,7 @@ const SpatialWarRoom = () => {
   const interAgentChatEnabled = useWarRoomStore((s) => s.interAgentChatEnabled);
   const interAgentChatMode = useWarRoomStore((s) => s.interAgentChatMode);
   const interAgentMessages = useWarRoomStore((s) => s.interAgentMessages);
+  const [shortcutSheetOpen, setShortcutSheetOpen] = useState(false);
 
   const wsConnected = useWarRoomStore((s) => s.wsConnected);
   const selectedCycleId = useWarRoomStore((s) => s.selectedCycleId);
@@ -74,6 +76,19 @@ const SpatialWarRoom = () => {
     const id = setInterval(flushPressureValve, PRESSURE_VALVE_INTERVAL_MS);
     return () => clearInterval(id);
   }, [flushPressureValve]);
+
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement | null;
+      const editable = target?.tagName === 'INPUT' || target?.tagName === 'TEXTAREA' || target?.isContentEditable;
+      if (!editable && event.key === '?') {
+        event.preventDefault();
+        setShortcutSheetOpen(true);
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, []);
 
   const wsRef = useRef<WebSocket | null>(null);
 
@@ -333,6 +348,9 @@ const SpatialWarRoom = () => {
         onClose={() => setSelectedCycle(null)}
       />
       <StatusLegend />
+      <Suspense fallback={null}>
+        <ShortcutSheet open={shortcutSheetOpen} onClose={() => setShortcutSheetOpen(false)} />
+      </Suspense>
     </div>
   );
 };
