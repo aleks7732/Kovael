@@ -419,6 +419,22 @@ describe('MeshOrchestrator · WebSocket gate (loop iter 09)', () => {
         expect(opened).toBe(true);
     });
 
+    it('closes oversized WebSocket payloads with 1009 before JSON parse', async () => {
+        const ws = new WebSocket(`ws://localhost:${openPort}/?nodeId=big-payload`);
+        const code = await new Promise<number | null>((resolve) => {
+            const t = setTimeout(() => resolve(null), 4000);
+            ws.on('open', () => {
+                ws.send(Buffer.alloc(5 * 1024 * 1024 + 1, 65));
+            });
+            ws.on('close', (closeCode) => {
+                clearTimeout(t);
+                resolve(closeCode);
+            });
+            ws.on('error', () => {});
+        });
+        expect(code).toBe(1009);
+    });
+
     it('scrubs ?token= from req.url after successful auth so the secret cannot leak downstream', async () => {
         const seenUrls: string[] = [];
         const wss = (gated as any).wss;
@@ -436,6 +452,113 @@ describe('MeshOrchestrator · WebSocket gate (loop iter 09)', () => {
         } finally {
             wss.off('connection', capture);
         }
+    });
+});
+
+describe('MeshOrchestrator · committee endpoint and Stage-4 state', () => {
+    let orch: MeshOrchestrator;
+    let boundPort = 0;
+
+    beforeAll(async () => {
+        orch = new MeshOrchestrator(0);
+        boundPort = await orch.ready();
+    });
+
+    afterAll(() => {
+        orch.close();
+    });
+
+    it('POST /api/v1/conversations/:id/committee returns a traceable verdict', async () => {
+        const topicRes = await fetch(`http://localhost:${boundPort}/api/v1/conversations`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ title: 'Quorum REST', participants: ['nyx-codex', 'shaev', 'nyx-openclaw'] }),
+        });
+        const topic = await topicRes.json() as any;
+
+        const verdictRes = await fetch(`http://localhost:${boundPort}/api/v1/conversations/${topic.id}/committee`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                traceparent: '00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01',
+                tracestate: 'k=v',
+            },
+            body: JSON.stringify({ goal: 'Pick the safer plan', quorumThreshold: 0 }),
+        });
+        expect(verdictRes.status).toBe(200);
+        const verdict = await verdictRes.json() as any;
+        expect(['accepted', 'failed', 'needs_sidecar']).toContain(verdict.status);
+        expect(verdict.quorumThreshold).toBeGreaterThanOrEqual(0.6);
+        expect(verdict.trace.traceparent).toBe('00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01');
+        expect(verdict.trace.lanes.length).toBe(3);
+    });
+
+    it('omits malformed traceparent headers from committee verdicts', async () => {
+        const topicRes = await fetch(`http://localhost:${boundPort}/api/v1/conversations`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ title: 'Invalid Trace', participants: ['nyx-codex'] }),
+        });
+        const topic = await topicRes.json() as any;
+
+        const verdictRes = await fetch(`http://localhost:${boundPort}/api/v1/conversations/${topic.id}/committee`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', traceparent: '00-root' },
+            body: JSON.stringify({ goal: 'Reject malformed trace metadata' }),
+        });
+
+        expect(verdictRes.status).toBe(200);
+        const verdict = await verdictRes.json() as any;
+        expect(verdict.trace.traceparent).toBeUndefined();
+    });
+
+    it('/api/v1/state includes circuits and learning matrix stats', async () => {
+        const res = await fetch(`http://localhost:${boundPort}/api/v1/state`);
+        expect(res.status).toBe(200);
+        const state = await res.json() as any;
+        expect(Array.isArray(state.circuits)).toBe(true);
+        expect(state.learningMatrix).toMatchObject({ entries: expect.any(Number) });
+    });
+
+    it('POST /api/v1/traces/reroute validates and returns reroute events', async () => {
+        const ok = await fetch(`http://localhost:${boundPort}/api/v1/traces/reroute`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ source: 'agent.a', target: 'trace:b', sourceHandle: 'out', targetHandle: 'in' }),
+        });
+        expect(ok.status).toBe(200);
+        const event = await ok.json() as any;
+        expect(event).toMatchObject({ type: 'trace.rerouted', source: 'agent.a', target: 'trace:b' });
+
+        const bad = await fetch(`http://localhost:${boundPort}/api/v1/traces/reroute`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ source: '../bad', target: 'trace:b' }),
+        });
+        expect(bad.status).toBe(400);
+    });
+
+    it('POST /api/v1/comfy/mix accepts typed LoRA mixer payload and returns stream-safe metadata', async () => {
+        const res = await fetch(`http://localhost:${boundPort}/api/v1/comfy/mix`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                agentId: 'nyx-codex',
+                prompt: 'operator portrait',
+                aspectRatio: 'theater-card',
+                mixer: [
+                    { recipeId: 'nyx', strength: 1.25, denoise: 0.6 },
+                    { recipeId: 'bad\nrecipe', strength: 5, denoise: -1 },
+                ],
+            }),
+        });
+
+        expect(res.status).toBe(200);
+        const body = await res.json() as any;
+        expect(body.source).toBe('fallback');
+        expect(body.width).toBe(1280);
+        expect(body.height).toBe(720);
+        expect(body).not.toHaveProperty('workflow');
     });
 });
 

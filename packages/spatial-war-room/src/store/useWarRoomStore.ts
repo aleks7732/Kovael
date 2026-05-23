@@ -204,6 +204,63 @@ export interface RetryEvent {
   receivedAt: number;
 }
 
+export interface CommitteeVotePayload {
+  agentId: string;
+  role: 'proponent' | 'critic' | 'judge';
+  verdict: 'approve' | 'reject' | 'abstain';
+  confidence: number;
+  rationale: string;
+}
+
+export interface CommitteeVerdictPayload {
+  id: string;
+  status: 'accepted' | 'failed' | 'needs_sidecar';
+  supportScore: number;
+  confidenceMean: number;
+  sidecars: string[];
+  dissent: CommitteeVotePayload[];
+  trace?: { mergeParentId?: string; lanes?: Array<{ laneId?: string; traceparent?: string }> };
+}
+
+export interface CommitteeEvent {
+  type: 'committee.started' | 'committee.vote' | 'committee.verdict' | 'committee.failed';
+  topicId: string;
+  receivedAt: number;
+  vote?: CommitteeVotePayload;
+  verdict?: CommitteeVerdictPayload;
+}
+
+export interface ChairCircuitEvent {
+  type: 'chair.circuit_open' | 'chair.circuit_recovered' | 'chair.circuit_half_open' | 'chair.circuit_failure';
+  agentId: string;
+  state: 'closed' | 'open' | 'half_open';
+  failures: number;
+  lastReason?: string;
+  timestamp: number;
+}
+
+export interface SelfHealEvent {
+  type: 'self_heal.skipped' | 'self_heal.patch_applied' | 'self_heal.patch_reverted' | 'self_heal.failed';
+  cycleId: string;
+  taskHash: string;
+  attempt: number;
+  reason?: string;
+  timestamp: number;
+}
+
+export interface ComfyPreview {
+  id: string;
+  agentId: string;
+  source: 'comfyui' | 'fallback';
+  width: number;
+  height: number;
+  mimeType: string;
+  promptId?: string;
+  svg?: string;
+  streamUrl?: string;
+  receivedAt: number;
+}
+
 export interface InterAgentMessage {
   id: string;
   timestamp: number;
@@ -236,6 +293,11 @@ export interface WarRoomState {
   claimStats: ClaimStats;
   recentClaims: ClaimEvent[];
   retryEvents: RetryEvent[];
+  committeeEvents: CommitteeEvent[];
+  committeeVerdicts: Record<string, CommitteeVerdictPayload>;
+  chairCircuits: Record<string, ChairCircuitEvent>;
+  selfHealEvents: SelfHealEvent[];
+  comfyPreviews: ComfyPreview[];
   retryPendingCount: number;
   reconcileActions: ReconcileAction[];
   /** True when the cockpit's WS to the orchestrator is OPEN. False during reconnect. */
@@ -276,6 +338,10 @@ export interface WarRoomState {
   recordPhaseEvent: (evt: PhaseEvent) => void;
   recordClaimEvent: (evt: ClaimEvent) => void;
   recordRetryEvent: (evt: Omit<RetryEvent, 'receivedAt'>) => void;
+  recordCommitteeEvent: (evt: Omit<CommitteeEvent, 'receivedAt'>) => void;
+  recordCircuitEvent: (evt: ChairCircuitEvent) => void;
+  recordSelfHealEvent: (evt: SelfHealEvent) => void;
+  recordComfyPreview: (preview: Omit<ComfyPreview, 'id' | 'receivedAt'>) => void;
   recordReconcileAction: (action: ReconcileAction) => void;
   recordHookEvent: (evt: Omit<HookEvent, 'receivedAt'>) => void;
   recordTokenUpdate: (totals: TokenTotals) => void;
@@ -327,6 +393,11 @@ export const useWarRoomStore = create<WarRoomState>((set, get) => ({
   claimStats: { Unclaimed: 0, Claimed: 0, Running: 0, RetryQueued: 0, Released: 0 },
   recentClaims: [],
   retryEvents: [],
+  committeeEvents: [],
+  committeeVerdicts: {},
+  chairCircuits: {},
+  selfHealEvents: [],
+  comfyPreviews: [],
   retryPendingCount: 0,
   reconcileActions: [],
   hookEvents: [],
@@ -368,6 +439,7 @@ export const useWarRoomStore = create<WarRoomState>((set, get) => ({
   },
 
   onConnect: (connection: Connection) => {
+    postTraceReroute(connection);
     set({
       edges: addEdge(connection, get().edges),
     });
@@ -625,6 +697,40 @@ export const useWarRoomStore = create<WarRoomState>((set, get) => ({
     });
   },
 
+  recordCommitteeEvent: (evt) => {
+    set((state) => {
+      const enriched: CommitteeEvent = { ...evt, receivedAt: Date.now() };
+      const nextVerdicts = evt.verdict
+        ? { ...state.committeeVerdicts, [evt.topicId]: evt.verdict }
+        : state.committeeVerdicts;
+      return {
+        committeeEvents: [enriched, ...state.committeeEvents].slice(0, 80),
+        committeeVerdicts: nextVerdicts,
+      };
+    });
+  },
+
+  recordCircuitEvent: (evt) => {
+    set((state) => ({
+      chairCircuits: { ...state.chairCircuits, [evt.agentId]: evt },
+    }));
+  },
+
+  recordSelfHealEvent: (evt) => {
+    set((state) => ({
+      selfHealEvents: [evt, ...state.selfHealEvents].slice(0, 40),
+    }));
+  },
+
+  recordComfyPreview: (preview) => {
+    set((state) => ({
+      comfyPreviews: [
+        { ...preview, id: `comfy-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`, receivedAt: Date.now() },
+        ...state.comfyPreviews,
+      ].slice(0, 12),
+    }));
+  },
+
   recordClaimEvent: (evt: ClaimEvent) => {
     set((state) => {
       // Stats are derived from the latest event per taskHash; we can't
@@ -743,3 +849,26 @@ export const useWarRoomStore = create<WarRoomState>((set, get) => ({
     }));
   },
 }));
+
+function postTraceReroute(connection: Connection): void {
+  if (typeof fetch !== 'function') return;
+  const source = safeConnectionId(connection.source);
+  const target = safeConnectionId(connection.target);
+  if (!source || !target) return;
+  void fetch('http://localhost:8080/api/v1/traces/reroute', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      source,
+      target,
+      sourceHandle: safeConnectionId(connection.sourceHandle),
+      targetHandle: safeConnectionId(connection.targetHandle),
+    }),
+  }).catch(() => {});
+}
+
+function safeConnectionId(value: string | null | undefined): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  const trimmed = value.trim();
+  return /^[A-Za-z0-9_.:-]{1,128}$/.test(trimmed) ? trimmed : undefined;
+}

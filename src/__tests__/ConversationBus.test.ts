@@ -177,6 +177,35 @@ describe('ConversationBus', () => {
         expect(agentReply).toBeDefined();
         expect(agentReply!.content).toBe(replyText);
     });
+
+    it('emits committee lifecycle events with quorum verdict and trace lanes', () => {
+        const topic = bus.createTopic('Committee Session', ['nyx-codex', 'shaev', 'nyx-openclaw']);
+        const events: any[] = [];
+        bus.on('bus_event', (event) => events.push(event));
+
+        const verdict = bus.conveneCommittee(topic.id, 'Settle the reroute plan', {
+            traceparent: '00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01',
+            tracestate: 'vendor=a',
+            votes: [
+                { agentId: 'nyx-codex', role: 'proponent', verdict: 'approve', confidence: 0.95, rationale: 'clear' },
+                { agentId: 'shaev', role: 'judge', verdict: 'approve', confidence: 0.93, rationale: 'verified' },
+                { agentId: 'nyx-openclaw', role: 'critic', verdict: 'approve', confidence: 0.9, rationale: 'safe' },
+            ],
+        });
+
+        expect(verdict.status).toBe('accepted');
+        expect(verdict.trace.traceparent).toBe('00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01');
+        expect(verdict.trace.lanes).toHaveLength(3);
+        expect(events.map((event) => event.type)).toEqual([
+            'committee.started',
+            'committee.vote',
+            'committee.vote',
+            'committee.vote',
+            'committee.verdict',
+        ]);
+        const history = bus.getHistory(topic.id);
+        expect(history.at(-1)?.content).toContain('Committee accepted');
+    });
 });
 
 describe('ChairBridgeProvider · dispatch policy (loop iter 08)', () => {
