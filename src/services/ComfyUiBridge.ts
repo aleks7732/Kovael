@@ -1,4 +1,5 @@
 import { appendFileSync } from 'node:fs';
+import crypto from 'node:crypto';
 import { rootLogger } from './Logger.js';
 
 export type ComfyAspectRatio = '1:1' | '16:9' | '9:16' | '4:3' | '3:4' | 'portrait' | 'landscape' | 'theater-card' | 'flowchart';
@@ -13,6 +14,8 @@ export interface LoraInjection {
     name: string;
     trigger?: string;
     weight?: number;
+    strength?: number;
+    denoise?: number;
 }
 
 export interface RenderPortraitRequest {
@@ -35,6 +38,19 @@ export interface RenderPortraitResult {
     palette: HslPalette;
     workflow: Record<string, unknown>;
     error?: string;
+}
+
+export interface LoraMixerUpdate {
+    recipeId: string;
+    trigger?: string;
+    strength: number;
+    denoise: number;
+}
+
+export interface ComfyStreamDescriptor {
+    promptId: string;
+    clientId: string;
+    url: string;
 }
 
 interface FetchResponseLike {
@@ -134,16 +150,43 @@ export class ComfyUiBridge {
         return result;
     }
 
+    public async renderWithMixer(request: RenderPortraitRequest & { mixer: LoraMixerUpdate[] }): Promise<RenderPortraitResult> {
+        return this.renderPortrait({
+            ...request,
+            loras: request.mixer.map((mix) => ({
+                name: mix.recipeId,
+                trigger: mix.trigger,
+                strength: mix.strength,
+                denoise: mix.denoise,
+                weight: mix.strength,
+            })),
+        });
+    }
+
+    public streamDescriptor(promptId: string, clientId = `kovael-${Date.now()}`): ComfyStreamDescriptor {
+        const url = new URL(this.endpoint);
+        url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
+        url.pathname = '/ws';
+        url.search = '';
+        url.searchParams.set('clientId', cleanToken(clientId));
+        return {
+            promptId: cleanToken(promptId),
+            clientId: cleanToken(clientId),
+            url: url.toString(),
+        };
+    }
+
     private logMetadata(request: RenderPortraitRequest, result: RenderPortraitResult, palette: HslPalette): void {
         const logEntry = {
             timestamp: new Date().toISOString(),
             agentId: request.agentId,
-            prompt: request.prompt,
+            promptHash: hashText(request.prompt),
+            promptChars: request.prompt.length,
             aspectRatio: request.aspectRatio ?? '1:1',
             width: result.width,
             height: result.height,
             palette,
-            loras: request.loras ?? [],
+            loraRecipeIds: (request.loras ?? []).map((lora) => cleanToken(lora.name).slice(0, 80)),
             source: result.source,
             traceId: request.traceId || 'n/a',
             error: result.error,
@@ -191,12 +234,17 @@ function buildWorkflow(
         const nameLower = lora.name.toLowerCase();
         const recipe = LORA_RECIPE_LIBRARY[nameLower];
         const trigger = lora.trigger ?? recipe?.trigger ?? lora.name;
-        const weight = lora.weight !== undefined ? lora.weight : (recipe?.weight ?? 1.0);
+        const weight = lora.strength !== undefined
+            ? lora.strength
+            : lora.weight !== undefined
+                ? lora.weight
+                : (recipe?.weight ?? 1.0);
 
         return {
             name: cleanToken(lora.name),
             trigger: cleanToken(trigger),
             weight: clampNumber(weight, 0, 2),
+            denoise: clampNumber(lora.denoise ?? 0.55, 0, 1),
         };
     });
     const loraPrompt = loras.map((lora) => `${lora.trigger}:${lora.weight}`).join(' ');
@@ -264,6 +312,10 @@ function readPromptId(body: unknown): string | undefined {
 
 function cleanToken(value: string): string {
     return value.replace(/[\r\n\t]/g, ' ').trim();
+}
+
+function hashText(value: string): string {
+    return crypto.createHash('sha256').update(value).digest('hex');
 }
 
 function escapeXml(value: string): string {

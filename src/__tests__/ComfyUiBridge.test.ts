@@ -139,6 +139,44 @@ describe('ComfyUiBridge', () => {
         expect(injectedLoras[1].weight).toBe(0.5);
     });
 
+    it('renders typed LoRA mixer updates with strength and denoise clamps', async () => {
+        let body = '';
+        const fetchImpl = vi.fn().mockImplementation(async (_input: string, init?: RequestInit) => {
+            body = String(init?.body ?? '');
+            return { ok: true, json: async () => ({ prompt_id: 'mix-1' }) };
+        });
+        const bridge = new ComfyUiBridge({ enabled: true, fetchImpl });
+
+        const result = await bridge.renderWithMixer({
+            agentId: 'nyx',
+            prompt: 'mixer portrait',
+            mixer: [
+                { recipeId: 'nyx', strength: 2.5, denoise: -1 },
+                { recipeId: 'veyra', trigger: '<lora:veyra:0.4>', strength: 0.4, denoise: 0.72 },
+            ],
+        });
+
+        expect(result.promptId).toBe('mix-1');
+        const workflow = JSON.parse(body).prompt.kovael_portrait.inputs;
+        expect(workflow.loras[0]).toMatchObject({ name: 'nyx', weight: 2, denoise: 0 });
+        expect(workflow.loras[1]).toMatchObject({
+            name: 'veyra',
+            trigger: '<lora:veyra:0.4>',
+            weight: 0.4,
+            denoise: 0.72,
+        });
+    });
+
+    it('creates ComfyUI websocket stream descriptors without leaking prompt text', () => {
+        const bridge = new ComfyUiBridge({ endpoint: 'http://127.0.0.1:8100/' });
+        const desc = bridge.streamDescriptor('prompt-123', 'client\n1');
+
+        expect(desc.promptId).toBe('prompt-123');
+        expect(desc.clientId).toBe('client 1');
+        expect(desc.url).toBe('ws://127.0.0.1:8100/ws?clientId=client+1');
+        expect(desc.url).not.toContain('prompt-123');
+    });
+
     it('logs palettes, timestamps, and traceId to a local log file and structured logger', async () => {
         const testLogFile = 'comfyui_metadata_test.log';
         process.env.KOVAEL_COMFYUI_LOG_FILE = testLogFile;
@@ -161,6 +199,9 @@ describe('ComfyUiBridge', () => {
 
         const parsed = JSON.parse(logContent.trim());
         expect(parsed.traceId).toBe('test-trace-12345');
+        expect(parsed.prompt).toBeUndefined();
+        expect(parsed.promptHash).toMatch(/^[a-f0-9]{64}$/);
+        expect(parsed.promptChars).toBe('test metadata logging'.length);
         expect(parsed.palette.hue).toBe(120);
         expect(parsed.palette.saturation).toBe(80);
         expect(parsed.palette.lightness).toBe(50);

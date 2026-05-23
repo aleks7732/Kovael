@@ -5,11 +5,16 @@ import { StoppingCard } from '../../src/components/theater/StoppingCard';
 import { TraceBreadcrumb } from '../../src/components/theater/TraceBreadcrumb';
 import { areStagePropsEqual, Stage } from '../../src/components/theater/Stage';
 import { ShortcutSheet } from '../../src/components/theater/ShortcutSheet';
-import type { AgentRosterCard } from '../../src/store/useWarRoomStore';
+import { CommitteeDrawer } from '../../src/components/theater/CommitteeDrawer';
+import { ComfyMixerPanel } from '../../src/components/theater/ComfyMixerPanel';
+import { useWarRoomStore, type AgentRosterCard } from '../../src/store/useWarRoomStore';
 import fs from 'fs';
 import path from 'path';
 
-afterEach(() => cleanup());
+afterEach(() => {
+    cleanup();
+    vi.unstubAllGlobals();
+});
 
 // ---------------------------------------------------------------------------
 // StoppingCard — renders the consensus banner when adaptive stability fires.
@@ -105,6 +110,105 @@ describe('ShortcutSheet', () => {
     it('does not render while closed', () => {
         const { container } = render(<ShortcutSheet open={false} onClose={() => {}} />);
         expect(container.firstChild).toBeNull();
+    });
+});
+
+describe('CommitteeDrawer', () => {
+    it('renders active verdict, circuit state, and self-heal events', () => {
+        useWarRoomStore.setState({
+            committeeVerdicts: {
+                t1: {
+                    id: 'v1',
+                    status: 'accepted',
+                    supportScore: 0.91,
+                    confidenceMean: 0.88,
+                    sidecars: [],
+                    dissent: [],
+                    trace: { mergeParentId: 'merge-1', lanes: [{ laneId: 'lane-1' }] },
+                },
+            },
+            committeeEvents: [
+                {
+                    type: 'committee.vote',
+                    topicId: 't1',
+                    receivedAt: 1,
+                    vote: { agentId: 'shaev', role: 'judge', verdict: 'approve', confidence: 0.88, rationale: 'ok' },
+                },
+            ],
+            chairCircuits: {
+                shaev: { type: 'chair.circuit_open', agentId: 'shaev', state: 'open', failures: 3, timestamp: 1 },
+            },
+            selfHealEvents: [
+                { type: 'self_heal.patch_applied', cycleId: 'c1', taskHash: 'h1', attempt: 1, timestamp: 1 },
+            ],
+        });
+
+        render(<CommitteeDrawer topicId="t1" />);
+
+        expect(screen.getByText('COMMITTEE')).toBeTruthy();
+        expect(screen.getByText('accepted')).toBeTruthy();
+        expect(screen.getByText(/shaev: approve 88%/)).toBeTruthy();
+        expect(screen.getByText(/shaev: open/)).toBeTruthy();
+        expect(screen.getByText(/patch_applied/)).toBeTruthy();
+    });
+});
+
+describe('ComfyMixerPanel', () => {
+    it('posts typed mixer payload and records fallback preview', async () => {
+        const fetchSpy = vi.fn().mockResolvedValue({
+            ok: true,
+            json: async () => ({
+                agentId: 'nyx-codex',
+                source: 'fallback',
+                width: 1280,
+                height: 720,
+                mimeType: 'image/svg+xml',
+                svg: '<svg xmlns="http://www.w3.org/2000/svg"></svg>',
+                stream: { url: 'ws://evil.example/socket' },
+            }),
+        });
+        vi.stubGlobal('fetch', fetchSpy);
+        useWarRoomStore.setState({
+            activeTopicId: 't1',
+            topics: [{ id: 't1', title: 'Mixer Test', participants: ['nyx-codex'], active: true }],
+            comfyPreviews: [],
+        });
+
+        render(<ComfyMixerPanel />);
+        fireEvent.change(screen.getByLabelText('nyx strength'), { target: { value: '1.5' } });
+        fireEvent.click(screen.getByText('RENDER'));
+        await screen.findByAltText('nyx-codex preview');
+
+        expect(fetchSpy).toHaveBeenCalledWith('http://localhost:8080/api/v1/comfy/mix', expect.objectContaining({
+            method: 'POST',
+        }));
+        const body = JSON.parse(fetchSpy.mock.calls[0][1].body);
+        expect(body.mixer[0]).toMatchObject({ recipeId: 'nyx', strength: 1.5 });
+        expect(useWarRoomStore.getState().comfyPreviews[0]).toMatchObject({ agentId: 'nyx-codex', source: 'fallback' });
+        expect(useWarRoomStore.getState().comfyPreviews[0].streamUrl).toBeUndefined();
+        vi.unstubAllGlobals();
+    });
+});
+
+describe('WarRoom trace reroute store action', () => {
+    it('posts sanitized ReactFlow drag connections to reroute endpoint', () => {
+        const fetchSpy = vi.fn().mockResolvedValue(new Response('{}'));
+        vi.stubGlobal('fetch', fetchSpy);
+        useWarRoomStore.setState({ edges: [] });
+
+        useWarRoomStore.getState().onConnect({
+            source: 'agent.a',
+            target: 'trace:b',
+            sourceHandle: 'out',
+            targetHandle: 'in',
+        });
+
+        expect(fetchSpy).toHaveBeenCalledWith('http://localhost:8080/api/v1/traces/reroute', expect.objectContaining({
+            method: 'POST',
+        }));
+        const body = JSON.parse(fetchSpy.mock.calls[0][1].body);
+        expect(body).toEqual({ source: 'agent.a', target: 'trace:b', sourceHandle: 'out', targetHandle: 'in' });
+        expect(useWarRoomStore.getState().edges).toHaveLength(1);
     });
 });
 

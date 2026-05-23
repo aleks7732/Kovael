@@ -10,6 +10,13 @@ import {
     ChairBridgeProvider,
     TokenUsage,
 } from './ModelProvider.js';
+import {
+    CommitteeOptions,
+    CommitteeVerdict,
+    CommitteeVote,
+    evaluateCommittee,
+    synthesizeVotes,
+} from './ConsensusEngine.js';
 
 export interface ActiveTopic {
     id: string;
@@ -38,6 +45,7 @@ export interface ConversationMessage {
 
 export class ConversationBus extends EventEmitter {
     private activeTopics = new Map<string, ActiveTopic>();
+    private dispatchGate: (agentId: string) => boolean = () => true;
 
     constructor(
         private db: DatabaseSync,
@@ -50,6 +58,10 @@ export class ConversationBus extends EventEmitter {
         // when the orchestrator db is opened. ConversationBus assumes the
         // required tables/views already exist.
         this.hydrateActiveTopics();
+    }
+
+    public setDispatchGate(gate: (agentId: string) => boolean): void {
+        this.dispatchGate = gate;
     }
 
     private hydrateActiveTopics() {
@@ -261,9 +273,18 @@ Discipline Invariants:
             // Select Model Provider dynamically based on chair beacon online status & inboxUrl availability
             const claim = this.chairs.get(currentSpeaker);
             let provider: ModelProvider;
-            if (claim && claim.inboxUrl && claim.status !== 'offline') {
+            const liveDispatch = Boolean(claim && claim.inboxUrl && claim.status !== 'offline' && this.dispatchGate(currentSpeaker));
+            if (liveDispatch) {
                 provider = new ChairBridgeProvider(currentSpeaker, this.chairs, this.orchestratorPort);
             } else {
+                if (claim && claim.inboxUrl && claim.status !== 'offline') {
+                    this.emit('bus_event', {
+                        type: 'chair_dispatch_rerouted',
+                        agentId: currentSpeaker,
+                        reason: 'circuit_open',
+                        topicId,
+                    });
+                }
                 provider = new StubMarkovProvider(currentSpeaker);
             }
 
@@ -317,6 +338,13 @@ Discipline Invariants:
 
                 // Persist the completed turn into SQLite
                 this.postMessage(topicId, currentSpeaker, 'assistant', accumulatedContent);
+                if (liveDispatch) {
+                    this.emit('bus_event', {
+                        type: 'chair_dispatch_success',
+                        agentId: currentSpeaker,
+                        topicId,
+                    });
+                }
                 turnCount++;
 
                 // Parse @mentions to dynamically prioritize the next speaker queue
@@ -407,6 +435,12 @@ Discipline Invariants:
 
             } catch (err: any) {
                 console.error(`[ConversationBus] Turn execution failed for agent "${currentSpeaker}": ${err.message}`);
+                this.emit('bus_event', {
+                    type: 'chair_dispatch_failure',
+                    agentId: currentSpeaker,
+                    topicId,
+                    reason: err.message,
+                });
                 // Break or proceed
                 break;
             }
@@ -425,5 +459,50 @@ Discipline Invariants:
 
         // Close the active convene session
         this.closeTopic(topicId);
+    }
+
+    public conveneCommittee(
+        topicId: string,
+        goal: string,
+        opts: CommitteeOptions & { votes?: CommitteeVote[] } = {},
+    ): CommitteeVerdict {
+        const active = this.activeTopics.get(topicId);
+        if (!active) {
+            throw Object.assign(new Error('committee_topic_not_active'), { code: 'committee_topic_not_active' });
+        }
+        const participants = [...active.participants];
+        const votes = opts.votes ?? synthesizeVotes(goal, participants, opts.traceparent, opts.tracestate);
+        this.emit('bus_event', {
+            type: 'committee.started',
+            topicId,
+            goalPreview: goal.slice(0, 160),
+            participants,
+            traceparent: opts.traceparent,
+            tracestate: opts.tracestate,
+        });
+        for (const vote of votes) {
+            this.emit('bus_event', {
+                type: 'committee.vote',
+                topicId,
+                vote,
+            });
+        }
+        const verdict = evaluateCommittee(votes, {
+            ...opts,
+            activeParticipants: participants,
+            sidecarCandidates: opts.sidecarCandidates ?? ['nyx-openclaw', 'shaev', 'nyx-codex'],
+        });
+        this.emit('bus_event', {
+            type: verdict.status === 'accepted' ? 'committee.verdict' : 'committee.failed',
+            topicId,
+            verdict,
+        });
+        this.postMessage(
+            topicId,
+            'committee',
+            'system',
+            `Committee ${verdict.status}: support=${verdict.supportScore}, confidence=${verdict.confidenceMean}`,
+        );
+        return verdict;
     }
 }

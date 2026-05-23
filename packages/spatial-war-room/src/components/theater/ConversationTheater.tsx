@@ -6,6 +6,8 @@ import { ConvenePanel } from './ConvenePanel';
 import { StoppingCard } from './StoppingCard';
 import { TraceBreadcrumb } from './TraceBreadcrumb';
 import { TraceTimeline } from './TraceTimeline';
+import { CommitteeDrawer } from './CommitteeDrawer';
+import { ComfyMixerPanel } from './ComfyMixerPanel';
 
 export const ConversationTheater = memo(() => {
   const topics = useWarRoomStore((s) => s.topics);
@@ -180,6 +182,8 @@ export const ConversationTheater = memo(() => {
             {/* Consensus stop alert (if triggered) */}
             <StoppingCard criterion={activeCriterion} />
 
+            <ComfyMixerPanel />
+
             {/* Thread messages logs */}
             <MessageList 
               messages={messages} 
@@ -209,6 +213,7 @@ export const ConversationTheater = memo(() => {
         {/* Convene input panel dock at bottom */}
         <ConvenePanel roster={roster} onTopicCreated={(id) => selectTopic(id)} />
       </main>
+      <CommitteeDrawer topicId={activeTopicId} />
       <TraceTimeline />
     </div>
   );

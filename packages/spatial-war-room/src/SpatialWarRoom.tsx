@@ -232,6 +232,29 @@ const SpatialWarRoom = () => {
             case 'conversation_stopping_criterion':
               store.recordStoppingCriterion(message.topicId, message.agentId, message.reason, message.confidence);
               break;
+            case 'committee.started':
+            case 'committee.vote':
+            case 'committee.verdict':
+            case 'committee.failed':
+              store.recordCommitteeEvent({
+                type: message.type,
+                topicId: message.topicId,
+                vote: message.vote,
+                verdict: message.verdict,
+              });
+              break;
+            case 'chair.circuit_open':
+            case 'chair.circuit_recovered':
+            case 'chair.circuit_half_open':
+            case 'chair.circuit_failure':
+              if (message.data) store.recordCircuitEvent(message.data);
+              break;
+            case 'self_heal.skipped':
+            case 'self_heal.patch_applied':
+            case 'self_heal.patch_reverted':
+            case 'self_heal.failed':
+              if (message.data) store.recordSelfHealEvent(message.data);
+              break;
           }
         } catch (err) {
           console.error('Failed to parse WS message', err);

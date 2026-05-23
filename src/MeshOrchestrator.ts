@@ -34,6 +34,11 @@ import { BudgetTracker } from './services/BudgetTracker.js';
 import { RoutingPolicy } from './services/RoutingPolicy.js';
 import { EpisodicMemory } from './services/EpisodicMemory.js';
 import { enrichWithAgUi } from './services/AgUiEventStream.js';
+import { CircuitBreaker, ChairCircuitEvent } from './services/CircuitBreaker.js';
+import { LearningMatrix } from './services/LearningMatrix.js';
+import { SelfHealer, SelfHealEvent } from './services/SelfHealer.js';
+import { ComfyUiBridge, ComfyAspectRatio, LoraMixerUpdate } from './services/ComfyUiBridge.js';
+import { sanitizeTraceparent, sanitizeTracestate } from './services/ConsensusEngine.js';
 
 
 export interface HttpTimeouts {
@@ -99,6 +104,10 @@ export class MeshOrchestrator extends EventEmitter {
     private budgetTracker: BudgetTracker;
     private routingPolicy: RoutingPolicy;
     private episodicMemory: EpisodicMemory;
+    private circuitBreaker: CircuitBreaker;
+    private learningMatrix: LearningMatrix;
+    private selfHealer: SelfHealer;
+    private comfyBridge: ComfyUiBridge;
     private log: Logger = rootLogger;
     private agentCards: any[] = [];
     private nodeCache: Map<string, any> = new Map();
@@ -114,6 +123,7 @@ export class MeshOrchestrator extends EventEmitter {
     private currentInterestsIndex: number = 0;
     private banterTopicId: string | null = null;
     private headerDeadlineTimers = new Map<Socket, NodeJS.Timeout>();
+    private readonly maxWsMessageBytes = 5 * 1024 * 1024;
 
     // Banter content is scrubbed of personal references for the public repo —
     // no operator handle, no biographical details, no biology-domain identifiers.
@@ -217,6 +227,10 @@ export class MeshOrchestrator extends EventEmitter {
                 this.handleTracesRequest(req, res);
                 return;
             }
+            if (url.startsWith('/api/v1/comfy')) {
+                this.handleComfyRequest(req, res);
+                return;
+            }
             this.handshake.handleRequest(req, res);
         });
 
@@ -244,6 +258,7 @@ export class MeshOrchestrator extends EventEmitter {
 
         this.wss = new WebSocketServer({
             noServer: true,
+            maxPayload: this.maxWsMessageBytes,
             handleProtocols: (offered: Set<string>, req: http.IncomingMessage) => {
                 const picked = (req as any).__kovaelSelectedSubprotocol;
                 if (typeof picked === 'string') return picked;
@@ -348,6 +363,15 @@ export class MeshOrchestrator extends EventEmitter {
         this.budgetTracker = new BudgetTracker();
         this.routingPolicy = new RoutingPolicy();
         this.episodicMemory = new EpisodicMemory(this.memoryDb);
+        this.circuitBreaker = new CircuitBreaker();
+        this.learningMatrix = new LearningMatrix();
+        this.selfHealer = new SelfHealer({
+            repoRoot: process.cwd(),
+            autoApply: process.env.KOVAEL_SELF_HEAL_AUTO_APPLY === '1',
+            allowedBranchPrefixes: ['stage4/', 'self-heal/'],
+        });
+        this.comfyBridge = new ComfyUiBridge();
+        this.conversationBus.setDispatchGate((agentId) => this.circuitBreaker.canDispatch(agentId));
 
         this.loadAgentCards();
         this.initializeBus();
@@ -358,6 +382,8 @@ export class MeshOrchestrator extends EventEmitter {
         this.wireReconciler();
         this.wireHooks();
         this.wireChairs();
+        this.wireCircuitBreaker();
+        this.wireSelfHealer();
 
         this.retryQueue.start();
         this.reconciler.start();
@@ -433,6 +459,43 @@ export class MeshOrchestrator extends EventEmitter {
             this.broadcast({
                 type: 'chair_event',
                 nodeId: 'chair-registry',
+                data: evt,
+            });
+            if (evt.kind === 'expired' || evt.kind === 'stale') {
+                this.circuitBreaker.recordFailure(evt.agentId, evt.reason ?? evt.kind);
+            }
+        });
+    }
+
+    private wireCircuitBreaker() {
+        this.circuitBreaker.on('circuit_event', (evt: ChairCircuitEvent) => {
+            this.log.warn('chair_circuit_event', {
+                agent_id: evt.agentId,
+                state: evt.state,
+                failures: evt.failures,
+                reason: evt.lastReason,
+                circuit_type: evt.type,
+            });
+            this.broadcast({
+                type: evt.type,
+                nodeId: evt.agentId,
+                data: evt,
+            });
+        });
+    }
+
+    private wireSelfHealer() {
+        this.selfHealer.on('self_heal_event', (evt: SelfHealEvent) => {
+            this.log.info('self_heal_event', {
+                type: evt.type,
+                cycle_id: evt.cycleId,
+                task_hash: evt.taskHash,
+                attempt: evt.attempt,
+                reason: evt.reason,
+            });
+            this.broadcast({
+                type: evt.type,
+                nodeId: 'self-healer',
                 data: evt,
             });
         });
@@ -617,6 +680,31 @@ export class MeshOrchestrator extends EventEmitter {
                 nodeId: receipt.architectId,
                 data: receipt,
             });
+            try {
+                this.learningMatrix.record({
+                    cycleId: receipt.cycleId,
+                    taskHash: receipt.taskHash,
+                    status: receipt.status,
+                    latencyMs: receipt.tokens?.runtimeMs ?? 0,
+                    tokenTotal: receipt.tokens?.total ?? 0,
+                    confidence: receipt.status === 'verified' ? 0.95 : 0.25,
+                    retryCount: 0,
+                    recipeIds: [],
+                    timestamp: receipt.timestamp,
+                });
+            } catch (err) {
+                this.log.warn('learning_matrix_record_failed', {
+                    error: err instanceof Error ? err.message.slice(0, 120) : String(err).slice(0, 120),
+                });
+            }
+            if (receipt.status === 'failed') {
+                this.selfHealer.repairFromReceipt(receipt).catch((err) => {
+                    this.log.warn('self_heal_failed', {
+                        cycle_id: receipt.cycleId,
+                        error: err instanceof Error ? err.message : String(err),
+                    });
+                });
+            }
         });
     }
 
@@ -636,6 +724,7 @@ export class MeshOrchestrator extends EventEmitter {
         // Path regexes
         const topicMatch = pathname.match(/^\/api\/v1\/conversations\/?$/);
         const messageMatch = pathname.match(/^\/api\/v1\/conversations\/([^/]+)\/message\/?$/);
+        const committeeMatch = pathname.match(/^\/api\/v1\/conversations\/([^/]+)\/committee\/?$/);
         const closeMatch = pathname.match(/^\/api\/v1\/conversations\/([^/]+)\/close\/?$/);
         const historyMatch = pathname.match(/^\/api\/v1\/conversations\/([^/]+)\/history\/?$/);
 
@@ -728,6 +817,32 @@ export class MeshOrchestrator extends EventEmitter {
                 return;
             }
 
+            if (committeeMatch) {
+                const topicId = committeeMatch[1];
+                const goal = typeof body.goal === 'string' ? body.goal.trim() : '';
+                if (!goal) {
+                    writeJson(400, { error: 'missing_required_fields', need: ['goal'] });
+                    return;
+                }
+                try {
+                    const quorumThreshold = safeConsensusThreshold(body.quorumThreshold, 0.85, 0.6, 1);
+                    const failureThreshold = safeConsensusThreshold(body.failureThreshold, 0.5, 0.5, quorumThreshold);
+                    const verdict = this.conversationBus.conveneCommittee(topicId, goal, {
+                        quorumThreshold,
+                        failureThreshold,
+                        traceparent: sanitizeTraceparent(typeof req.headers.traceparent === 'string' ? req.headers.traceparent : undefined),
+                        tracestate: sanitizeTracestate(typeof req.headers.tracestate === 'string' ? req.headers.tracestate : undefined),
+                    });
+                    writeJson(200, verdict as any);
+                } catch (err: any) {
+                    const code = err?.code === 'committee_topic_not_active' ? 404 : 500;
+                    writeJson(code, {
+                        error: code === 404 ? 'committee_topic_not_active' : 'failed_to_convene_committee',
+                    });
+                }
+                return;
+            }
+
             if (closeMatch) {
                 const topicId = closeMatch[1];
                 try {
@@ -753,12 +868,66 @@ export class MeshOrchestrator extends EventEmitter {
             res.end(JSON.stringify(body));
         };
 
+        const url = new URL(req.url || '/', `http://${req.headers.host}`);
+        if (req.method === 'POST' && url.pathname === '/api/v1/traces/reroute') {
+            const MAX_BODY = 8 * 1024;
+            let received = 0;
+            const chunks: Buffer[] = [];
+            let aborted = false;
+
+            req.on('data', (chunk: Buffer) => {
+                if (aborted) return;
+                received += chunk.length;
+                if (received > MAX_BODY) {
+                    aborted = true;
+                    writeJson(413, { error: 'payload_too_large', max_bytes: MAX_BODY });
+                    req.destroy();
+                    return;
+                }
+                chunks.push(chunk);
+            });
+
+            req.on('error', () => {
+                if (!aborted) writeJson(400, { error: 'request_stream_error' });
+            });
+
+            req.on('end', () => {
+                if (aborted) return;
+                let body: Record<string, unknown> = {};
+                const raw = Buffer.concat(chunks).toString('utf8');
+                if (raw.length > 0) {
+                    try {
+                        body = JSON.parse(raw) as Record<string, unknown>;
+                    } catch {
+                        writeJson(400, { error: 'invalid_json' });
+                        return;
+                    }
+                }
+                const source = safeNodeId(body.source);
+                const target = safeNodeId(body.target);
+                if (!source || !target) {
+                    writeJson(400, { error: 'missing_required_fields', need: ['source', 'target'] });
+                    return;
+                }
+                const event = {
+                    type: 'trace.rerouted',
+                    source,
+                    target,
+                    sourceHandle: safeOptionalNodeId(body.sourceHandle),
+                    targetHandle: safeOptionalNodeId(body.targetHandle),
+                    requestedAt: Date.now(),
+                };
+                this.broadcast(event);
+                writeJson(200, event);
+            });
+            return;
+        }
+
         if (req.method !== 'GET') {
             writeJson(405, { error: 'method_not_allowed' });
             return;
         }
 
-        const url = new URL(req.url || '/', `http://${req.headers.host}`);
         const detailMatch = url.pathname.match(/^\/api\/v1\/traces\/([^/]+)\/?$/);
         if (detailMatch) {
             const cycleId = detailMatch[1];
@@ -782,6 +951,111 @@ export class MeshOrchestrator extends EventEmitter {
             spanCount: t.spans.length,
         }));
         writeJson(200, { items, stats: this.tracing?.ring.stats() ?? null });
+    }
+
+    private handleComfyRequest(req: http.IncomingMessage, res: http.ServerResponse): void {
+        const writeJson = (status: number, body: Record<string, unknown>): void => {
+            res.writeHead(status, {
+                'Content-Type': 'application/json',
+                'Cache-Control': 'no-store',
+                'Access-Control-Allow-Origin': '*',
+            });
+            res.end(JSON.stringify(body));
+        };
+
+        if (req.method !== 'POST') {
+            writeJson(405, { error: 'method_not_allowed' });
+            return;
+        }
+
+        const url = new URL(req.url || '/', `http://${req.headers.host}`);
+        const action = url.pathname.replace(/^\/api\/v1\/comfy\/?/, '') || '';
+        const MAX_BODY = 16 * 1024;
+        let received = 0;
+        const chunks: Buffer[] = [];
+        let aborted = false;
+
+        req.on('data', (chunk: Buffer) => {
+            if (aborted) return;
+            received += chunk.length;
+            if (received > MAX_BODY) {
+                aborted = true;
+                writeJson(413, { error: 'payload_too_large', max_bytes: MAX_BODY });
+                req.destroy();
+                return;
+            }
+            chunks.push(chunk);
+        });
+        req.on('error', () => {
+            if (!aborted) writeJson(400, { error: 'request_stream_error' });
+        });
+        req.on('end', async () => {
+            if (aborted) return;
+            let body: any = {};
+            const raw = Buffer.concat(chunks).toString('utf8');
+            if (raw.length > 0) {
+                try {
+                    body = JSON.parse(raw);
+                } catch {
+                    writeJson(400, { error: 'invalid_json' });
+                    return;
+                }
+            }
+
+            if (action === 'render' || action === 'mix') {
+                const agentId = typeof body.agentId === 'string' ? body.agentId.trim() : '';
+                const prompt = typeof body.prompt === 'string' ? body.prompt.trim() : '';
+                if (!agentId || !prompt) {
+                    writeJson(400, { error: 'missing_required_fields', need: ['agentId', 'prompt'] });
+                    return;
+                }
+                try {
+                    const mixer = Array.isArray(body.mixer) ? sanitizeMixer(body.mixer) : [];
+                    const result = mixer.length > 0
+                        ? await this.comfyBridge.renderWithMixer({
+                              agentId,
+                              prompt,
+                              aspectRatio: safeAspectRatio(body.aspectRatio),
+                              traceId: typeof body.traceId === 'string' ? body.traceId : undefined,
+                              mixer,
+                          })
+                        : await this.comfyBridge.renderPortrait({
+                              agentId,
+                              prompt,
+                              aspectRatio: safeAspectRatio(body.aspectRatio),
+                              traceId: typeof body.traceId === 'string' ? body.traceId : undefined,
+                          });
+                    const stream = result.promptId ? this.comfyBridge.streamDescriptor(result.promptId) : undefined;
+                    writeJson(200, {
+                        source: result.source,
+                        agentId: result.agentId,
+                        width: result.width,
+                        height: result.height,
+                        mimeType: result.mimeType,
+                        promptId: result.promptId,
+                        svg: result.svg,
+                        palette: result.palette,
+                        error: result.error,
+                        stream,
+                    });
+                } catch (err) {
+                    writeJson(500, { error: 'comfy_render_failed', message: err instanceof Error ? err.message : String(err) });
+                }
+                return;
+            }
+
+            if (action === 'stream-url') {
+                const promptId = typeof body.promptId === 'string' ? body.promptId.trim() : '';
+                if (!promptId) {
+                    writeJson(400, { error: 'missing_required_fields', need: ['promptId'] });
+                    return;
+                }
+                writeJson(200, this.comfyBridge.streamDescriptor(promptId, typeof body.clientId === 'string' ? body.clientId : undefined) as any);
+                return;
+            }
+
+            writeJson(404, { error: 'unknown_comfy_action', action });
+        });
     }
 
     /**
@@ -960,6 +1234,8 @@ export class MeshOrchestrator extends EventEmitter {
                 stats: this.chairs.stats(),
                 roster: this.chairs.snapshot(),
             },
+            circuits: this.circuitBreaker.snapshot(),
+            learningMatrix: this.learningMatrix.stats(),
         };
         res.writeHead(200, {
             'Content-Type': 'application/json',
@@ -996,6 +1272,11 @@ export class MeshOrchestrator extends EventEmitter {
 
     private initializeBus() {
         this.conversationBus.on('bus_event', (event) => {
+            if (event?.type === 'chair_dispatch_failure' && typeof event.agentId === 'string') {
+                this.circuitBreaker.recordFailure(event.agentId, String(event.reason ?? 'dispatch_failure'));
+            } else if (event?.type === 'chair_dispatch_success' && typeof event.agentId === 'string') {
+                this.circuitBreaker.recordSuccess(event.agentId);
+            }
             this.broadcast(enrichWithAgUi(event));
         });
 
@@ -1003,6 +1284,12 @@ export class MeshOrchestrator extends EventEmitter {
         // accounting + receiptsIssued; do NOT subscribe again here.
         this.wss.on('connection', (ws: WebSocket, request) => {
             const nodeId = this.extractNodeId(request);
+            ws.on('error', (err) => {
+                this.log.warn('ws_client_error', {
+                    node_id: nodeId,
+                    error: err instanceof Error ? err.message.slice(0, 160) : String(err).slice(0, 160),
+                });
+            });
 
             // 1. Send AgentCards
             this.agentCards.forEach(card => {
@@ -1047,6 +1334,11 @@ export class MeshOrchestrator extends EventEmitter {
 
             // ws delivers Buffer (or ArrayBuffer / Buffer[]); normalise before JSON.parse.
             ws.on('message', async (data: Buffer | ArrayBuffer | Buffer[]) => {
+                const messageBytes = wsMessageByteLength(data);
+                if (messageBytes > this.maxWsMessageBytes) {
+                    ws.close(1009, 'payload_too_large');
+                    return;
+                }
                 let payload: any;
                 try {
                     payload = JSON.parse(data.toString());
@@ -1340,4 +1632,59 @@ export class MeshOrchestrator extends EventEmitter {
         this.server.close();
         this.memoryDb.close();
     }
+}
+
+function wsMessageByteLength(data: Buffer | ArrayBuffer | Buffer[]): number {
+    if (Buffer.isBuffer(data)) return data.length;
+    if (data instanceof ArrayBuffer) return data.byteLength;
+    if (Array.isArray(data)) return data.reduce((sum, chunk) => sum + chunk.length, 0);
+    return Buffer.byteLength(String(data));
+}
+
+function safeAspectRatio(value: unknown): ComfyAspectRatio | undefined {
+    const allowed = new Set<ComfyAspectRatio>(['1:1', '16:9', '9:16', '4:3', '3:4', 'portrait', 'landscape', 'theater-card', 'flowchart']);
+    return typeof value === 'string' && allowed.has(value as ComfyAspectRatio) ? value as ComfyAspectRatio : undefined;
+}
+
+function safeConsensusThreshold(value: unknown, fallback: number, min: number, max: number): number {
+    const n = typeof value === 'number' ? value : Number(value);
+    if (!Number.isFinite(n)) return fallback;
+    return Math.min(max, Math.max(min, n));
+}
+
+function safeNodeId(value: unknown): string | null {
+    if (typeof value !== 'string') return null;
+    const trimmed = value.trim();
+    if (!/^[A-Za-z0-9_.:-]{1,128}$/.test(trimmed)) return null;
+    return trimmed;
+}
+
+function safeOptionalNodeId(value: unknown): string | undefined {
+    return value === undefined ? undefined : safeNodeId(value) ?? undefined;
+}
+
+function sanitizeMixer(input: unknown[]): LoraMixerUpdate[] {
+    const out: LoraMixerUpdate[] = [];
+    for (const item of input) {
+        const raw = item as Record<string, unknown>;
+        const recipeId = typeof raw.recipeId === 'string' ? raw.recipeId.replace(/[\r\n\t]/g, ' ').trim() : '';
+        if (!recipeId) continue;
+        const update: LoraMixerUpdate = {
+            recipeId: recipeId.slice(0, 80),
+            strength: boundedNumber(raw.strength, 0, 2, 1),
+            denoise: boundedNumber(raw.denoise, 0, 1, 0.55),
+        };
+        if (typeof raw.trigger === 'string') {
+            update.trigger = raw.trigger.replace(/[\r\n\t]/g, ' ').trim().slice(0, 240);
+        }
+        out.push(update);
+        if (out.length >= 16) break;
+    }
+    return out;
+}
+
+function boundedNumber(value: unknown, min: number, max: number, fallback: number): number {
+    const n = typeof value === 'number' ? value : Number(value);
+    if (!Number.isFinite(n)) return fallback;
+    return Math.min(max, Math.max(min, n));
 }
