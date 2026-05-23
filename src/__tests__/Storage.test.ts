@@ -95,7 +95,8 @@ describe('Storage · file-backed persistence', () => {
         second.db.close();
     });
 
-    it('db file is created with 0o600 perms and parent dir 0o700', () => {
+    it.skipIf(process.platform === 'win32')('db file is created with 0o600 perms and parent dir 0o700', () => {
+        // POSIX mode bits aren't enforced on Windows NTFS — see FileSink.test.ts.
         const opened = openOrchestratorDb({ path: dbPath });
         const fileMode = fs.statSync(dbPath).mode & 0o777;
         const dirMode = fs.statSync(tmpDir).mode & 0o777;

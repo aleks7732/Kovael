@@ -28,12 +28,15 @@ export function openOrchestratorDb(opts: OpenOrchestratorDbOptions = {}): {
         const dir = path.dirname(resolved);
         fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
         // mkdirSync only honors `mode` when the directory is freshly created;
-        // an existing loose dir would silently retain its old perms. Chmod and
-        // verify — secrets live in this dir, so a world-readable parent must
-        // surface as a hard failure, not a swallowed best-effort warning.
+        // an existing loose dir would silently retain its old perms. Chmod
+        // every time. On Unix, verify the resulting POSIX mode because secrets
+        // live here; on Windows/NTFS, chmod and stat mode bits are best-effort
+        // and access control relies on Windows ACLs.
         fs.chmodSync(dir, 0o700);
         const dirMode = fs.statSync(dir).mode & 0o777;
-        if (dirMode !== 0o700) {
+        // POSIX mode bits from stat() are not reliable on Windows NTFS (chmod is
+        // best-effort; reported mode often stays 0o666). Enforce only on Unix.
+        if (process.platform !== 'win32' && dirMode !== 0o700) {
             throw new Error(`orchestrator db parent dir ${dir} has mode 0o${dirMode.toString(8)}, expected 0o700`);
         }
 
@@ -44,7 +47,7 @@ export function openOrchestratorDb(opts: OpenOrchestratorDbOptions = {}): {
             fs.chmodSync(resolved, 0o600);
         }
         const fileMode = fs.statSync(resolved).mode & 0o777;
-        if (fileMode !== 0o600) {
+        if (process.platform !== 'win32' && fileMode !== 0o600) {
             throw new Error(`orchestrator db file ${resolved} has mode 0o${fileMode.toString(8)}, expected 0o600`);
         }
     }
