@@ -1,6 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import * as fs from 'node:fs';
-import * as os from 'node:os';
 import * as path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { SemanticIngestor } from '../services/SemanticIngestor.js';
@@ -52,7 +51,10 @@ describe('SemanticIngestor — ingest()', () => {
     let db: DatabaseSync;
 
     beforeEach(() => {
-        tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kovael-ingest-'));
+        // Create tmpDir inside process.cwd() so sanitizePath() produces a
+        // proper './...' relative path (it falls back to basename when the
+        // file lives outside cwd, e.g. on Linux CI where os.tmpdir() → /tmp).
+        tmpDir = fs.mkdtempSync(path.join(process.cwd(), '.si-test-'));
         db = freshDb();
     });
 
