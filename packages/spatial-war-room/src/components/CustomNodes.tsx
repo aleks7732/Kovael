@@ -1,8 +1,15 @@
 import { memo } from 'react';
 import { Handle, Position, type NodeProps } from '@xyflow/react';
 import { ANXDisplay } from './ANXDisplay';
+import type { Task, VerificationReceipt } from '../store/useWarRoomStore';
 
 type AnyNodeProps = NodeProps & { data: Record<string, unknown> };
+
+const formatReceiptTime = (timestamp: VerificationReceipt['timestamp']): string => {
+  const date = typeof timestamp === 'string' ? new Date(timestamp) : new Date(timestamp);
+  if (Number.isNaN(date.getTime())) return '--:--:--';
+  return date.toISOString().split('T')[1].split('.')[0];
+};
 
 /**
  * AgentHeartbeatNode
@@ -14,7 +21,7 @@ export const AgentHeartbeatNode = memo(({ data }: AnyNodeProps) => {
   const label = String(data.label ?? '');
   const isOnline = status !== 'OFFLINE';
   const telemetry = data.telemetry as { cpu?: number; mem?: number } | undefined;
-  const receipts = data.receipts as Array<{ id: string; status: string; timestamp: string }> | undefined;
+  const receipts = data.receipts as VerificationReceipt[] | undefined;
 
   return (
     <div className="glass-panel p-4 min-w-[200px] transition-all duration-300 hover:border-command-accent/50 group">
@@ -56,14 +63,14 @@ export const AgentHeartbeatNode = memo(({ data }: AnyNodeProps) => {
         <div className="mt-4 border-t border-white/5 pt-3">
           <div className="t-eyebrow !text-[7px] mb-2">RECENT_RECEIPTS</div>
           <div className="space-y-1.5">
-            {receipts.map((r, i) => (
-              <div key={i} className="flex items-center justify-between t-mono text-[8px]">
+            {receipts.map((r) => (
+              <div key={r.id} className="flex items-center justify-between t-mono text-[8px]">
                 <div className="flex items-center gap-1.5">
                   <div className={`w-1 h-1 rounded-full ${r.status === 'verified' ? 'bg-emerald-500' : 'bg-command-accent'}`} />
                   <span className="text-command-warm-white/60">{String(r.id).slice(0, 8)}</span>
                 </div>
                 <span className="opacity-30">
-                  {typeof r.timestamp === 'string' ? r.timestamp.split('T')[1]?.split('.')[0] : new Date(r.timestamp as any).toISOString().split('T')[1].split('.')[0]}
+                  {formatReceiptTime(r.timestamp)}
                 </span>
               </div>
             ))}
@@ -83,10 +90,10 @@ AgentHeartbeatNode.displayName = 'AgentHeartbeatNode';
  * Visualizes recursive task groupings within a tactical matrix.
  */
 export const TaskClusterNode = memo(({ data }: AnyNodeProps) => {
-  const tasks = (data.tasks as any[]) || [];
+  const tasks = (data.tasks as Task[]) || [];
   const label = String(data.label ?? '');
 
-  const renderTasks = (taskList: any[], depth = 0) => {
+  const renderTasks = (taskList: Task[], depth = 0) => {
     return taskList.map((task, idx) => (
       <div key={`${depth}-${idx}`} className={`flex flex-col gap-1 ${depth > 0 ? 'mt-2 ml-3' : 'mt-3'} pl-3 border-l border-white/5`}>
         <div className="flex justify-between items-center t-mono text-[10px]">

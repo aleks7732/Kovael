@@ -20,7 +20,7 @@ export const Stage = memo(({ roster, activeSpeakerId }: StageProps) => {
   const rosterSignature = stageRosterSignature(roster);
   const seats = useMemo(
     () => [...roster].sort((a, b) => a.id.localeCompare(b.id)).slice(0, 9),
-    [rosterSignature, roster],
+    [rosterSignature, roster]
   );
   const totalSeats = seats.length;
 

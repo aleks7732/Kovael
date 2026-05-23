@@ -152,6 +152,44 @@ describe('TraceComfyBridge flowchart renderer', () => {
         expect(html).toContain('shaev&lt;script&gt;');
         expect(html).not.toContain('shaev<script>');
     });
+
+    it('blocks flowchart script injection attacks in cycleId, agentId, and span.name', () => {
+        const trace: CycleTrace = {
+            cycleId: 'cycle-1<script>alert("xss")</script>',
+            traceId: 'trace-1`onload=alert(1)`',
+            rootSpanId: 'root',
+            startedAt: 1000,
+            endedAt: 1600,
+            spans: [
+                {
+                    traceId: 'trace-1`onload=alert(1)`',
+                    spanId: 'root',
+                    name: 'cycle.run</text><script>console.log("xss")</script>',
+                    kind: 1,
+                    startTimeUnixNano: 1_000_000_000,
+                    endTimeUnixNano: 1_600_000_000,
+                    durationMs: 600,
+                    attributes: {
+                        'kovael.cycle.id': 'cycle-1<script>alert("xss")</script>',
+                        'kovael.agent.id': 'malicious/operator',
+                    },
+                    status: { code: 1 },
+                    events: [],
+                },
+            ],
+        };
+
+        const html = renderTraceFlowchartHtml(trace);
+        // Script tags should be fully escaped
+        expect(html).not.toContain('<script>');
+        expect(html).toContain('&lt;script&gt;alert(&quot;xss&quot;)&lt;&#x2F;script&gt;');
+        // Backticks should be escaped
+        expect(html).not.toContain('`');
+        expect(html).toContain('&#x60;onload=alert(1)&#x60;');
+        // Slashes should be escaped
+        expect(html).not.toContain('malicious/operator');
+        expect(html).toContain('malicious&#x2F;operator');
+    });
 });
 
 describe('TracingBridge + MevBridge integration', () => {

@@ -6,6 +6,8 @@ import { TraceBreadcrumb } from '../../src/components/theater/TraceBreadcrumb';
 import { areStagePropsEqual, Stage } from '../../src/components/theater/Stage';
 import { ShortcutSheet } from '../../src/components/theater/ShortcutSheet';
 import type { AgentRosterCard } from '../../src/store/useWarRoomStore';
+import fs from 'fs';
+import path from 'path';
 
 afterEach(() => cleanup());
 
@@ -78,15 +80,15 @@ describe('TraceBreadcrumb', () => {
         expect(pill!.getAttribute('title')).toContain('topic-abcd-1234');
     });
 
-    it('emits a console breadcrumb on click (will route to the trace view on Day 7)', () => {
-        const spy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    it('dispatches a trace-open event on click', () => {
+        const spy = vi.fn();
+        window.addEventListener('kovael:open-trace', spy);
         render(<TraceBreadcrumb topicId="topic-xyz" />);
         const pill = screen.getByText('OTEL TRACE');
         fireEvent.click(pill);
-        expect(spy).toHaveBeenCalled();
-        const message = spy.mock.calls[0]?.[0] as string;
-        expect(message).toContain('topic-xyz');
-        spy.mockRestore();
+        expect(spy).toHaveBeenCalledTimes(1);
+        expect((spy.mock.calls[0]?.[0] as CustomEvent).detail).toEqual({ topicId: 'topic-xyz' });
+        window.removeEventListener('kovael:open-trace', spy);
     });
 });
 
@@ -94,7 +96,7 @@ describe('ShortcutSheet', () => {
     it('renders as a dismissible keyboard dialog', () => {
         const onClose = vi.fn();
         render(<ShortcutSheet open={true} onClose={onClose} />);
-        expect(screen.getByRole('dialog', { name: 'Keyboard' })).toBeTruthy();
+        expect(screen.getByRole('dialog', { name: 'Keyboard Shortcuts' })).toBeTruthy();
 
         fireEvent.keyDown(window, { key: 'Escape' });
         expect(onClose).toHaveBeenCalledTimes(1);
@@ -237,4 +239,42 @@ describe('Stage', () => {
             ),
         ).toBe(false);
     });
+
+    it('guarantees stable rendering structure and does not rearrange order when properties are structurally equal', () => {
+        const roster = [
+            makeCard('gamma'),
+            makeCard('beta'),
+            makeCard('delta'),
+        ];
+        const { rerender, container } = render(
+            <Stage roster={roster} activeSpeakerId={null} />
+        );
+        const firstOrder = Array.from(container.querySelectorAll('.max-w-\\[80px\\] span:first-child')).map(
+            (n) => n.textContent?.trim(),
+        );
+        
+        // Rerender with structurally equivalent roster
+        const newRoster = [
+            makeCard('gamma'),
+            makeCard('beta'),
+            makeCard('delta'),
+        ];
+        rerender(<Stage roster={newRoster} activeSpeakerId={null} />);
+        const secondOrder = Array.from(container.querySelectorAll('.max-w-\\[80px\\] span:first-child')).map(
+            (n) => n.textContent?.trim(),
+        );
+        
+        expect(firstOrder).toEqual(secondOrder);
+        expect(firstOrder).toEqual(['beta', 'delta', 'gamma']); // Alphabetical sorting is preserved
+    });
 });
+
+describe('Vite Bundle Configuration', () => {
+    it('asserts that bundle configuration enforces the 800KiB size limit', () => {
+        const configPath = path.resolve(__dirname, '../../vite.config.ts');
+        const content = fs.readFileSync(configPath, 'utf-8');
+        expect(content).toContain('chunkSizeWarningLimit: 800');
+        expect(content).toContain('manualChunks');
+    });
+});
+

@@ -5,6 +5,7 @@ import { MessageList } from './MessageList';
 import { ConvenePanel } from './ConvenePanel';
 import { StoppingCard } from './StoppingCard';
 import { TraceBreadcrumb } from './TraceBreadcrumb';
+import { TraceTimeline } from './TraceTimeline';
 
 export const ConversationTheater = memo(() => {
   const topics = useWarRoomStore((s) => s.topics);
@@ -208,6 +209,7 @@ export const ConversationTheater = memo(() => {
         {/* Convene input panel dock at bottom */}
         <ConvenePanel roster={roster} onTopicCreated={(id) => selectTopic(id)} />
       </main>
+      <TraceTimeline />
     </div>
   );
 });

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { readFileSync } from 'node:fs';
+import { readFileSync, unlinkSync } from 'node:fs';
 import { ComfyUiBridge } from '../services/ComfyUiBridge.js';
 
 describe('ComfyUiBridge', () => {
@@ -70,5 +70,107 @@ describe('ComfyUiBridge', () => {
         const source = readFileSync(new URL('../services/ComfyUiBridge.ts', import.meta.url), 'utf8');
         expect(source).not.toMatch(/\bexecSync\b|\bexec\s*\(/);
         expect(source).not.toContain('python -c');
+    });
+
+    it('supports new preset aspect ratios: portrait, landscape, theater-card, flowchart', async () => {
+        const fetchImpl = vi.fn();
+        const bridge = new ComfyUiBridge({ enabled: false, fetchImpl });
+
+        const portraitRes = await bridge.renderPortrait({
+            agentId: 'nyx',
+            prompt: 'portrait test',
+            aspectRatio: 'portrait',
+        });
+        expect(portraitRes.width).toBe(1024);
+        expect(portraitRes.height).toBe(1365);
+
+        const landscapeRes = await bridge.renderPortrait({
+            agentId: 'nyx',
+            prompt: 'landscape test',
+            aspectRatio: 'landscape',
+        });
+        expect(landscapeRes.width).toBe(1792);
+        expect(landscapeRes.height).toBe(1024);
+
+        const theaterRes = await bridge.renderPortrait({
+            agentId: 'nyx',
+            prompt: 'theater test',
+            aspectRatio: 'theater-card',
+        });
+        expect(theaterRes.width).toBe(1280);
+        expect(theaterRes.height).toBe(720);
+
+        const flowchartRes = await bridge.renderPortrait({
+            agentId: 'nyx',
+            prompt: 'flowchart test',
+            aspectRatio: 'flowchart',
+        });
+        expect(flowchartRes.width).toBe(1920);
+        expect(flowchartRes.height).toBe(1080);
+    });
+
+    it('enriches LoRAs from the default recipe library (nyx, alks, veyra, naethara)', async () => {
+        const fetchImpl = vi.fn().mockResolvedValue({
+            ok: true,
+            json: async () => ({ prompt_id: 'queued-123' }),
+        });
+        const bridge = new ComfyUiBridge({ enabled: true, fetchImpl });
+
+        await bridge.renderPortrait({
+            agentId: 'nyx-antigravity',
+            prompt: 'master test',
+            loras: [
+                { name: 'nyx' }, // should get default trigger and weight
+                { name: 'veyra', weight: 0.5 }, // should get default trigger but custom weight
+            ],
+        });
+
+        const [, init] = fetchImpl.mock.calls[0];
+        const promptObj = JSON.parse(init.body).prompt;
+        const injectedLoras = promptObj.kovael_portrait.inputs.loras;
+
+        // Assert recipe library defaults matched and loaded
+        expect(injectedLoras[0].name).toBe('nyx');
+        expect(injectedLoras[0].trigger).toBe('nyx_holyfield, athletic platinum blonde, tactical gear');
+        expect(injectedLoras[0].weight).toBe(1.0);
+
+        expect(injectedLoras[1].name).toBe('veyra');
+        expect(injectedLoras[1].trigger).toBe('veyra_style, high-contrast dark fantasy cinematic epic');
+        expect(injectedLoras[1].weight).toBe(0.5);
+    });
+
+    it('logs palettes, timestamps, and traceId to a local log file and structured logger', async () => {
+        const testLogFile = 'comfyui_metadata_test.log';
+        process.env.KOVAEL_COMFYUI_LOG_FILE = testLogFile;
+
+        const fetchImpl = vi.fn();
+        const bridge = new ComfyUiBridge({ enabled: false, fetchImpl });
+
+        await bridge.renderPortrait({
+            agentId: 'nyx-test',
+            prompt: 'test metadata logging',
+            traceId: 'test-trace-12345',
+            palette: { hue: 120, saturation: 80, lightness: 50 },
+        });
+
+        // Verify the file was written
+        const logContent = readFileSync(testLogFile, 'utf8');
+        expect(logContent).toContain('nyx-test');
+        expect(logContent).toContain('test-trace-12345');
+        expect(logContent).toContain('"hue":120');
+
+        const parsed = JSON.parse(logContent.trim());
+        expect(parsed.traceId).toBe('test-trace-12345');
+        expect(parsed.palette.hue).toBe(120);
+        expect(parsed.palette.saturation).toBe(80);
+        expect(parsed.palette.lightness).toBe(50);
+        expect(parsed.timestamp).toBeDefined();
+
+        // Clean up the test log file
+        try {
+            unlinkSync(testLogFile);
+        } catch {
+            // ignore cleanup errors
+        }
     });
 });
