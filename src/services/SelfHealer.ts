@@ -152,7 +152,7 @@ export class SelfHealer extends EventEmitter {
             'git',
             [
                 '-c',
-                'user.email=kovael-self-healer@example.invalid',
+                'user.email=kovael-self-healer.local',
                 '-c',
                 'user.name=Kovael Self-Healer',
                 'commit',

@@ -20,7 +20,7 @@ describe('SelfHealer', () => {
         execFileSync('git', ['checkout', '-b', 'stage4/autonomic-swarm'], { cwd: dir });
         fs.writeFileSync(path.join(dir, 'target.txt'), 'old\n');
         execFileSync('git', ['add', 'target.txt'], { cwd: dir });
-        execFileSync('git', ['-c', 'user.email=test@example.invalid', '-c', 'user.name=test', 'commit', '-m', 'init'], { cwd: dir });
+        execFileSync('git', ['-c', 'user.email=test.local', '-c', 'user.name=test', 'commit', '-m', 'init'], { cwd: dir });
         return dir;
     }
 

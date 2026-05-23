@@ -9,12 +9,12 @@ Baseline: local Stage-3 commit `5aa00e7`
 ### OBSERVE
 
 - Stage-3 was validated locally before Stage-4 work started with `node scripts/validate-pr.mjs` and `node scripts/validate-all-chairs.mjs`.
-- Publishing the Stage-3 baseline is still blocked by GitHub auth. The local SSH key exists, but GitHub rejects it with `Permission denied (publickey)`.
-- Stage-4 work is isolated in a Superpowers worktree at `C:\Users\maver\.config\superpowers\worktrees\Kovael\stage4-autonomic-swarm`.
+- The Stage-3 baseline was published and merged through PR #40 before the Stage-4 PR was retargeted to `main`.
+- Stage-4 work is isolated in a Superpowers-managed worktree outside the primary checkout.
 
 ### DISTILL
 
-- The implementation is staged as one local PR slice because the remote cannot be updated yet.
+- The implementation is staged as PR #41 on top of the merged Stage-3 baseline.
 - Subagent review found real security gaps in early self-heal, quorum, trace, WebSocket payload, and Comfy stream handling. Those findings were patched before final gates.
 - Self-healing is intentionally opt-in through `KOVAEL_SELF_HEAL_AUTO_APPLY=1`, branch-prefixed, clean-worktree-only, and blocked from editing execution or secret surfaces.
 
@@ -116,4 +116,4 @@ Baseline: local Stage-3 commit `5aa00e7`
 
 ## Remaining Gate
 
-- Remote publish is blocked until GitHub SSH auth accepts the local key or the remote URL is switched to a working credential path.
+- Stage-4 PR #41 is the remaining merge gate after refreshed GitHub checks complete.
