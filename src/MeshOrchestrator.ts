@@ -248,10 +248,10 @@ export class MeshOrchestrator extends EventEmitter {
                 const picked = (req as any).__kovaelSelectedSubprotocol;
                 if (typeof picked === 'string') return picked;
                 // Rejected-but-upgrading: echo any offered value so ws does not
-                // abort the handshake before the client can receive our 4401
-                // close frame. Returning the first offered value is harmless —
-                // the socket closes immediately after.
-                if ((req as any).__kovaelGateRejected) {
+                // abort the handshake before the client can receive our
+                // application close frame. Returning the first offered value
+                // is harmless — the socket closes immediately after.
+                if ((req as any).__kovaelGateRejected || (req as any).__kovaelRateLimitRejected) {
                     const first = offered.values().next().value;
                     return typeof first === 'string' ? first : false;
                 }
@@ -259,6 +259,16 @@ export class MeshOrchestrator extends EventEmitter {
             },
         });
         this.server.on('upgrade', (req, socket, head) => {
+            const key = this.rateLimiter.clientKey(req);
+            const decision = this.rateLimiter.consume(key);
+            if (!decision.allowed) {
+                (req as any).__kovaelRateLimitRejected = true;
+                this.wss.handleUpgrade(req, socket as Socket, head, (ws) => {
+                    ws.close(4429, 'rate_limited');
+                });
+                return;
+            }
+
             const outcome = this.apiGate.verifyWebSocketUpgrade(req);
             if (!outcome.allowed) {
                 // 4401 is a private-use WS close code (4000-4999 reserved for

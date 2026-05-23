@@ -1,18 +1,27 @@
-import { memo } from 'react';
+import { memo, useMemo, type CSSProperties } from 'react';
 import type { AgentRosterCard } from '../../store/useWarRoomStore';
 import { AgentAvatarFallback } from '../AgentAvatarFallback';
 
-interface StageProps {
+export interface StageProps {
   roster: AgentRosterCard[];
   activeSpeakerId: string | null;
 }
 
-export const Stage = memo(({ roster, activeSpeakerId }: StageProps) => {
-  // Ensure we have a predictable sort order for consistent seat arrangement
-  const orderedRoster = [...roster].sort((a, b) => a.id.localeCompare(b.id));
+type StageStyle = CSSProperties & {
+  '--speaking-accent-color'?: string;
+};
 
-  // Limit to maximum of 9 main seats around the table
-  const seats = orderedRoster.slice(0, 9);
+export const areStagePropsEqual = (prev: StageProps, next: StageProps): boolean => {
+  if (prev.activeSpeakerId !== next.activeSpeakerId) return false;
+  return stageRosterSignature(prev.roster) === stageRosterSignature(next.roster);
+};
+
+export const Stage = memo(({ roster, activeSpeakerId }: StageProps) => {
+  const rosterSignature = stageRosterSignature(roster);
+  const seats = useMemo(
+    () => [...roster].sort((a, b) => a.id.localeCompare(b.id)).slice(0, 9),
+    [rosterSignature, roster],
+  );
   const totalSeats = seats.length;
 
   return (
@@ -54,22 +63,24 @@ export const Stage = memo(({ roster, activeSpeakerId }: StageProps) => {
         const isSpeaking = activeSpeakerId === agent.id;
         const colorAccent = agent.accent_hex || '#C15F3C';
         const isLiveChair = agent.chair?.presence === 'live';
+        const seatStyle: StageStyle = {
+          position: 'absolute',
+          left: `${x}%`,
+          top: `${y}%`,
+          transform: 'translate(-50%, -50%)',
+          '--speaking-accent-color': colorAccent,
+        };
 
         return (
           <div
             key={agent.id}
-            style={{
-              position: 'absolute',
-              left: `${x}%`,
-              top: `${y}%`,
-              transform: 'translate(-50%, -50%)',
-            }}
+            style={seatStyle}
             className="flex flex-col items-center justify-center z-10"
           >
             {/* Pulsing glow under active speaker */}
             {isSpeaking && (
               <div 
-                style={{ backgroundColor: colorAccent }}
+                style={{ backgroundColor: 'var(--speaking-accent-color)' }}
                 className="absolute w-16 h-16 rounded-full opacity-35 blur-md animate-ping pointer-events-none" 
               />
             )}
@@ -77,8 +88,8 @@ export const Stage = memo(({ roster, activeSpeakerId }: StageProps) => {
             {/* Avatar block */}
             <div 
               style={{ 
-                borderColor: isSpeaking ? colorAccent : 'rgba(255,255,255,0.1)',
-                boxShadow: isSpeaking ? `0 0 15px ${colorAccent}40` : 'none'
+                borderColor: isSpeaking ? 'var(--speaking-accent-color)' : 'rgba(255,255,255,0.1)',
+                boxShadow: isSpeaking ? `0 0 15px color-mix(in srgb, var(--speaking-accent-color) 25%, transparent)` : 'none'
               }}
               className={`w-12 h-12 rounded-full border-2 bg-black/60 relative flex items-center justify-center transition-all duration-300 ${
                 isSpeaking ? 'scale-110 z-20' : 'hover:border-white/20'
@@ -133,7 +144,22 @@ export const Stage = memo(({ roster, activeSpeakerId }: StageProps) => {
       })}
     </div>
   );
-});
+}, areStagePropsEqual);
+
+function stageRosterSignature(roster: AgentRosterCard[]): string {
+  return [...roster]
+    .sort((a, b) => a.id.localeCompare(b.id))
+    .slice(0, 9)
+    .map((agent) => [
+      agent.id,
+      agent.name,
+      agent.status,
+      agent.portrait_url ?? '',
+      agent.accent_hex ?? '',
+      agent.chair?.presence ?? '',
+    ].join('\u001f'))
+    .join('\u001e');
+}
 
 Stage.displayName = 'Stage';
 export default Stage;

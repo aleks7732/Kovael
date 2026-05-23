@@ -374,6 +374,16 @@ describe('MeshOrchestrator · WebSocket gate (loop iter 09)', () => {
         expect(code).toBe(4401);
     });
 
+    it('rejects WS upgrade with empty bearer transports', async () => {
+        const noHeaderToken = await probe(`ws://localhost:${GATED_PORT}/?nodeId=empty-header`, {
+            protocols: 'bearer.',
+        });
+        expect(noHeaderToken.code).toBe(4401);
+
+        const emptyQuery = await probe(`ws://localhost:${GATED_PORT}/?token=&nodeId=empty-query`);
+        expect(emptyQuery.code).toBe(4401);
+    });
+
     it('accepts WS upgrade via valid Sec-WebSocket-Protocol subprotocol', async () => {
         const ws = new WebSocket(`ws://localhost:${GATED_PORT}/?nodeId=proto-ok`, [`bearer.${WS_TOKEN}`]);
         const result = await new Promise<{ opened: boolean; selected: string }>((resolve) => {
@@ -426,5 +436,47 @@ describe('MeshOrchestrator · WebSocket gate (loop iter 09)', () => {
         } finally {
             wss.off('connection', capture);
         }
+    });
+});
+
+describe('MeshOrchestrator · WebSocket upgrade rate limit (APEX adversary gate)', () => {
+    let gated: MeshOrchestrator;
+    const PORT = 0;
+    const TOKEN = 'ws-rate-limit-token-DO-NOT-USE-IN-PROD';
+    let boundPort = 0;
+
+    beforeAll(async () => {
+        process.env.KOVAEL_API_TOKEN = TOKEN;
+        gated = new MeshOrchestrator(PORT, { rateLimit: { capacity: 2, refillPerSec: 0.1 } });
+        boundPort = await gated.ready();
+    });
+
+    afterAll(() => {
+        gated.close();
+        delete process.env.KOVAEL_API_TOKEN;
+    });
+
+    function probe(url: string, timeoutMs = 2000): Promise<{ opened: boolean; code: number | null }> {
+        return new Promise((resolve) => {
+            const ws = new WebSocket(url);
+            let opened = false;
+            const done = (code: number | null) => {
+                try { ws.close(); } catch { /* already closed */ }
+                resolve({ opened, code });
+            };
+            const timer = setTimeout(() => done(null), timeoutMs);
+            ws.on('open', () => { opened = true; });
+            ws.on('close', (code) => { clearTimeout(timer); done(code); });
+            ws.on('error', () => { /* close fires next */ });
+        });
+    }
+
+    it('rate-limits rejected upgrade storms before token verification', async () => {
+        const url = (nodeId: string) => `ws://127.0.0.1:${boundPort}/?nodeId=${nodeId}`;
+        expect((await probe(url('storm-1'))).code).toBe(4401);
+        expect((await probe(url('storm-2'))).code).toBe(4401);
+
+        const third = await probe(url('storm-3'));
+        expect(third.code).toBe(4429);
     });
 });

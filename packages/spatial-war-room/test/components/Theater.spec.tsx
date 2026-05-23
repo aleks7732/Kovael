@@ -3,7 +3,8 @@ import { describe, it, expect, afterEach, vi } from 'vitest';
 import { render, cleanup, screen, fireEvent } from '@testing-library/react';
 import { StoppingCard } from '../../src/components/theater/StoppingCard';
 import { TraceBreadcrumb } from '../../src/components/theater/TraceBreadcrumb';
-import { Stage } from '../../src/components/theater/Stage';
+import { areStagePropsEqual, Stage } from '../../src/components/theater/Stage';
+import { ShortcutSheet } from '../../src/components/theater/ShortcutSheet';
 import type { AgentRosterCard } from '../../src/store/useWarRoomStore';
 
 afterEach(() => cleanup());
@@ -86,6 +87,22 @@ describe('TraceBreadcrumb', () => {
         const message = spy.mock.calls[0]?.[0] as string;
         expect(message).toContain('topic-xyz');
         spy.mockRestore();
+    });
+});
+
+describe('ShortcutSheet', () => {
+    it('renders as a dismissible keyboard dialog', () => {
+        const onClose = vi.fn();
+        render(<ShortcutSheet open={true} onClose={onClose} />);
+        expect(screen.getByRole('dialog', { name: 'Keyboard' })).toBeTruthy();
+
+        fireEvent.keyDown(window, { key: 'Escape' });
+        expect(onClose).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not render while closed', () => {
+        const { container } = render(<ShortcutSheet open={false} onClose={() => {}} />);
+        expect(container.firstChild).toBeNull();
     });
 });
 
@@ -195,5 +212,29 @@ describe('Stage', () => {
         );
         // Stage sorts by id locale-compare → alpha, mu, zeta
         expect(labels).toEqual(['alpha', 'mu', 'zeta']);
+    });
+
+    it('treats equivalent roster snapshots as equal to avoid telemetry-loop re-renders', () => {
+        const first = [
+            makeCard('nyx-codex', { accent_hex: '#7c3aed' }),
+            makeCard('shaev', { accent_hex: '#059669', chair: { sessionId: 's1', claimedAt: 1, lastBeaconAt: 2, presence: 'live' } }),
+        ];
+        const second = first.map((card) => ({
+            ...card,
+            chair: card.chair ? { ...card.chair } : undefined,
+        }));
+
+        expect(
+            areStagePropsEqual(
+                { roster: first, activeSpeakerId: 'shaev' },
+                { roster: second, activeSpeakerId: 'shaev' },
+            ),
+        ).toBe(true);
+        expect(
+            areStagePropsEqual(
+                { roster: first, activeSpeakerId: 'shaev' },
+                { roster: second, activeSpeakerId: 'nyx-codex' },
+            ),
+        ).toBe(false);
     });
 });
