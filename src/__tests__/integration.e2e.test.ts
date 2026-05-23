@@ -150,10 +150,13 @@ describe('E2E mission_inject', () => {
         // Drain any cached frames from connect (agent_card, hardware_telemetry etc.)
         await waitMs(50);
 
-        // Collect frames — stop once we see verification_receipt
+        // Collect frames until the receipt and final claim release are both visible.
+        // The verification_receipt can arrive before the release broadcast, so
+        // stopping at the receipt alone makes this assertion race-prone.
         const collectPromise = collectWsFrames(
             ws,
-            (fs) => fs.some((f) => f.type === 'verification_receipt'),
+            (fs) => fs.some((f) => f.type === 'verification_receipt')
+                && fs.some((f) => f.type === 'claim_event' && f.data?.state === 'Released'),
             3000,
         );
 
