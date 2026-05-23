@@ -71,8 +71,5 @@ jobs:
           cache: 'npm'
       - name: Install
         run: npm ci --no-audit --no-fund
-      - name: Install frontend deps (cockpit.spec.ts vite build gate)
-        run: npm ci --no-audit --no-fund
-        working-directory: packages/spatial-war-room
       - name: Run tests
         run: npx vitest run --reporter=default
