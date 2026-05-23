@@ -33,7 +33,9 @@ export function openOrchestratorDb(opts: OpenOrchestratorDbOptions = {}): {
         // surface as a hard failure, not a swallowed best-effort warning.
         fs.chmodSync(dir, 0o700);
         const dirMode = fs.statSync(dir).mode & 0o777;
-        if (dirMode !== 0o700) {
+        // POSIX mode bits from stat() are not reliable on Windows NTFS (chmod is
+        // best-effort; reported mode often stays 0o666). Enforce only on Unix.
+        if (process.platform !== 'win32' && dirMode !== 0o700) {
             throw new Error(`orchestrator db parent dir ${dir} has mode 0o${dirMode.toString(8)}, expected 0o700`);
         }
 
@@ -44,7 +46,7 @@ export function openOrchestratorDb(opts: OpenOrchestratorDbOptions = {}): {
             fs.chmodSync(resolved, 0o600);
         }
         const fileMode = fs.statSync(resolved).mode & 0o777;
-        if (fileMode !== 0o600) {
+        if (process.platform !== 'win32' && fileMode !== 0o600) {
             throw new Error(`orchestrator db file ${resolved} has mode 0o${fileMode.toString(8)}, expected 0o600`);
         }
     }
