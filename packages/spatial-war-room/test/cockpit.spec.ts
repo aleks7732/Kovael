@@ -20,13 +20,14 @@ import { fileURLToPath } from 'node:url';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as http from 'node:http';
+import * as net from 'node:net';
 
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
 const WAR_ROOM_DIR = path.resolve(fileURLToPath(new URL('.', import.meta.url)), '..');
 const DIST_DIR    = path.join(WAR_ROOM_DIR, 'dist');
-const PREVIEW_PORT = 15173; // well above ephemeral range, unlikely to conflict
+let previewPort = 0;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -45,7 +46,7 @@ function waitForPort(port: number, timeoutMs = 15_000): Promise<void> {
     const start = Date.now();
     return new Promise((resolve, reject) => {
         const attempt = () => {
-            const req = http.get(`http://localhost:${port}/`, (res) => {
+            const req = http.get(`http://127.0.0.1:${port}/`, (res) => {
                 res.resume();
                 resolve();
             });
@@ -59,6 +60,23 @@ function waitForPort(port: number, timeoutMs = 15_000): Promise<void> {
             req.setTimeout(500, () => { req.destroy(); });
         };
         attempt();
+    });
+}
+
+function getFreePort(): Promise<number> {
+    return new Promise((resolve, reject) => {
+        const server = net.createServer();
+        server.unref();
+        server.on('error', reject);
+        server.listen(0, '127.0.0.1', () => {
+            const address = server.address();
+            if (typeof address === 'object' && address) {
+                const { port } = address;
+                server.close(() => resolve(port));
+            } else {
+                server.close(() => reject(new Error('Unable to allocate preview port')));
+            }
+        });
     });
 }
 
@@ -77,18 +95,18 @@ beforeAll(async () => {
         timeout: 120_000,
     });
 
-    // 2. Start vite preview.
-    // On Windows, .cmd shims (npx.cmd) require shell:true to execute.
-    // DEP0190 warns about shell injection via unsanitised args — all args
-    // here are compile-time constants, so the warning is a false positive.
+    // 2. Start vite preview on a dynamically allocated loopback port.
+    // A fixed smoke-test port can collide with local/CI processes and make the
+    // test fail before the frontend is exercised.
+    previewPort = await getFreePort();
     previewProc = spawn(
         'npx',
-        ['vite', 'preview', '--port', String(PREVIEW_PORT), '--strictPort'],
+        ['vite', 'preview', '--host', '127.0.0.1', '--port', String(previewPort), '--strictPort'],
         { cwd: WAR_ROOM_DIR, stdio: 'pipe', shell: true },
     );
 
     // 3. Wait until preview responds
-    await waitForPort(PREVIEW_PORT, 15_000);
+    await waitForPort(previewPort, 15_000);
 }, 130_000);
 
 afterAll(() => {
@@ -100,7 +118,7 @@ afterAll(() => {
 // ---------------------------------------------------------------------------
 describe('Frontend smoke test', () => {
     it('vite preview serves GET / with HTTP 200', async () => {
-        const { status } = await httpGetRaw(`http://localhost:${PREVIEW_PORT}/`);
+        const { status } = await httpGetRaw(`http://127.0.0.1:${previewPort}/`);
         expect(status).toBe(200);
     });
 
