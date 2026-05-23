@@ -1,5 +1,5 @@
-import { memo, useEffect, useState } from 'react';
-import type { AgentRosterCard, HardwareTelemetry, RateLimitSnapshot } from '../store/useWarRoomStore';
+import { memo, useEffect, useMemo, useState } from 'react';
+import { useWarRoomStore, type AgentRosterCard, type HardwareTelemetry, type InterAgentMessage, type RateLimitSnapshot } from '../store/useWarRoomStore';
 import { AgentAvatarFallback } from './AgentAvatarFallback';
 import { AgentIdentityBadge } from './AgentIdentityBadge';
 
@@ -9,15 +9,7 @@ interface AgentRosterPanelProps {
   rateLimits: Record<string, RateLimitSnapshot>;
   interAgentChatEnabled: boolean;
   interAgentChatMode: 'technical' | 'interests';
-  interAgentMessages: Array<{
-    id: string;
-    timestamp: number;
-    senderId: string;
-    senderName: string;
-    recipientId: string;
-    recipientName: string;
-    content: string;
-  }>;
+  interAgentMessages: InterAgentMessage[];
   onToggleInterAgentChat: (enabled: boolean) => void;
   onChangeInterAgentChatMode: (mode: 'technical' | 'interests') => void;
 }
@@ -34,6 +26,40 @@ const TRUST_LABEL: Record<number, string> = {
   1: 'Tier 1 · Sovereign',
   2: 'Tier 2 · Elevated',
   3: 'Tier 3 · Local',
+};
+
+const MESSAGE_COLORS: Record<string, { dot: string; text: string; bg: string; border: string }> = {
+  'nyx-antigravity': {
+    dot: 'bg-command-accent shadow-[0_0_5px_rgba(193,95,60,0.6)]',
+    text: 'text-command-accent',
+    bg: 'bg-command-accent/5',
+    border: 'border-command-accent/20'
+  },
+  'nyx-cli': {
+    dot: 'bg-cyan-500 shadow-[0_0_5px_rgba(6,182,212,0.6)]',
+    text: 'text-cyan-400',
+    bg: 'bg-cyan-500/5',
+    border: 'border-cyan-500/20'
+  },
+  'nyx-openclaw': {
+    dot: 'bg-purple-500 shadow-[0_0_5px_rgba(168,85,247,0.6)]',
+    text: 'text-purple-400',
+    bg: 'bg-purple-500/5',
+    border: 'border-purple-500/20'
+  },
+  shaev: {
+    dot: 'bg-emerald-500 shadow-[0_0_5px_rgba(16,185,129,0.6)]',
+    text: 'text-emerald-400',
+    bg: 'bg-emerald-500/5',
+    border: 'border-emerald-500/20'
+  }
+};
+
+const FALLBACK_MESSAGE_COLOR = {
+  dot: 'bg-white/40',
+  text: 'text-white/70',
+  bg: 'bg-white/5',
+  border: 'border-white/10'
 };
 
 function formatBeaconAge(ms: number): string {
@@ -90,7 +116,7 @@ const ChairBeaconPill = memo(({ card }: { card: AgentRosterCard }) => {
 });
 ChairBeaconPill.displayName = 'AgentRosterPanel.ChairBeaconPill';
 
-const AgentCard = memo(({ card, rate }: { card: AgentRosterCard; rate?: RateLimitSnapshot }) => {
+const AgentCard = memo(({ card, rate, isSpeaking }: { card: AgentRosterCard; rate?: RateLimitSnapshot; isSpeaking?: boolean }) => {
   const status = STATUS_STYLE[card.status];
   const hasLiveBeacon = card.chair?.presence === 'live';
   const [imgError, setImgError] = useState(false);
@@ -98,9 +124,13 @@ const AgentCard = memo(({ card, rate }: { card: AgentRosterCard; rate?: RateLimi
   return (
   <div 
     className={`glass-panel p-3 transition-all duration-300 relative overflow-hidden ${
-      hasLiveBeacon ? 'ring-1 ring-emerald-500/15' : ''
+      isSpeaking 
+        ? 'ring-2 ring-command-accent bg-command-accent/5 shadow-[0_0_15px_rgba(193,95,60,0.15)]' 
+        : hasLiveBeacon 
+          ? 'ring-1 ring-emerald-500/15' 
+          : ''
     }`}
-    style={card.accent_hex && hasLiveBeacon ? { borderLeft: `3px solid ${card.accent_hex}` } : undefined}
+    style={card.accent_hex && (hasLiveBeacon || isSpeaking) ? { borderLeft: `3px solid ${isSpeaking ? 'var(--accent)' : card.accent_hex}` } : undefined}
   >
     <div className="flex items-start gap-3 mb-2">
       {/* 36x36 Avatar with corner glyphs:
@@ -127,8 +157,11 @@ const AgentCard = memo(({ card, rate }: { card: AgentRosterCard; rate?: RateLimi
 
       <div className="flex-1 min-w-0">
         <div className="flex items-start justify-between gap-2">
-          <div className="font-display font-bold text-[14px] text-command-warm-white leading-none truncate">
+          <div className="font-display font-bold text-[14px] text-command-warm-white leading-none truncate flex items-center gap-1.5">
             {card.name}
+            {isSpeaking && (
+              <span className="w-1.5 h-1.5 rounded-full bg-command-accent animate-pulse shadow-[0_0_4px_rgba(193,95,60,0.8)]" title="Speaking" />
+            )}
           </div>
           <div className="flex items-center gap-1.5 shrink-0">
             <ChairBeaconPill card={card} />
@@ -262,7 +295,29 @@ export const AgentRosterPanel = memo(({
   interAgentMessages,
   onToggleInterAgentChat,
   onChangeInterAgentChatMode,
-}: AgentRosterPanelProps) => (
+}: AgentRosterPanelProps) => {
+  const activeTopicId = useWarRoomStore((s) => s.activeTopicId);
+  const topics = useWarRoomStore((s) => s.topics);
+  const messagesByTopic = useWarRoomStore((s) => s.messagesByTopic);
+
+  const activeSpeakerId = useMemo(() => {
+    const activeTopic = topics.find((t) => t.id === activeTopicId) || null;
+    const messages = activeTopicId ? messagesByTopic[activeTopicId] || [] : [];
+    if (activeTopic?.active && messages.length > 0) {
+      const lastMsg = messages[messages.length - 1];
+      if (lastMsg.role === 'assistant') {
+        return lastMsg.senderId;
+      }
+    }
+    return null;
+  }, [activeTopicId, topics, messagesByTopic]);
+
+  const newestInterAgentMessages = useMemo(
+    () => [...interAgentMessages].reverse(),
+    [interAgentMessages]
+  );
+
+  return (
   <aside className="h-full w-[300px] shrink-0 border-l border-white/5 bg-black/20 backdrop-blur-xl flex flex-col">
     <div className="px-4 py-3 border-b border-white/5 flex items-center justify-between">
       <div>
@@ -299,7 +354,14 @@ export const AgentRosterPanel = memo(({
           NO_AGENTS_REGISTERED
         </div>
       ) : (
-        roster.map((card) => <AgentCard key={card.id} card={card} rate={rateLimits[card.id]} />)
+        roster.map((card) => (
+          <AgentCard 
+            key={card.id} 
+            card={card} 
+            rate={rateLimits[card.id]} 
+            isSpeaking={activeSpeakerId === card.id} 
+          />
+        ))
       )}
       <VramGauge hardware={hardware} />
     </div>
@@ -340,39 +402,8 @@ export const AgentRosterPanel = memo(({
               awaiting dialogue signal…
             </div>
           ) : (
-            [...interAgentMessages].reverse().map((msg) => {
-              const colors: Record<string, { dot: string; text: string; bg: string; border: string }> = {
-                'nyx-antigravity': {
-                  dot: 'bg-command-accent shadow-[0_0_5px_rgba(193,95,60,0.6)]',
-                  text: 'text-command-accent',
-                  bg: 'bg-command-accent/5',
-                  border: 'border-command-accent/20'
-                },
-                'nyx-cli': {
-                  dot: 'bg-cyan-500 shadow-[0_0_5px_rgba(6,182,212,0.6)]',
-                  text: 'text-cyan-400',
-                  bg: 'bg-cyan-500/5',
-                  border: 'border-cyan-500/20'
-                },
-                'nyx-openclaw': {
-                  dot: 'bg-purple-500 shadow-[0_0_5px_rgba(168,85,247,0.6)]',
-                  text: 'text-purple-400',
-                  bg: 'bg-purple-500/5',
-                  border: 'border-purple-500/20'
-                },
-                'shaev': {
-                  dot: 'bg-emerald-500 shadow-[0_0_5px_rgba(16,185,129,0.6)]',
-                  text: 'text-emerald-400',
-                  bg: 'bg-emerald-500/5',
-                  border: 'border-emerald-500/20'
-                }
-              };
-              const c = colors[msg.senderId] || {
-                dot: 'bg-white/40',
-                text: 'text-white/70',
-                bg: 'bg-white/5',
-                border: 'border-white/10'
-              };
+            newestInterAgentMessages.map((msg) => {
+              const c = MESSAGE_COLORS[msg.senderId] ?? FALLBACK_MESSAGE_COLOR;
               const time = new Date(msg.timestamp).toISOString().split('T')[1].split('.')[0];
               return (
                 <div key={msg.id} className={`p-2 rounded-lg border ${c.bg} ${c.border} transition-all duration-300 hover:border-white/10`}>
@@ -394,7 +425,8 @@ export const AgentRosterPanel = memo(({
       </div>
     )}
   </aside>
-));
+  );
+});
 AgentRosterPanel.displayName = 'AgentRosterPanel';
 
 export default AgentRosterPanel;

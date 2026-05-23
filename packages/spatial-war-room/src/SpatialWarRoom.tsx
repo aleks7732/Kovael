@@ -12,6 +12,7 @@ import './index.css';
 import './App.css';
 
 import { useWarRoomStore } from './store/useWarRoomStore.js';
+import { startDemoSimulation, stopDemoSimulation } from './store/demoFixture.js';
 import { AgentHeartbeatNode, TaskClusterNode, ANXBriefingNode } from './components/CustomNodes.js';
 import { TopBar } from './components/TopBar.js';
 import { MissionBriefPanel } from './components/MissionBriefPanel.js';
@@ -111,8 +112,16 @@ const SpatialWarRoom = () => {
   }, []);
 
   useEffect(() => {
+    const isDemoMode = typeof window !== 'undefined' && new URLSearchParams(window.location.search).get('demo') === 'true';
+    if (isDemoMode) {
+      startDemoSimulation();
+      return () => {
+        stopDemoSimulation();
+      };
+    }
+
     let active = true;
-    let reconnectTimeout: any = null;
+    let reconnectTimeout: ReturnType<typeof setTimeout> | null = null;
     let currentWs: WebSocket | null = null;
     // Exponential backoff with full jitter so a fleet of dropped clients
     // doesn't synchronize their reconnect attempts onto the same tick.
@@ -127,12 +136,13 @@ const SpatialWarRoom = () => {
       // Full jitter: pick uniformly from [0, exp). Cheap thundering-herd guard.
       const delay = Math.floor(Math.random() * exp);
       reconnectAttempt += 1;
-      console.log(`WebSocket reconnect attempt ${reconnectAttempt} in ${delay}ms (window ${exp}ms)`);
+      if (import.meta.env.DEV) {
+        console.debug(`WebSocket reconnect attempt ${reconnectAttempt} in ${delay}ms (window ${exp}ms)`);
+      }
       reconnectTimeout = setTimeout(connect, delay);
     };
 
     const connect = () => {
-      console.log('Connecting to WebSocket...');
       const ws = new WebSocket(ORCHESTRATOR_URL);
       currentWs = ws;
       wsRef.current = ws;

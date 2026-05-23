@@ -1,4 +1,7 @@
-export type ComfyAspectRatio = '1:1' | '16:9' | '9:16' | '4:3' | '3:4';
+import { appendFileSync } from 'node:fs';
+import { rootLogger } from './Logger.js';
+
+export type ComfyAspectRatio = '1:1' | '16:9' | '9:16' | '4:3' | '3:4' | 'portrait' | 'landscape' | 'theater-card' | 'flowchart';
 
 export interface HslPalette {
     hue: number;
@@ -18,6 +21,7 @@ export interface RenderPortraitRequest {
     aspectRatio?: ComfyAspectRatio;
     palette?: Partial<HslPalette>;
     loras?: LoraInjection[];
+    traceId?: string;
 }
 
 export interface RenderPortraitResult {
@@ -55,6 +59,18 @@ const ASPECT_DIMENSIONS: Record<ComfyAspectRatio, { width: number; height: numbe
     '9:16': { width: 1024, height: 1792 },
     '4:3': { width: 1365, height: 1024 },
     '3:4': { width: 1024, height: 1365 },
+    'portrait': { width: 1024, height: 1365 },
+    'landscape': { width: 1792, height: 1024 },
+    'theater-card': { width: 1280, height: 720 },
+    'flowchart': { width: 1920, height: 1080 },
+};
+
+// LoRA default recipe library for Kovael & Antigravity agents
+export const LORA_RECIPE_LIBRARY: Record<string, { trigger: string; weight: number }> = {
+    'nyx': { trigger: 'nyx_holyfield, athletic platinum blonde, tactical gear', weight: 1.0 },
+    'alks': { trigger: 'alks_mev_nyx, ice-blue eyes, strategic console', weight: 1.0 },
+    'veyra': { trigger: 'veyra_style, high-contrast dark fantasy cinematic epic', weight: 0.85 },
+    'naethara': { trigger: 'naethara_voice, ethereal cybernetic priestess', weight: 0.9 },
 };
 
 export class ComfyUiBridge {
@@ -74,39 +90,74 @@ export class ComfyUiBridge {
         const palette = normalizePalette(request.palette);
         const workflow = buildWorkflow(request, dimensions, palette);
 
+        let result: RenderPortraitResult;
+
         if (!this.enabled) {
-            return this.fallback(request, dimensions, palette, workflow);
+            result = this.fallback(request, dimensions, palette, workflow);
+        } else {
+            try {
+                const response = await this.fetchImpl(`${this.endpoint}/prompt`, {
+                    method: 'POST',
+                    headers: { 'content-type': 'application/json' },
+                    body: JSON.stringify({ prompt: workflow }),
+                });
+                if (!response.ok) {
+                    result = this.fallback(request, dimensions, palette, workflow, `http_${response.status ?? 'error'}`);
+                } else {
+                    const body = await response.json();
+                    const promptId = readPromptId(body);
+                    result = {
+                        source: 'comfyui',
+                        agentId: request.agentId,
+                        width: dimensions.width,
+                        height: dimensions.height,
+                        mimeType: 'image/png',
+                        promptId,
+                        palette,
+                        workflow,
+                    };
+                }
+            } catch (err) {
+                result = this.fallback(
+                    request,
+                    dimensions,
+                    palette,
+                    workflow,
+                    err instanceof Error ? err.message : String(err),
+                );
+            }
         }
 
+        // Local metadata logging
+        this.logMetadata(request, result, palette);
+
+        return result;
+    }
+
+    private logMetadata(request: RenderPortraitRequest, result: RenderPortraitResult, palette: HslPalette): void {
+        const logEntry = {
+            timestamp: new Date().toISOString(),
+            agentId: request.agentId,
+            prompt: request.prompt,
+            aspectRatio: request.aspectRatio ?? '1:1',
+            width: result.width,
+            height: result.height,
+            palette,
+            loras: request.loras ?? [],
+            source: result.source,
+            traceId: request.traceId || 'n/a',
+            error: result.error,
+        };
+
+        // Emit to structured rootLogger
+        rootLogger.info('comfyui_portrait_rendered', logEntry);
+
+        // Append locally to file
         try {
-            const response = await this.fetchImpl(`${this.endpoint}/prompt`, {
-                method: 'POST',
-                headers: { 'content-type': 'application/json' },
-                body: JSON.stringify({ prompt: workflow }),
-            });
-            if (!response.ok) {
-                return this.fallback(request, dimensions, palette, workflow, `http_${response.status ?? 'error'}`);
-            }
-            const body = await response.json();
-            const promptId = readPromptId(body);
-            return {
-                source: 'comfyui',
-                agentId: request.agentId,
-                width: dimensions.width,
-                height: dimensions.height,
-                mimeType: 'image/png',
-                promptId,
-                palette,
-                workflow,
-            };
-        } catch (err) {
-            return this.fallback(
-                request,
-                dimensions,
-                palette,
-                workflow,
-                err instanceof Error ? err.message : String(err),
-            );
+            const logFile = process.env.KOVAEL_COMFYUI_LOG_FILE || 'comfyui_metadata.log';
+            appendFileSync(logFile, JSON.stringify(logEntry) + '\n', 'utf8');
+        } catch {
+            // Swallow logging file errors to ensure absolute resilience
         }
     }
 
@@ -136,11 +187,18 @@ function buildWorkflow(
     dimensions: { width: number; height: number },
     palette: HslPalette,
 ): Record<string, unknown> {
-    const loras = (request.loras ?? []).map((lora) => ({
-        name: cleanToken(lora.name),
-        trigger: cleanToken(lora.trigger ?? lora.name),
-        weight: clampNumber(lora.weight ?? 1, 0, 2),
-    }));
+    const loras = (request.loras ?? []).map((lora) => {
+        const nameLower = lora.name.toLowerCase();
+        const recipe = LORA_RECIPE_LIBRARY[nameLower];
+        const trigger = lora.trigger ?? recipe?.trigger ?? lora.name;
+        const weight = lora.weight !== undefined ? lora.weight : (recipe?.weight ?? 1.0);
+
+        return {
+            name: cleanToken(lora.name),
+            trigger: cleanToken(trigger),
+            weight: clampNumber(weight, 0, 2),
+        };
+    });
     const loraPrompt = loras.map((lora) => `${lora.trigger}:${lora.weight}`).join(' ');
     const positivePrompt = [request.prompt.trim(), loraPrompt, `hsl(${palette.hue} ${palette.saturation}% ${palette.lightness}%)`]
         .filter((part) => part.length > 0)

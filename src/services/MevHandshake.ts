@@ -4,7 +4,7 @@ import { EventEmitter } from 'events';
 export interface Blueprint {
     id: string;
     schema: string;
-    content: any;
+    content: unknown;
     status: 'pending' | 'validated' | 'rejected';
 }
 

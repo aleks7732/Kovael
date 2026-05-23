@@ -19,7 +19,8 @@
     "build": "tsc",
     "start": "node dist/boot-mesh.js",
     "start:proxy": "node dist/SovereignProxy.js",
-    "test": "vitest run"
+    "test": "vitest run",
+    "showcase": "npm run dev --workspace=packages/spatial-war-room -- --open"
   },
   "repository": {
     "type": "git",

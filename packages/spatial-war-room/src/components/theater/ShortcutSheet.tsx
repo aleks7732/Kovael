@@ -31,20 +31,20 @@ export const ShortcutSheet = memo(({ open, onClose }: ShortcutSheetProps) => {
       <section
         role="dialog"
         aria-modal="true"
-        aria-label="Keyboard"
+        aria-label="Keyboard Shortcuts"
         className="w-[min(520px,calc(100vw-32px))] rounded-lg border border-white/10 bg-zinc-950/95 shadow-2xl"
         onClick={(event) => event.stopPropagation()}
       >
         <header className="flex items-center justify-between border-b border-white/10 px-4 py-3">
           <div className="flex items-center gap-2">
             <Keyboard className="h-4 w-4 text-command-accent" aria-hidden />
-            <h2 className="text-sm font-bold tracking-wide text-command-warm-white">Keyboard</h2>
+            <h2 className="text-sm font-bold tracking-wide text-command-warm-white">Keyboard Shortcuts</h2>
           </div>
           <button
             type="button"
             onClick={onClose}
-            className="inline-flex h-7 w-7 items-center justify-center rounded border border-white/10 text-command-warm-white/70 hover:bg-white/10 hover:text-command-warm-white"
-            aria-label="Close"
+            className="inline-flex h-7 w-7 items-center justify-center rounded border border-white/10 text-command-warm-white/70 hover:bg-white/10 hover:text-command-warm-white focus:outline-none focus-visible:ring-2 focus-visible:ring-command-accent focus-visible:ring-offset-2 focus-visible:ring-offset-zinc-950"
+            aria-label="Close shortcuts"
           >
             <X className="h-4 w-4" aria-hidden />
           </button>

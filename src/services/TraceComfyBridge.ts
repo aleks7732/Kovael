@@ -98,5 +98,7 @@ function escapeHtml(value: string): string {
         .replace(/</g, '&lt;')
         .replace(/>/g, '&gt;')
         .replace(/"/g, '&quot;')
-        .replace(/'/g, '&#39;');
+        .replace(/'/g, '&#39;')
+        .replace(/\//g, '&#x2F;')
+        .replace(/`/g, '&#x60;');
 }

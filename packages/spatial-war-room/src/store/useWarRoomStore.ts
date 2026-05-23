@@ -16,7 +16,7 @@ export interface TelemetryData {
   mem?: number;
   lastSeen?: string;
   label?: string;
-  [key: string]: any;
+  [key: string]: unknown;
 }
 
 export interface HardwareTelemetry {
@@ -35,6 +35,24 @@ export interface Task {
   name: string;
   progress: number;
   subTasks?: Task[];
+}
+
+export interface VerificationReceipt {
+  id: string;
+  status: string;
+  timestamp: string | number;
+}
+
+export interface AgentCardPayload {
+  id: string;
+  name: string;
+  provider: string;
+  description?: string;
+  mcp_capabilities?: string[];
+  vram_requirements?: string;
+  trust_tier?: number;
+  portrait_url?: string;
+  accent_hex?: string;
 }
 
 export interface ANXBriefing {
@@ -186,13 +204,23 @@ export interface RetryEvent {
   receivedAt: number;
 }
 
+export interface InterAgentMessage {
+  id: string;
+  timestamp: number;
+  senderId: string;
+  senderName: string;
+  recipientId: string;
+  recipientName: string;
+  content: string;
+}
+
 export interface WarRoomNodeData extends Record<string, unknown> {
   label: string;
   status?: string;
   telemetry?: TelemetryData;
   tasks?: Task[];
-  receipts?: any[];
-  agentCard?: any;
+  receipts?: VerificationReceipt[];
+  agentCard?: AgentCardPayload;
   anx?: ANXBriefing;
 }
 
@@ -221,15 +249,7 @@ export interface WarRoomState {
   receiptsIssued: number;
   interAgentChatEnabled: boolean;
   interAgentChatMode: 'technical' | 'interests';
-  interAgentMessages: Array<{
-    id: string;
-    timestamp: number;
-    senderId: string;
-    senderName: string;
-    recipientId: string;
-    recipientName: string;
-    content: string;
-  }>;
+  interAgentMessages: InterAgentMessage[];
   activeTopicId: string | null;
   topics: ConversationTopic[];
   messagesByTopic: Record<string, ConversationMessage[]>;
@@ -237,7 +257,7 @@ export interface WarRoomState {
   activeTab: 'canvas' | 'theater';
   setActiveTab: (tab: 'canvas' | 'theater') => void;
   openConversation: (topic: ConversationTopic) => void;
-  applyMessageDelta: (topicId: string, messageId: string, senderId: string, role: 'system' | 'user' | 'assistant', delta: string, isEnd: boolean, usage?: any) => void;
+  applyMessageDelta: (topicId: string, messageId: string, senderId: string, role: 'system' | 'user' | 'assistant', delta: string, isEnd: boolean, usage?: unknown) => void;
   closeConversation: (topicId: string) => void;
   selectTopic: (topicId: string | null) => void;
   recordStoppingCriterion: (topicId: string, agentId: string, reason: string, confidence: number) => void;
@@ -249,9 +269,9 @@ export interface WarRoomState {
   enqueueTelemetry: (id: string, telemetry: TelemetryData) => void;
   enqueueHardware: (metrics: HardwareTelemetry) => void;
   flushPressureValve: () => void;
-  addVerificationReceipt: (nodeId: string, receipt: any) => void;
-  upsertAgentNode: (card: any) => void;
-  addTask: (task: any) => void;
+  addVerificationReceipt: (nodeId: string, receipt: VerificationReceipt) => void;
+  upsertAgentNode: (card: AgentCardPayload) => void;
+  addTask: (task: Partial<Task> & { tasks?: Task[] } & Record<string, unknown>) => void;
   addANXBriefing: (raw: string) => void;
   recordPhaseEvent: (evt: PhaseEvent) => void;
   recordClaimEvent: (evt: ClaimEvent) => void;
@@ -266,7 +286,7 @@ export interface WarRoomState {
   setSelectedCycle: (cycleId: string | null) => void;
   setInterAgentChatEnabled: (enabled: boolean) => void;
   setInterAgentChatMode: (mode: 'technical' | 'interests') => void;
-  addInterAgentMessage: (msg: any) => void;
+  addInterAgentMessage: (msg: InterAgentMessage) => void;
 }
 
 const getInitialTab = (): 'canvas' | 'theater' => {
@@ -422,7 +442,7 @@ export const useWarRoomStore = create<WarRoomState>((set, get) => ({
     });
   },
 
-  addVerificationReceipt: (nodeId: string, receipt: any) => {
+  addVerificationReceipt: (nodeId: string, receipt: VerificationReceipt) => {
     set((state) => ({
       receiptsIssued: state.receiptsIssued + 1,
       nodes: state.nodes.map((node) => {
@@ -440,7 +460,7 @@ export const useWarRoomStore = create<WarRoomState>((set, get) => ({
     }));
   },
 
-  upsertAgentNode: (card: any) => {
+  upsertAgentNode: (card: AgentCardPayload) => {
     set((state) => {
       const rosterCard: AgentRosterCard = {
         id: card.id,
@@ -623,7 +643,7 @@ export const useWarRoomStore = create<WarRoomState>((set, get) => ({
     });
   },
 
-  addTask: (task: any) => {
+  addTask: (task) => {
     const newNode: WarRoomNode = {
       id: task.id || `task-${Date.now()}`,
       type: 'taskCluster',
@@ -664,7 +684,7 @@ export const useWarRoomStore = create<WarRoomState>((set, get) => ({
   setSelectedCycle: (cycleId: string | null) => set({ selectedCycleId: cycleId }),
   setInterAgentChatEnabled: (enabled: boolean) => set({ interAgentChatEnabled: enabled }),
   setInterAgentChatMode: (mode: 'technical' | 'interests') => set({ interAgentChatMode: mode }),
-  addInterAgentMessage: (msg: any) => {
+  addInterAgentMessage: (msg: InterAgentMessage) => {
     set((state) => ({
       interAgentMessages: [...state.interAgentMessages, msg].slice(-50),
     }));

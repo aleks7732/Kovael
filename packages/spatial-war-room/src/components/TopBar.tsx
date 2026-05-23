@@ -1,4 +1,4 @@
-import { memo, useEffect, useState } from 'react';
+import { memo, useEffect, useState, useMemo } from 'react';
 import { MissionConsole } from './MissionConsole';
 import { useWarRoomStore, type TokenTotals } from '../store/useWarRoomStore.js';
 
@@ -47,6 +47,21 @@ export const TopBar = memo(({ meshStatus, connectedClients = 0, receiptsIssued, 
   const [now, setNow] = useState(() => new Date());
   const activeTab = useWarRoomStore((s) => s.activeTab);
   const setActiveTab = useWarRoomStore((s) => s.setActiveTab);
+  const hookEvents = useWarRoomStore((s) => s.hookEvents);
+  const claimStats = useWarRoomStore((s) => s.claimStats);
+  const retryPendingCount = useWarRoomStore((s) => s.retryPendingCount);
+
+  const traceHealth = useMemo(() => {
+    if (hookEvents.length === 0) return 100;
+    const failures = hookEvents.filter(e => !e.success).length;
+    return Math.round(((hookEvents.length - failures) / hookEvents.length) * 100);
+  }, [hookEvents]);
+
+  const queuePressure = useMemo(() => {
+    const running = claimStats.Running ?? 0;
+    const retry = claimStats.RetryQueued ?? 0;
+    return running + retry + retryPendingCount;
+  }, [claimStats, retryPendingCount]);
 
   useEffect(() => {
     const id = setInterval(() => setNow(new Date()), 1000);
@@ -111,6 +126,9 @@ export const TopBar = memo(({ meshStatus, connectedClients = 0, receiptsIssued, 
         <Stat label="Nodes"   value={nodeCount}        hint="ReactFlow nodes rendered in the canvas" />
         <Stat label="Receipts" value={receiptsIssued}  hint="ZTNP verification receipts issued since boot" accent />
         <Stat label="Tokens"  value={formatTokens(tokenTotals.total)} hint="Cumulative input+output tokens across all Triad cycles" />
+        <div className="h-7 w-px bg-white/10" />
+        <Stat label="Trace Health" value={`${traceHealth}%`} hint="OTel Trace execution health (based on hook success rate)" accent={traceHealth < 100} />
+        <Stat label="Queue Pressure" value={queuePressure} hint="Mesh dispatch queue pressure (active dispatches + retries)" accent={queuePressure > 0} />
         <div className="h-7 w-px bg-white/10" />
         <Stat label="UTC"     value={time}             hint="Server time, ISO-8601" />
       </div>
