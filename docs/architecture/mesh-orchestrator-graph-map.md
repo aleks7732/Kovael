@@ -16,23 +16,25 @@ git; use the command above to regenerate it.
 
 ## Graph snapshot
 
-At the 2026-05-24 graph pass:
+At the 2026-05-24 post-router-split graph pass:
 
-- The repository graph contained **1,480 nodes**, **3,998 edges**, and
-  **224 communities**.
+- The repository graph contained **1,558 nodes**, **4,007 edges**, and
+  **229 communities**.
 - By source-file edge count, the largest backend files were
-  `src/services/HttpApiRouter.ts` (**266**),
-  `src/MeshOrchestrator.ts` (**257**),
+  `src/MeshOrchestrator.ts` (**250**),
+  `src/services/PersonaLoader.ts` (**123**),
   `src/MevBridge.ts` (**110**),
+  `src/services/SelfHealer.ts` (**110**),
   `src/services/ConversationBus.ts` (**109**),
   `src/services/Tracing.ts` (**91**), and
-  `src/services/WebSocketBus.ts` (**88**).
-- `MeshOrchestrator` remains the central composition root, but it is no
-  longer the only obvious pressure point. The HTTP router is now the top
-  source-file hub after the routing split.
-- The highest `MeshOrchestrator` symbol degrees were constructor (**46**),
-  file node (**42**), `injectTask` (**37**), class node (**29**), and
-  `wireMevBridge` (**17**).
+  `src/services/WebSocketBus.ts` (**87**).
+- `MeshOrchestrator` is again the central source-file hub. The HTTP API
+  surface is still important, but it is now distributed across a dispatcher,
+  shared support module, and route-specific handlers instead of one large
+  file.
+- The highest `MeshOrchestrator` symbol degrees were constructor (**43**),
+  file node (**42**), class node (**29**), `wireMevBridge` (**17**),
+  `wireWorkflowLoader` (**14**), and `loadAgentCards` (**14**).
 
 This does not mean these files are wrong. It means changes to them have
 unusually high blast radius and should be reviewed with that in mind.
@@ -42,27 +44,48 @@ unusually high blast radius and should be reviewed with that in mind.
 ### HTTP API and request routing
 
 The orchestrator constructs the HTTP server boundary, while
-`HttpApiRouter.ts` now owns request dispatch, CORS preflight, body parsing,
-JSON responses, health/metrics routing, chair APIs, conversations, traces,
-ComfyUI requests, and handshake fallthrough.
+`HttpApiRouter.ts` now owns request dispatch, CORS preflight, health/metrics
+routing, and handshake fallthrough. Shared HTTP mechanics live in
+`src/services/http/HttpApiSupport.ts`, and route behavior lives in focused
+modules for state, chairs, conversations, traces, and ComfyUI requests.
 
 Relevant neighbors in the graph include:
 
 - `HttpApiRouter.ts`
+- `HttpApiSupport.ts`
+- `StateRoutes.ts`
+- `ChairRoutes.ts`
+- `ConversationRoutes.ts`
+- `TraceRoutes.ts`
+- `ComfyRoutes.ts`
 - `HealthEndpoints.ts`
 - `ApiTokenGate.ts`
 - `RateLimiter.ts`
 - `SovereignProxy.ts`
-- `handleStateSnapshot`
-- `handleChairRequest`
-- `handleConversationRequest`
-- `handleTracesRequest`
 
 Review implication: API changes should consider authentication, rate
 limiting, body limits, response shape stability, and frontend consumers
-together. Because `HttpApiRouter.ts` is now the top source-file hub,
-route additions should be split or tested locally rather than packed into
-one large method.
+together. Route additions should stay in the matching route module, with
+shared mechanics kept in `HttpApiSupport.ts` only when multiple routes need
+them.
+
+### HTTP router split delta
+
+Measured against the pre-extraction router state:
+
+- `src/services/HttpApiRouter.ts` dropped from **599** measured lines to
+  **145** measured lines.
+- Its source-file graph edge count dropped from **266** to **59**.
+- The split HTTP route surface now totals **291** source-file edges across
+  `HttpApiRouter.ts`, `HttpApiSupport.ts`, `StateRoutes.ts`,
+  `ComfyRoutes.ts`, `TraceRoutes.ts`, `ChairRoutes.ts`, and
+  `ConversationRoutes.ts`.
+- Each extracted route/support module is below **120** measured lines.
+
+Interpretive note: the total HTTP route edge count is slightly higher than
+the old single-file count because explicit module boundaries and imports are
+now visible to Graphify. That is an acceptable tradeoff: review blast radius
+moved from one router hub to small files with focused route-contract tests.
 
 ### WebSocket lifecycle and event fanout
 
@@ -196,14 +219,16 @@ The graph suggests splitting future work into independent lanes instead of
 re-expanding the orchestrator or growing the router into a second
 composition root.
 
-### Lane 1: API router decomposition
+### Lane 1: Composition-root pressure relief
 
 Candidate changes:
 
-- split chair, conversation, trace, and Comfy handlers into focused modules
-- keep `readJsonBody` and `writeJson` shared and tested
-- preserve `/api/v1/*` response shapes while moving code
-- add route-level tests before moving each handler
+- move narrowly scoped boot wiring out of `MeshOrchestrator.ts` only when a
+  cohesive service boundary already exists
+- keep constructor ordering explicit because it documents dependency setup
+- avoid changing event names, API paths, or persistence semantics in the same
+  slice
+- add focused tests around any extracted lifecycle or wiring behavior
 
 ### Lane 2: WebSocket contract clarity
 
@@ -234,6 +259,6 @@ Candidate changes:
 
 `MeshOrchestrator.ts` is still the project bridge between protocol,
 runtime, persistence, observability, and UI event flow. `HttpApiRouter.ts`
-is now the largest source-file hub and deserves the same caution.
-Future work should either keep changes extremely narrow or extract
-responsibility into services with clear tests and documented contracts.
+has been reduced back to a dispatcher; the next high-value work is to keep
+new API behavior in route modules and make future composition-root changes
+small, tested, and contract-aware.
