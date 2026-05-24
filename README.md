@@ -53,6 +53,10 @@ a React cockpit for live mesh visibility.
 - **Trace and telemetry surfaces** - OpenTelemetry GenAI spans are kept
   in a bounded in-memory ring buffer and can be exported over OTLP when
   `OTEL_EXPORTER_OTLP_ENDPOINT` is set.
+- **Adaptive resource mode** - the server stays in the normal active
+  profile while UI/API/WS traffic or task work is present, then shifts to
+  a lightweight idle profile that pauses hardware polling and trims
+  replay buffers.
 - **ComfyUI bridge** - portrait/render requests can be routed to ComfyUI
   when enabled, with deterministic SVG fallback behavior for local
   development and tests.
@@ -86,6 +90,18 @@ npm run dev --workspace=packages/spatial-war-room
 
 The cockpit development server listens on Vite's default port, normally
 `5173`.
+
+Adaptive resource mode is enabled by default. Chair heartbeat traffic and
+health probes do not keep the server active, so long-lived agents can stay
+claimed without preventing idle trimming. Useful overrides:
+
+| Variable | Default | Purpose |
+|---|---:|---|
+| `KOVAEL_RESOURCE_MODE_ENABLED` | `true` | Set `false` to disable adaptive idle mode |
+| `KOVAEL_RESOURCE_IDLE_AFTER_MS` | `600000` | Quiet window before the server enters idle mode |
+| `KOVAEL_RESOURCE_SWEEP_INTERVAL_MS` | `5000` | How often the idle guard checks for inactivity |
+| `KOVAEL_RESOURCE_IDLE_TASK_RETAIN` | `20` | Task replay entries retained after idle trimming |
+| `KOVAEL_RESOURCE_IDLE_TRACE_RETAIN` | `20` | Trace entries retained after idle trimming |
 
 Claim a chair from another shell:
 
@@ -173,6 +189,8 @@ portraits under [packages/spatial-war-room/public/agents/](./packages/spatial-wa
   SDK, while [TraceRingBuffer](./src/services/TraceRingBuffer.ts) and
   [TraceSanitizers](./src/services/TraceSanitizers.ts) keep trace
   storage bounded and sanitized.
+- [src/services/ResourceGovernor.ts](./src/services/ResourceGovernor.ts)
+  owns active/idle resource transitions for the server.
 - [packages/spatial-war-room/](./packages/spatial-war-room/) is the
   React 19 cockpit: Vite 8, Tailwind 4, xyflow 12, Zustand 5, and
   lucide-react.
@@ -235,7 +253,7 @@ validation pass:
 KOVAEL_VALIDATE_ALL_CHAIRS=true node scripts/validate-pr.mjs
 ```
 
-The repository currently has 49 Vitest files across the orchestrator and
+The repository currently has 52 Vitest files across the orchestrator and
 cockpit, with more than 400 individual `it(...)` cases.
 
 ## Security Posture
