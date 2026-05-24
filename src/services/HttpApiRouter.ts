@@ -1,10 +1,10 @@
 import * as http from 'node:http';
 import type { Socket } from 'node:net';
-import crypto from 'node:crypto';
 import type { OrchestratorContext } from './OrchestratorContext.js';
 import { ChairBridgeProvider } from './ModelProvider.js';
 import type { ComfyAspectRatio, LoraMixerUpdate } from './ComfyUiBridge.js';
 import { sanitizeTraceparent, sanitizeTracestate } from './ConsensusEngine.js';
+import { readJsonBody, writeJson, writeNoContent } from './http/HttpApiSupport.js';
 
 export interface HttpTimeouts {
     headersTimeout: number;
@@ -39,14 +39,7 @@ export class HttpApiRouter {
             const url = req.url ?? '';
             // CORS preflight (H2) must run before auth/rate-limit and route dispatch.
             if (req.method === 'OPTIONS') {
-                res.writeHead(204, {
-                    'Access-Control-Allow-Origin': '*',
-                    'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-                    'Access-Control-Allow-Headers': 'Content-Type, Authorization, traceparent, tracestate',
-                    'Access-Control-Max-Age': '86400',
-                    'Content-Length': '0',
-                });
-                res.end();
+                writeNoContent(res);
                 return;
             }
 
@@ -75,12 +68,12 @@ export class HttpApiRouter {
                 const key = this.context.rateLimiter.clientKey(req);
                 const decision = this.context.rateLimiter.consume(key);
                 if (!decision.allowed) {
-                    res.writeHead(429, {
-                        'Content-Type': 'application/json',
-                        'Cache-Control': 'no-store',
-                        'Retry-After': String(decision.retryAfterS),
-                    });
-                    res.end(JSON.stringify({ error: 'rate_limited', retry_after_s: decision.retryAfterS }));
+                    writeJson(
+                        res,
+                        429,
+                        { error: 'rate_limited', retry_after_s: decision.retryAfterS },
+                        { 'Retry-After': String(decision.retryAfterS) },
+                    );
                     return;
                 }
                 if (!this.context.apiGate.verify(req)) {
@@ -145,83 +138,6 @@ export class HttpApiRouter {
             clearTimeout(timer);
         }
         this.headerDeadlineTimers.clear();
-    }
-
-    /** Shared JSON response writer with standard CORS + cache headers (H1). */
-    private writeJson(res: http.ServerResponse, status: number, body: unknown): void {
-        res.writeHead(status, {
-            'Content-Type': 'application/json',
-            'Cache-Control': 'no-store',
-            'Access-Control-Allow-Origin': '*',
-            'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-            'Access-Control-Allow-Headers': 'Content-Type, Authorization, traceparent, tracestate',
-        });
-        res.end(JSON.stringify(body));
-    }
-
-    /**
-     * Accumulate a JSON POST body with size + time limits.
-     * Fixes C5 (req.destroy with error) and H3 (body timeout).
-     * Returns null if the response was already sent (error path).
-     */
-    private readJsonBody(
-        req: http.IncomingMessage,
-        res: http.ServerResponse,
-        maxBytes: number = 16 * 1024,
-        timeoutMs: number = 15_000,
-    ): Promise<Record<string, unknown> | null> {
-        return new Promise((resolve) => {
-            let received = 0;
-            const chunks: Buffer[] = [];
-            let done = false;
-
-            const finish = () => { done = true; clearTimeout(timer); };
-
-            const timer = setTimeout(() => {
-                if (done) return;
-                finish();
-                this.writeJson(res, 408, { error: 'body_read_timeout' });
-                req.destroy(new Error('body_read_timeout'));
-                resolve(null);
-            }, timeoutMs);
-            timer.unref();
-
-            req.on('data', (chunk: Buffer) => {
-                if (done) return;
-                received += chunk.length;
-                if (received > maxBytes) {
-                    finish();
-                    this.writeJson(res, 413, { error: 'payload_too_large', max_bytes: maxBytes });
-                    req.destroy(new Error('payload_too_large'));
-                    resolve(null);
-                    return;
-                }
-                chunks.push(chunk);
-            });
-
-            req.on('end', () => {
-                if (done) return;
-                finish();
-                const raw = Buffer.concat(chunks).toString('utf8');
-                if (raw.length === 0) {
-                    resolve({});
-                    return;
-                }
-                try {
-                    resolve(JSON.parse(raw) as Record<string, unknown>);
-                } catch {
-                    this.writeJson(res, 400, { error: 'invalid_json' });
-                    resolve(null);
-                }
-            });
-
-            req.on('error', () => {
-                if (done) return;
-                finish();
-                this.writeJson(res, 400, { error: 'request_stream_error' });
-                resolve(null);
-            });
-        });
     }
 
     private armHeaderDeadline(socket: Socket, timeoutMs: number): void {
@@ -293,23 +209,23 @@ export class HttpApiRouter {
         const action = url.pathname.replace(/^\/api\/v1\/chairs\/?/, '') || '';
 
         if (req.method === 'GET' && (action === '' || action === 'snapshot')) {
-            this.writeJson(res, 200, { chairs: this.context.chairs.snapshot(), stats: this.context.chairs.stats() });
+            writeJson(res, 200, { chairs: this.context.chairs.snapshot(), stats: this.context.chairs.stats() });
             return;
         }
 
         if (req.method !== 'POST') {
-            this.writeJson(res, 405, { error: 'method_not_allowed' });
+            writeJson(res, 405, { error: 'method_not_allowed' });
             return;
         }
 
-        const body = await this.readJsonBody(req, res);
+        const body = await readJsonBody(req, res);
         if (body === null) return;
 
         if (action === 'claim') {
             const agentId = typeof body.agentId === 'string' ? (body.agentId as string).trim() : '';
             const provider = typeof body.provider === 'string' ? (body.provider as string).trim() : '';
             if (!agentId || !provider) {
-                this.writeJson(res, 400, { error: 'missing_required_fields', need: ['agentId', 'provider'] });
+                writeJson(res, 400, { error: 'missing_required_fields', need: ['agentId', 'provider'] });
                 return;
             }
             const claim = this.context.chairs.claim({
@@ -323,7 +239,7 @@ export class HttpApiRouter {
                 note: typeof body.note === 'string' ? (body.note as string).slice(0, 200) : undefined,
                 inboxUrl: typeof body.inboxUrl === 'string' ? (body.inboxUrl as string).trim() : undefined,
             });
-            this.writeJson(res, 200, {
+            writeJson(res, 200, {
                 agentId: claim.agentId,
                 sessionId: claim.sessionId,
                 ttlMs: this.context.chairs.config().offlineMs,
@@ -336,7 +252,7 @@ export class HttpApiRouter {
             const agentId = typeof body.agentId === 'string' ? (body.agentId as string).trim() : '';
             const sessionId = typeof body.sessionId === 'string' ? (body.sessionId as string).trim() : '';
             if (!agentId || !sessionId) {
-                this.writeJson(res, 400, { error: 'missing_required_fields', need: ['agentId', 'sessionId'] });
+                writeJson(res, 400, { error: 'missing_required_fields', need: ['agentId', 'sessionId'] });
                 return;
             }
             const claim = this.context.chairs.heartbeat(
@@ -345,10 +261,10 @@ export class HttpApiRouter {
                 typeof body.note === 'string' ? (body.note as string).slice(0, 200) : undefined,
             );
             if (!claim) {
-                this.writeJson(res, 409, { error: 'unknown_or_superseded_session' });
+                writeJson(res, 409, { error: 'unknown_or_superseded_session' });
                 return;
             }
-            this.writeJson(res, 200, { status: claim.status, lastBeaconAt: claim.lastBeaconAt });
+            writeJson(res, 200, { status: claim.status, lastBeaconAt: claim.lastBeaconAt });
             return;
         }
 
@@ -356,11 +272,11 @@ export class HttpApiRouter {
             const agentId = typeof body.agentId === 'string' ? (body.agentId as string).trim() : '';
             const sessionId = typeof body.sessionId === 'string' ? (body.sessionId as string).trim() : '';
             if (!agentId || !sessionId) {
-                this.writeJson(res, 400, { error: 'missing_required_fields', need: ['agentId', 'sessionId'] });
+                writeJson(res, 400, { error: 'missing_required_fields', need: ['agentId', 'sessionId'] });
                 return;
             }
             const ok = this.context.chairs.release(agentId, sessionId, 'client_release');
-            this.writeJson(res, 200, { released: ok });
+            writeJson(res, 200, { released: ok });
             return;
         }
 
@@ -369,15 +285,15 @@ export class HttpApiRouter {
             const agentId = typeof body.agentId === 'string' ? (body.agentId as string).trim() : '';
             const content = typeof body.content === 'string' ? body.content as string : '';
             if (!topicId || !agentId) {
-                this.writeJson(res, 400, { error: 'missing_required_fields', need: ['topicId', 'agentId'] });
+                writeJson(res, 400, { error: 'missing_required_fields', need: ['topicId', 'agentId'] });
                 return;
             }
             const success = ChairBridgeProvider.submitReply(topicId, agentId, content);
-            this.writeJson(res, 200, { success });
+            writeJson(res, 200, { success });
             return;
         }
 
-        this.writeJson(res, 404, { error: 'unknown_chair_action', action });
+        writeJson(res, 404, { error: 'unknown_chair_action', action });
     }
 
     private async handleConversationRequest(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
@@ -395,33 +311,33 @@ export class HttpApiRouter {
             const topicId = historyMatch[1];
             try {
                 const history = this.context.conversationBus.getHistory(topicId);
-                this.writeJson(res, 200, history);
+                writeJson(res, 200, history);
             } catch (err: any) {
-                this.writeJson(res, 500, { error: 'failed_to_get_history', message: err.message });
+                writeJson(res, 500, { error: 'failed_to_get_history', message: err.message });
             }
             return;
         }
 
         if (req.method !== 'POST') {
-            this.writeJson(res, 405, { error: 'method_not_allowed' });
+            writeJson(res, 405, { error: 'method_not_allowed' });
             return;
         }
 
-        const body = await this.readJsonBody(req, res);
+        const body = await readJsonBody(req, res);
         if (body === null) return;
 
         if (topicMatch) {
             const title = typeof body.title === 'string' ? (body.title as string).trim() : '';
             const participants = Array.isArray(body.participants) ? body.participants : [];
             if (!title || participants.length === 0) {
-                this.writeJson(res, 400, { error: 'missing_required_fields', need: ['title', 'participants'] });
+                writeJson(res, 400, { error: 'missing_required_fields', need: ['title', 'participants'] });
                 return;
             }
             try {
                 const topic = this.context.conversationBus.createTopic(title, participants as string[]);
-                this.writeJson(res, 200, topic);
+                writeJson(res, 200, topic);
             } catch (err: any) {
-                this.writeJson(res, 500, { error: 'failed_to_create_topic', message: err.message });
+                writeJson(res, 500, { error: 'failed_to_create_topic', message: err.message });
             }
             return;
         }
@@ -431,7 +347,7 @@ export class HttpApiRouter {
             const senderId = typeof body.senderId === 'string' ? (body.senderId as string).trim() : '';
             const content = typeof body.content === 'string' ? (body.content as string).trim() : '';
             if (!senderId || !content) {
-                this.writeJson(res, 400, { error: 'missing_required_fields', need: ['senderId', 'content'] });
+                writeJson(res, 400, { error: 'missing_required_fields', need: ['senderId', 'content'] });
                 return;
             }
             try {
@@ -442,9 +358,9 @@ export class HttpApiRouter {
                     this.context.log.error('convene_loop_failed', { topicId, error: err.message });
                 });
 
-                this.writeJson(res, 200, msg);
+                writeJson(res, 200, msg);
             } catch (err: any) {
-                this.writeJson(res, 500, { error: 'failed_to_post_message', message: err.message });
+                writeJson(res, 500, { error: 'failed_to_post_message', message: err.message });
             }
             return;
         }
@@ -453,7 +369,7 @@ export class HttpApiRouter {
             const topicId = committeeMatch[1];
             const goal = typeof body.goal === 'string' ? (body.goal as string).trim() : '';
             if (!goal) {
-                this.writeJson(res, 400, { error: 'missing_required_fields', need: ['goal'] });
+                writeJson(res, 400, { error: 'missing_required_fields', need: ['goal'] });
                 return;
             }
             try {
@@ -465,10 +381,10 @@ export class HttpApiRouter {
                     traceparent: sanitizeTraceparent(typeof req.headers.traceparent === 'string' ? req.headers.traceparent : undefined),
                     tracestate: sanitizeTracestate(typeof req.headers.tracestate === 'string' ? req.headers.tracestate : undefined),
                 });
-                this.writeJson(res, 200, verdict);
+                writeJson(res, 200, verdict);
             } catch (err: any) {
                 const code = err?.code === 'committee_topic_not_active' ? 404 : 500;
-                this.writeJson(res, code, {
+                writeJson(res, code, {
                     error: code === 404 ? 'committee_topic_not_active' : 'failed_to_convene_committee',
                 });
             }
@@ -479,25 +395,25 @@ export class HttpApiRouter {
             const topicId = closeMatch[1];
             try {
                 this.context.conversationBus.closeTopic(topicId);
-                this.writeJson(res, 200, { success: true });
+                writeJson(res, 200, { success: true });
             } catch (err: any) {
-                this.writeJson(res, 500, { error: 'failed_to_close_topic', message: err.message });
+                writeJson(res, 500, { error: 'failed_to_close_topic', message: err.message });
             }
             return;
         }
 
-        this.writeJson(res, 404, { error: 'unknown_conversation_action' });
+        writeJson(res, 404, { error: 'unknown_conversation_action' });
     }
 
     private async handleTracesRequest(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
         const url = new URL(req.url || '/', `http://${req.headers.host}`);
         if (req.method === 'POST' && url.pathname === '/api/v1/traces/reroute') {
-            const body = await this.readJsonBody(req, res, 8 * 1024);
+            const body = await readJsonBody(req, res, 8 * 1024);
             if (body === null) return;
             const source = safeNodeId(body.source);
             const target = safeNodeId(body.target);
             if (!source || !target) {
-                this.writeJson(res, 400, { error: 'missing_required_fields', need: ['source', 'target'] });
+                writeJson(res, 400, { error: 'missing_required_fields', need: ['source', 'target'] });
                 return;
             }
             const event = {
@@ -509,12 +425,12 @@ export class HttpApiRouter {
                 requestedAt: Date.now(),
             };
             this.context.broadcast(event);
-            this.writeJson(res, 200, event);
+            writeJson(res, 200, event);
             return;
         }
 
         if (req.method !== 'GET') {
-            this.writeJson(res, 405, { error: 'method_not_allowed' });
+            writeJson(res, 405, { error: 'method_not_allowed' });
             return;
         }
 
@@ -523,10 +439,10 @@ export class HttpApiRouter {
             const cycleId = detailMatch[1];
             const trace = this.context.tracing?.ring?.get(cycleId);
             if (!trace) {
-                this.writeJson(res, 404, { error: 'trace_not_found', cycleId });
+                writeJson(res, 404, { error: 'trace_not_found', cycleId });
                 return;
             }
-            this.writeJson(res, 200, trace);
+            writeJson(res, 200, trace);
             return;
         }
 
@@ -540,26 +456,26 @@ export class HttpApiRouter {
             durationMs: t.endedAt - t.startedAt,
             spanCount: t.spans.length,
         }));
-        this.writeJson(res, 200, { items, stats: this.context.tracing?.ring?.stats() ?? null });
+        writeJson(res, 200, { items, stats: this.context.tracing?.ring?.stats() ?? null });
     }
 
     private async handleComfyRequest(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
         if (req.method !== 'POST') {
-            this.writeJson(res, 405, { error: 'method_not_allowed' });
+            writeJson(res, 405, { error: 'method_not_allowed' });
             return;
         }
 
         const url = new URL(req.url || '/', `http://${req.headers.host}`);
         const action = url.pathname.replace(/^\/api\/v1\/comfy\/?/, '') || '';
 
-        const body = await this.readJsonBody(req, res);
+        const body = await readJsonBody(req, res);
         if (body === null) return;
 
         if (action === 'render' || action === 'mix') {
             const agentId = typeof body.agentId === 'string' ? (body.agentId as string).trim() : '';
             const prompt = typeof body.prompt === 'string' ? (body.prompt as string).trim() : '';
             if (!agentId || !prompt) {
-                this.writeJson(res, 400, { error: 'missing_required_fields', need: ['agentId', 'prompt'] });
+                writeJson(res, 400, { error: 'missing_required_fields', need: ['agentId', 'prompt'] });
                 return;
             }
             try {
@@ -579,7 +495,7 @@ export class HttpApiRouter {
                           traceId: typeof body.traceId === 'string' ? body.traceId : undefined,
                        });
                 const stream = result.promptId ? this.context.comfyBridge.streamDescriptor(result.promptId) : undefined;
-                this.writeJson(res, 200, {
+                writeJson(res, 200, {
                     source: result.source,
                     agentId: result.agentId,
                     width: result.width,
@@ -592,7 +508,7 @@ export class HttpApiRouter {
                     stream,
                 });
             } catch (err) {
-                this.writeJson(res, 500, { error: 'comfy_render_failed', message: err instanceof Error ? err.message : String(err) });
+                writeJson(res, 500, { error: 'comfy_render_failed', message: err instanceof Error ? err.message : String(err) });
             }
             return;
         }
@@ -600,14 +516,14 @@ export class HttpApiRouter {
         if (action === 'stream-url') {
             const promptId = typeof body.promptId === 'string' ? (body.promptId as string).trim() : '';
             if (!promptId) {
-                this.writeJson(res, 400, { error: 'missing_required_fields', need: ['promptId'] });
+                writeJson(res, 400, { error: 'missing_required_fields', need: ['promptId'] });
                 return;
             }
-            this.writeJson(res, 200, this.context.comfyBridge.streamDescriptor(promptId, typeof body.clientId === 'string' ? body.clientId : undefined));
+            writeJson(res, 200, this.context.comfyBridge.streamDescriptor(promptId, typeof body.clientId === 'string' ? body.clientId : undefined));
             return;
         }
 
-        this.writeJson(res, 404, { error: 'unknown_comfy_action', action });
+        writeJson(res, 404, { error: 'unknown_comfy_action', action });
     }
 }
 
