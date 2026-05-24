@@ -1,5 +1,6 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import { Logger, rootLogger } from './Logger.js';
 
 export interface WorkspaceConfig {
     /** Absolute path to the root that holds per-cycle directories. */
@@ -38,6 +39,7 @@ const SAFE_ID = /^[a-zA-Z0-9._-]+$/;
  * state across attempts.
  */
 export class WorkspaceManager {
+    private readonly log: Logger = rootLogger;
     private readonly cfg: WorkspaceConfig;
     private readonly active: Map<string, string> = new Map(); // cycleId → absolutePath
 
@@ -104,7 +106,7 @@ export class WorkspaceManager {
             try {
                 fs.rmSync(wsPath, { recursive: true, force: true });
             } catch (err) {
-                console.warn(`[WorkspaceManager] cleanup failed for ${cycleId}: ${(err as Error).message}`);
+                this.log.warn('cleanup_failed', { cycleId, error: (err as Error).message });
             }
         }
     }

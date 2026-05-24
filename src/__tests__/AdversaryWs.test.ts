@@ -176,3 +176,55 @@ describe('Adversary WebSocket Security Lab', () => {
         });
     });
 });
+
+describe('WebSocketBus — telemetry hardening', () => {
+    let orchestrator: MeshOrchestrator;
+    let port = 0;
+
+    beforeAll(async () => {
+        orchestrator = new MeshOrchestrator(0, { dbPath: ':memory:' });
+        port = await orchestrator.ready();
+    });
+
+    afterAll(() => {
+        orchestrator.close();
+    });
+
+    it('payload cannot override nodeId or type fields', async () => {
+        const ws = new WebSocket(`ws://127.0.0.1:${port}/?nodeId=legit-node`);
+
+        const broadcast = await new Promise<Record<string, unknown>>((resolve, reject) => {
+            const timer = setTimeout(() => {
+                ws.close();
+                reject(new Error('timed out waiting for telemetry broadcast'));
+            }, 2000);
+
+            ws.on('open', () => {
+                ws.send(JSON.stringify({
+                    type: 'verification_receipt',
+                    nodeId: 'spoofed',
+                    payload: {
+                        type: 'verification_receipt',
+                        nodeId: 'nested-spoofed',
+                    },
+                }));
+            });
+
+            ws.on('message', (data) => {
+                const message = JSON.parse(data.toString()) as Record<string, unknown>;
+                if (message.type !== 'telemetry') return;
+                clearTimeout(timer);
+                ws.close();
+                resolve(message);
+            });
+
+            ws.on('error', (err) => {
+                clearTimeout(timer);
+                reject(err);
+            });
+        });
+
+        expect(broadcast.type).toBe('telemetry');
+        expect(broadcast.nodeId).toBe('legit-node');
+    });
+});

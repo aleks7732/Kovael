@@ -1,6 +1,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { EventEmitter } from 'node:events';
+import { Logger, rootLogger } from './Logger.js';
 
 export interface PersonaVoice {
     pronouns: string;
@@ -39,6 +40,7 @@ export interface PersonaDocument {
 const FRONT_MATTER_RE = /^---\s*\n([\s\S]*?)\n---\s*\n([\s\S]*)$/;
 
 export class PersonaLoader extends EventEmitter {
+    private readonly log: Logger = rootLogger;
     private cache: Map<string, PersonaDocument> = new Map();
     private directoryPath: string;
     private watcher: fs.FSWatcher | null = null;
@@ -111,7 +113,7 @@ ${doc.lore}`;
                 }
             }
         } catch (err) {
-            console.error(`[PersonaLoader] loadAll failed: ${(err as Error).message}`);
+            this.log.error('load_all_failed', { error: (err as Error).message });
         }
     }
 
@@ -134,7 +136,7 @@ ${doc.lore}`;
             this.emit('persona_loaded', { agentId: front.agent_id, document: doc });
         } catch (err) {
             const msg = (err as Error).message;
-            console.warn(`[PersonaLoader] Failed to load ${path.basename(filePath)}: ${msg}`);
+            this.log.warn('file_load_failed', { file: path.basename(filePath), error: msg });
             this.emit('persona_error', { filePath, error: msg });
         }
     }
@@ -166,7 +168,7 @@ ${doc.lore}`;
                 }
             });
         } catch (err) {
-            console.warn(`[PersonaLoader] Hot reload watching disabled: ${(err as Error).message}`);
+            this.log.warn('hot_reload_disabled', { error: (err as Error).message });
         }
     }
 

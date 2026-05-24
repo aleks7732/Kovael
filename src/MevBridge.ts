@@ -5,6 +5,7 @@ import { TriadStateMachine, TriadPhase, PhaseEvent } from './protocols/TriadStat
 import type { RateLimitTracker } from './services/RateLimitTracker.js';
 import type { PersonaLoader } from './services/PersonaLoader.js';
 import type { TracingBridge } from './services/Tracing.js';
+import { Logger, rootLogger } from './services/Logger.js';
 
 /**
  * Token accounting per Symphony §13 — every receipt carries the cycle's
@@ -65,12 +66,20 @@ const NYX_CLI_AGENT = 'nyx-cli';
  * rationale. Hardware-gated: heavy architectural work is routed to Shaev only
  * when VRAM headroom is verified; otherwise the request falls back to a
  * lighter agent so the mesh never OOMs at high concurrency.
+ *
+ * Post-construction setters are intentional boot seams. MeshOrchestrator
+ * constructs MevBridge before persona loading, tracing, rate-limit tracking,
+ * hardware telemetry, and workflow config are all ready, then wires those
+ * collaborators during the composition-root boot sequence.
+ *
+ * @see MeshOrchestrator constructor for the boot sequence.
  */
 export class MevBridge extends EventEmitter {
     private db: DatabaseSync;
     private vramFreeMb: number = 0;
     private vramKnown: boolean = false;
     private rateLimits: RateLimitTracker | null = null;
+    private readonly log: Logger = rootLogger;
     private vramFloorMb: number = 8192;
     private primaryArchitect: string = SHAEV_AGENT;
     private fallbackAgent: string = NYX_CLI_AGENT;
@@ -337,13 +346,13 @@ export class MevBridge extends EventEmitter {
                 } catch { /* swallow */ }
             }
             cycleSpan?.end('error', (error as Error).message);
-            console.error('[MevBridge] Loop failure:', error);
+            this.log.error('mev_loop_failure', { error: error instanceof Error ? error.message : String(error) });
             throw error;
         }
     }
 
     private async architect(task: string, context: any[], routedAgent: string) {
-        console.log(`[Architect:${routedAgent}] Designing strategy for: ${task}`);
+        this.log.info('architect_phase', { agent: routedAgent, task_preview: task.slice(0, 80) });
         return {
             taskId: crypto.randomUUID(),
             intent: task,
@@ -354,7 +363,7 @@ export class MevBridge extends EventEmitter {
     }
 
     private async operator(blueprint: any) {
-        console.log(`[Operator] Executing blueprint: ${blueprint.taskId}`);
+        this.log.info('operator_phase', { task_id: blueprint.taskId });
         return {
             status: 'success',
             payload: 'Operation payload generated',
@@ -363,7 +372,7 @@ export class MevBridge extends EventEmitter {
     }
 
     private async verifier(blueprint: any, result: any) {
-        console.log(`[Verifier] Verifying execution of: ${blueprint.taskId}`);
+        this.log.info('verifier_phase', { task_id: blueprint.taskId });
         const isValid = result.exitCode === 0 && result.status === 'success';
         return {
             success: isValid,

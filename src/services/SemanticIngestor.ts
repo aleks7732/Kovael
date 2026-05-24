@@ -1,12 +1,15 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { DatabaseSync } from 'node:sqlite';
+import { Logger, rootLogger } from './Logger.js';
 
 /**
  * SemanticIngestor: Recursive crawler for indexing project knowledge.
  * Reads .md, .json, and .ts files into the orchestrator's memory.
  */
 export class SemanticIngestor {
+    private readonly log: Logger = rootLogger;
+
     constructor(private db: DatabaseSync) {
         this.initializeTable();
     }
@@ -28,13 +31,13 @@ export class SemanticIngestor {
      */
     public async ingest(rootPath: string) {
         const sanitizedRoot = this.sanitizePath(rootPath);
-        console.log(`[SemanticIngestor] Starting ingest from: ${sanitizedRoot}`);
+        this.log.info('ingest_started', { root: sanitizedRoot });
         
         try {
             this.crawl(rootPath);
-            console.log(`[SemanticIngestor] Ingest complete.`);
+            this.log.info('ingest_complete');
         } catch (error: any) {
-            console.error(`[SemanticIngestor] Ingest failed: ${error.message}`);
+            this.log.error('ingest_failed', { error: error.message });
         }
     }
 
@@ -80,10 +83,10 @@ export class SemanticIngestor {
             `);
             
             stmt.run(sanitizedPath, content, ext, Date.now());
-            console.log(`[SemanticIngestor] Indexed: ${sanitizedPath}`);
+            this.log.info('file_indexed', { path: sanitizedPath });
         } catch (error: any) {
             // Silently fail for individual files to keep the crawl moving, but log sanitized error
-            console.error(`[SemanticIngestor] Failed to index ${this.sanitizePath(filePath)}: ${error.message}`);
+            this.log.error('file_index_failed', { path: this.sanitizePath(filePath), error: error.message });
         }
     }
 

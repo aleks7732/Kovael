@@ -37,6 +37,19 @@ export class HttpApiRouter {
             });
 
             const url = req.url ?? '';
+            // CORS preflight (H2) must run before auth/rate-limit and route dispatch.
+            if (req.method === 'OPTIONS') {
+                res.writeHead(204, {
+                    'Access-Control-Allow-Origin': '*',
+                    'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+                    'Access-Control-Allow-Headers': 'Content-Type, Authorization, traceparent, tracestate',
+                    'Access-Control-Max-Age': '86400',
+                    'Content-Length': '0',
+                });
+                res.end();
+                return;
+            }
+
             // Probe endpoints are always ungated so kubelet can call them.
             if (url === '/livez') {
                 this.context.health.livez(res);
@@ -97,6 +110,7 @@ export class HttpApiRouter {
                 this.handleComfyRequest(req, res);
                 return;
             }
+
             this.context.handshake.handleRequest(req, res);
         });
 
@@ -133,6 +147,83 @@ export class HttpApiRouter {
         this.headerDeadlineTimers.clear();
     }
 
+    /** Shared JSON response writer with standard CORS + cache headers (H1). */
+    private writeJson(res: http.ServerResponse, status: number, body: unknown): void {
+        res.writeHead(status, {
+            'Content-Type': 'application/json',
+            'Cache-Control': 'no-store',
+            'Access-Control-Allow-Origin': '*',
+            'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+            'Access-Control-Allow-Headers': 'Content-Type, Authorization, traceparent, tracestate',
+        });
+        res.end(JSON.stringify(body));
+    }
+
+    /**
+     * Accumulate a JSON POST body with size + time limits.
+     * Fixes C5 (req.destroy with error) and H3 (body timeout).
+     * Returns null if the response was already sent (error path).
+     */
+    private readJsonBody(
+        req: http.IncomingMessage,
+        res: http.ServerResponse,
+        maxBytes: number = 16 * 1024,
+        timeoutMs: number = 15_000,
+    ): Promise<Record<string, unknown> | null> {
+        return new Promise((resolve) => {
+            let received = 0;
+            const chunks: Buffer[] = [];
+            let done = false;
+
+            const finish = () => { done = true; clearTimeout(timer); };
+
+            const timer = setTimeout(() => {
+                if (done) return;
+                finish();
+                this.writeJson(res, 408, { error: 'body_read_timeout' });
+                req.destroy(new Error('body_read_timeout'));
+                resolve(null);
+            }, timeoutMs);
+            timer.unref();
+
+            req.on('data', (chunk: Buffer) => {
+                if (done) return;
+                received += chunk.length;
+                if (received > maxBytes) {
+                    finish();
+                    this.writeJson(res, 413, { error: 'payload_too_large', max_bytes: maxBytes });
+                    req.destroy(new Error('payload_too_large'));
+                    resolve(null);
+                    return;
+                }
+                chunks.push(chunk);
+            });
+
+            req.on('end', () => {
+                if (done) return;
+                finish();
+                const raw = Buffer.concat(chunks).toString('utf8');
+                if (raw.length === 0) {
+                    resolve({});
+                    return;
+                }
+                try {
+                    resolve(JSON.parse(raw) as Record<string, unknown>);
+                } catch {
+                    this.writeJson(res, 400, { error: 'invalid_json' });
+                    resolve(null);
+                }
+            });
+
+            req.on('error', () => {
+                if (done) return;
+                finish();
+                this.writeJson(res, 400, { error: 'request_stream_error' });
+                resolve(null);
+            });
+        });
+    }
+
     private armHeaderDeadline(socket: Socket, timeoutMs: number): void {
         this.disarmHeaderDeadline(socket);
         const timer = setTimeout(() => {
@@ -154,7 +245,7 @@ export class HttpApiRouter {
         const snapshot = {
             timestamp: Date.now(),
             agentCards: this.context.agentCards.length,
-            connectedClients: (this.context as any).wss?.clients?.size ?? 0,
+            connectedClients: this.context.wss?.clients?.size ?? 0,
             nodes: this.context.nodeCache.size,
             tasksTotal: this.context.taskCache.length,
             receiptsIssued: this.context.receiptsIssued,
@@ -165,23 +256,23 @@ export class HttpApiRouter {
                 pending: this.context.claims.snapshot().slice(-20),
             },
             retryQueue: {
-                pendingCount: (this.context as any).retryQueue?.pendingCount() ?? 0,
-                pending: (this.context as any).retryQueue?.snapshot() ?? [],
+                pendingCount: this.context.retryQueue?.pendingCount() ?? 0,
+                pending: this.context.retryQueue?.snapshot() ?? [],
             },
-            reconciler: (this.context as any).reconciler?.stats() ?? null,
+            reconciler: this.context.reconciler?.stats() ?? null,
             workspaces: {
-                root: (this.context as any).workspaces?.root() ?? '',
-                active: (this.context as any).workspaces?.activeCount() ?? 0,
+                root: this.context.workspaces?.root() ?? '',
+                active: this.context.workspaces?.activeCount() ?? 0,
             },
-            hooks: (this.context as any).hooks?.stats() ?? null,
+            hooks: this.context.hooks?.stats() ?? null,
             workflow: {
-                loaded: !!(this.context as any).workflowLoader?.document(),
-                lastError: (this.context as any).workflowLoader?.lastErrorMessage() ?? null,
-                version: (this.context as any).workflowLoader?.document()?.frontMatter?.version ?? null,
-                loadedAt: (this.context as any).workflowLoader?.document()?.loadedAt ?? null,
+                loaded: !!this.context.workflowLoader?.document(),
+                lastError: this.context.workflowLoader?.lastErrorMessage() ?? null,
+                version: this.context.workflowLoader?.document()?.frontMatter?.version ?? null,
+                loadedAt: this.context.workflowLoader?.document()?.loadedAt ?? null,
             },
             tokens: { ...this.context.tokenTotals },
-            rateLimits: (this.context as any).rateLimits?.allSnapshots() ?? [],
+            rateLimits: this.context.rateLimits?.allSnapshots() ?? [],
             chairs: {
                 stats: this.context.chairs.stats(),
                 roster: this.context.chairs.snapshot(),
@@ -197,145 +288,99 @@ export class HttpApiRouter {
         res.end(JSON.stringify(snapshot));
     }
 
-    private handleChairRequest(req: http.IncomingMessage, res: http.ServerResponse): void {
-        const writeJson = (status: number, body: Record<string, unknown>): void => {
-            res.writeHead(status, {
-                'Content-Type': 'application/json',
-                'Cache-Control': 'no-store',
-                'Access-Control-Allow-Origin': '*',
-            });
-            res.end(JSON.stringify(body));
-        };
+    private async handleChairRequest(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
         const url = new URL(req.url || '/', `http://${req.headers.host}`);
         const action = url.pathname.replace(/^\/api\/v1\/chairs\/?/, '') || '';
 
         if (req.method === 'GET' && (action === '' || action === 'snapshot')) {
-            writeJson(200, { chairs: this.context.chairs.snapshot(), stats: this.context.chairs.stats() });
+            this.writeJson(res, 200, { chairs: this.context.chairs.snapshot(), stats: this.context.chairs.stats() });
             return;
         }
 
         if (req.method !== 'POST') {
-            writeJson(405, { error: 'method_not_allowed' });
+            this.writeJson(res, 405, { error: 'method_not_allowed' });
             return;
         }
 
-        const MAX_BODY = 16 * 1024;
-        let received = 0;
-        const chunks: Buffer[] = [];
-        let aborted = false;
-        req.on('data', (chunk: Buffer) => {
-            if (aborted) return;
-            received += chunk.length;
-            if (received > MAX_BODY) {
-                aborted = true;
-                writeJson(413, { error: 'payload_too_large', max_bytes: MAX_BODY });
-                req.destroy();
+        const body = await this.readJsonBody(req, res);
+        if (body === null) return;
+
+        if (action === 'claim') {
+            const agentId = typeof body.agentId === 'string' ? (body.agentId as string).trim() : '';
+            const provider = typeof body.provider === 'string' ? (body.provider as string).trim() : '';
+            if (!agentId || !provider) {
+                this.writeJson(res, 400, { error: 'missing_required_fields', need: ['agentId', 'provider'] });
                 return;
             }
-            chunks.push(chunk);
-        });
-        req.on('end', () => {
-            if (aborted) return;
-            let body: any = {};
-            const raw = Buffer.concat(chunks).toString('utf8');
-            if (raw.length > 0) {
-                try {
-                    body = JSON.parse(raw);
-                } catch {
-                    writeJson(400, { error: 'invalid_json' });
-                    return;
-                }
-            }
+            const claim = this.context.chairs.claim({
+                agentId,
+                provider,
+                capabilities: Array.isArray(body.capabilities)
+                    ? (body.capabilities as unknown[]).filter((c: unknown) => typeof c === 'string').slice(0, 32) as string[]
+                    : [],
+                trustTier: typeof body.trustTier === 'number' ? body.trustTier : undefined,
+                host: typeof body.host === 'string' ? body.host : undefined,
+                note: typeof body.note === 'string' ? (body.note as string).slice(0, 200) : undefined,
+                inboxUrl: typeof body.inboxUrl === 'string' ? (body.inboxUrl as string).trim() : undefined,
+            });
+            this.writeJson(res, 200, {
+                agentId: claim.agentId,
+                sessionId: claim.sessionId,
+                ttlMs: this.context.chairs.config().offlineMs,
+                heartbeatIntervalMs: Math.floor(this.context.chairs.config().healthyMs / 2),
+            });
+            return;
+        }
 
-            if (action === 'claim') {
-                const agentId = typeof body.agentId === 'string' ? body.agentId.trim() : '';
-                const provider = typeof body.provider === 'string' ? body.provider.trim() : '';
-                if (!agentId || !provider) {
-                    writeJson(400, { error: 'missing_required_fields', need: ['agentId', 'provider'] });
-                    return;
-                }
-                const claim = this.context.chairs.claim({
-                    agentId,
-                    provider,
-                    capabilities: Array.isArray(body.capabilities)
-                        ? body.capabilities.filter((c: unknown) => typeof c === 'string').slice(0, 32)
-                        : [],
-                    trustTier: typeof body.trustTier === 'number' ? body.trustTier : undefined,
-                    host: typeof body.host === 'string' ? body.host : undefined,
-                    note: typeof body.note === 'string' ? body.note.slice(0, 200) : undefined,
-                    inboxUrl: typeof body.inboxUrl === 'string' ? body.inboxUrl.trim() : undefined,
-                });
-                writeJson(200, {
-                    agentId: claim.agentId,
-                    sessionId: claim.sessionId,
-                    ttlMs: this.context.chairs.config().offlineMs,
-                    heartbeatIntervalMs: Math.floor(this.context.chairs.config().healthyMs / 2),
-                });
+        if (action === 'heartbeat') {
+            const agentId = typeof body.agentId === 'string' ? (body.agentId as string).trim() : '';
+            const sessionId = typeof body.sessionId === 'string' ? (body.sessionId as string).trim() : '';
+            if (!agentId || !sessionId) {
+                this.writeJson(res, 400, { error: 'missing_required_fields', need: ['agentId', 'sessionId'] });
                 return;
             }
-
-            if (action === 'heartbeat') {
-                const agentId = typeof body.agentId === 'string' ? body.agentId.trim() : '';
-                const sessionId = typeof body.sessionId === 'string' ? body.sessionId.trim() : '';
-                if (!agentId || !sessionId) {
-                    writeJson(400, { error: 'missing_required_fields', need: ['agentId', 'sessionId'] });
-                    return;
-                }
-                const claim = this.context.chairs.heartbeat(
-                    agentId,
-                    sessionId,
-                    typeof body.note === 'string' ? body.note.slice(0, 200) : undefined,
-                );
-                if (!claim) {
-                    writeJson(409, { error: 'unknown_or_superseded_session' });
-                    return;
-                }
-                writeJson(200, { status: claim.status, lastBeaconAt: claim.lastBeaconAt });
+            const claim = this.context.chairs.heartbeat(
+                agentId,
+                sessionId,
+                typeof body.note === 'string' ? (body.note as string).slice(0, 200) : undefined,
+            );
+            if (!claim) {
+                this.writeJson(res, 409, { error: 'unknown_or_superseded_session' });
                 return;
             }
+            this.writeJson(res, 200, { status: claim.status, lastBeaconAt: claim.lastBeaconAt });
+            return;
+        }
 
-            if (action === 'release') {
-                const agentId = typeof body.agentId === 'string' ? body.agentId.trim() : '';
-                const sessionId = typeof body.sessionId === 'string' ? body.sessionId.trim() : '';
-                if (!agentId || !sessionId) {
-                    writeJson(400, { error: 'missing_required_fields', need: ['agentId', 'sessionId'] });
-                    return;
-                }
-                const ok = this.context.chairs.release(agentId, sessionId, 'client_release');
-                writeJson(200, { released: ok });
+        if (action === 'release') {
+            const agentId = typeof body.agentId === 'string' ? (body.agentId as string).trim() : '';
+            const sessionId = typeof body.sessionId === 'string' ? (body.sessionId as string).trim() : '';
+            if (!agentId || !sessionId) {
+                this.writeJson(res, 400, { error: 'missing_required_fields', need: ['agentId', 'sessionId'] });
                 return;
             }
+            const ok = this.context.chairs.release(agentId, sessionId, 'client_release');
+            this.writeJson(res, 200, { released: ok });
+            return;
+        }
 
-            if (action === 'reply') {
-                const topicId = typeof body.topicId === 'string' ? body.topicId.trim() : '';
-                const agentId = typeof body.agentId === 'string' ? body.agentId.trim() : '';
-                const content = typeof body.content === 'string' ? body.content : '';
-                if (!topicId || !agentId) {
-                    writeJson(400, { error: 'missing_required_fields', need: ['topicId', 'agentId'] });
-                    return;
-                }
-                const success = ChairBridgeProvider.submitReply(topicId, agentId, content);
-                writeJson(200, { success });
+        if (action === 'reply') {
+            const topicId = typeof body.topicId === 'string' ? (body.topicId as string).trim() : '';
+            const agentId = typeof body.agentId === 'string' ? (body.agentId as string).trim() : '';
+            const content = typeof body.content === 'string' ? body.content as string : '';
+            if (!topicId || !agentId) {
+                this.writeJson(res, 400, { error: 'missing_required_fields', need: ['topicId', 'agentId'] });
                 return;
             }
+            const success = ChairBridgeProvider.submitReply(topicId, agentId, content);
+            this.writeJson(res, 200, { success });
+            return;
+        }
 
-            writeJson(404, { error: 'unknown_chair_action', action });
-        });
-        req.on('error', () => {
-            if (!aborted) writeJson(400, { error: 'request_stream_error' });
-        });
+        this.writeJson(res, 404, { error: 'unknown_chair_action', action });
     }
 
-    private handleConversationRequest(req: http.IncomingMessage, res: http.ServerResponse): void {
-        const writeJson = (status: number, body: Record<string, unknown> | Array<unknown>): void => {
-            res.writeHead(status, {
-                'Content-Type': 'application/json',
-                'Cache-Control': 'no-store',
-                'Access-Control-Allow-Origin': '*',
-            });
-            res.end(JSON.stringify(body));
-        };
-
+    private async handleConversationRequest(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
         const url = new URL(req.url || '/', `http://${req.headers.host}`);
         const pathname = url.pathname;
 
@@ -350,217 +395,144 @@ export class HttpApiRouter {
             const topicId = historyMatch[1];
             try {
                 const history = this.context.conversationBus.getHistory(topicId);
-                writeJson(200, history as any);
+                this.writeJson(res, 200, history);
             } catch (err: any) {
-                writeJson(500, { error: 'failed_to_get_history', message: err.message });
+                this.writeJson(res, 500, { error: 'failed_to_get_history', message: err.message });
             }
             return;
         }
 
         if (req.method !== 'POST') {
-            writeJson(405, { error: 'method_not_allowed' });
+            this.writeJson(res, 405, { error: 'method_not_allowed' });
             return;
         }
 
-        const MAX_BODY = 16 * 1024;
-        let received = 0;
-        const chunks: Buffer[] = [];
-        let aborted = false;
+        const body = await this.readJsonBody(req, res);
+        if (body === null) return;
 
-        req.on('data', (chunk: Buffer) => {
-            if (aborted) return;
-            received += chunk.length;
-            if (received > MAX_BODY) {
-                aborted = true;
-                writeJson(413, { error: 'payload_too_large', max_bytes: MAX_BODY });
-                req.destroy();
+        if (topicMatch) {
+            const title = typeof body.title === 'string' ? (body.title as string).trim() : '';
+            const participants = Array.isArray(body.participants) ? body.participants : [];
+            if (!title || participants.length === 0) {
+                this.writeJson(res, 400, { error: 'missing_required_fields', need: ['title', 'participants'] });
                 return;
             }
-            chunks.push(chunk);
-        });
-
-        req.on('error', () => {
-            if (!aborted) writeJson(400, { error: 'request_stream_error' });
-        });
-
-        req.on('end', () => {
-            if (aborted) return;
-            let body: any = {};
-            const raw = Buffer.concat(chunks).toString('utf8');
-            if (raw.length > 0) {
-                try {
-                    body = JSON.parse(raw);
-                } catch {
-                    writeJson(400, { error: 'invalid_json' });
-                    return;
-                }
+            try {
+                const topic = this.context.conversationBus.createTopic(title, participants as string[]);
+                this.writeJson(res, 200, topic);
+            } catch (err: any) {
+                this.writeJson(res, 500, { error: 'failed_to_create_topic', message: err.message });
             }
+            return;
+        }
 
-            if (topicMatch) {
-                const title = typeof body.title === 'string' ? body.title.trim() : '';
-                const participants = Array.isArray(body.participants) ? body.participants : [];
-                if (!title || participants.length === 0) {
-                    writeJson(400, { error: 'missing_required_fields', need: ['title', 'participants'] });
-                    return;
-                }
-                try {
-                    const topic = this.context.conversationBus.createTopic(title, participants);
-                    writeJson(200, topic as any);
-                } catch (err: any) {
-                    writeJson(500, { error: 'failed_to_create_topic', message: err.message });
-                }
+        if (messageMatch) {
+            const topicId = messageMatch[1];
+            const senderId = typeof body.senderId === 'string' ? (body.senderId as string).trim() : '';
+            const content = typeof body.content === 'string' ? (body.content as string).trim() : '';
+            if (!senderId || !content) {
+                this.writeJson(res, 400, { error: 'missing_required_fields', need: ['senderId', 'content'] });
                 return;
             }
+            try {
+                const msg = this.context.conversationBus.postMessage(topicId, senderId, 'user', content);
+                
+                // Asynchronously trigger convene loop in background
+                this.context.conversationBus.convene(topicId, content).catch((err) => {
+                    this.context.log.error('convene_loop_failed', { topicId, error: err.message });
+                });
 
-            if (messageMatch) {
-                const topicId = messageMatch[1];
-                const senderId = typeof body.senderId === 'string' ? body.senderId.trim() : '';
-                const content = typeof body.content === 'string' ? body.content.trim() : '';
-                if (!senderId || !content) {
-                    writeJson(400, { error: 'missing_required_fields', need: ['senderId', 'content'] });
-                    return;
-                }
-                try {
-                    const msg = this.context.conversationBus.postMessage(topicId, senderId, 'user', content);
-                    
-                    // Asynchronously trigger convene loop in background
-                    this.context.conversationBus.convene(topicId, content).catch((err) => {
-                        this.context.log.error('convene_loop_failed', { topicId, error: err.message });
-                    });
+                this.writeJson(res, 200, msg);
+            } catch (err: any) {
+                this.writeJson(res, 500, { error: 'failed_to_post_message', message: err.message });
+            }
+            return;
+        }
 
-                    writeJson(200, msg as any);
-                } catch (err: any) {
-                    writeJson(500, { error: 'failed_to_post_message', message: err.message });
-                }
+        if (committeeMatch) {
+            const topicId = committeeMatch[1];
+            const goal = typeof body.goal === 'string' ? (body.goal as string).trim() : '';
+            if (!goal) {
+                this.writeJson(res, 400, { error: 'missing_required_fields', need: ['goal'] });
                 return;
             }
-
-            if (committeeMatch) {
-                const topicId = committeeMatch[1];
-                const goal = typeof body.goal === 'string' ? body.goal.trim() : '';
-                if (!goal) {
-                    writeJson(400, { error: 'missing_required_fields', need: ['goal'] });
-                    return;
-                }
-                try {
-                    const quorumThreshold = safeConsensusThreshold(body.quorumThreshold, 0.85, 0.6, 1);
-                    const failureThreshold = safeConsensusThreshold(body.failureThreshold, 0.5, 0.5, quorumThreshold);
-                    const verdict = this.context.conversationBus.conveneCommittee(topicId, goal, {
-                        quorumThreshold,
-                        failureThreshold,
-                        traceparent: sanitizeTraceparent(typeof req.headers.traceparent === 'string' ? req.headers.traceparent : undefined),
-                        tracestate: sanitizeTracestate(typeof req.headers.tracestate === 'string' ? req.headers.tracestate : undefined),
-                    });
-                    writeJson(200, verdict as any);
-                } catch (err: any) {
-                    const code = err?.code === 'committee_topic_not_active' ? 404 : 500;
-                    writeJson(code, {
-                        error: code === 404 ? 'committee_topic_not_active' : 'failed_to_convene_committee',
-                    });
-                }
-                return;
+            try {
+                const quorumThreshold = safeConsensusThreshold(body.quorumThreshold, 0.85, 0.6, 1);
+                const failureThreshold = safeConsensusThreshold(body.failureThreshold, 0.5, 0.5, quorumThreshold);
+                const verdict = this.context.conversationBus.conveneCommittee(topicId, goal, {
+                    quorumThreshold,
+                    failureThreshold,
+                    traceparent: sanitizeTraceparent(typeof req.headers.traceparent === 'string' ? req.headers.traceparent : undefined),
+                    tracestate: sanitizeTracestate(typeof req.headers.tracestate === 'string' ? req.headers.tracestate : undefined),
+                });
+                this.writeJson(res, 200, verdict);
+            } catch (err: any) {
+                const code = err?.code === 'committee_topic_not_active' ? 404 : 500;
+                this.writeJson(res, code, {
+                    error: code === 404 ? 'committee_topic_not_active' : 'failed_to_convene_committee',
+                });
             }
+            return;
+        }
 
-            if (closeMatch) {
-                const topicId = closeMatch[1];
-                try {
-                    this.context.conversationBus.closeTopic(topicId);
-                    writeJson(200, { success: true });
-                } catch (err: any) {
-                    writeJson(500, { error: 'failed_to_close_topic', message: err.message });
-                }
-                return;
+        if (closeMatch) {
+            const topicId = closeMatch[1];
+            try {
+                this.context.conversationBus.closeTopic(topicId);
+                this.writeJson(res, 200, { success: true });
+            } catch (err: any) {
+                this.writeJson(res, 500, { error: 'failed_to_close_topic', message: err.message });
             }
+            return;
+        }
 
-            writeJson(404, { error: 'unknown_conversation_action' });
-        });
+        this.writeJson(res, 404, { error: 'unknown_conversation_action' });
     }
 
-    private handleTracesRequest(req: http.IncomingMessage, res: http.ServerResponse): void {
-        const writeJson = (status: number, body: Record<string, unknown> | Array<unknown>): void => {
-            res.writeHead(status, {
-                'Content-Type': 'application/json',
-                'Cache-Control': 'no-store',
-                'Access-Control-Allow-Origin': '*',
-            });
-            res.end(JSON.stringify(body));
-        };
-
+    private async handleTracesRequest(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
         const url = new URL(req.url || '/', `http://${req.headers.host}`);
         if (req.method === 'POST' && url.pathname === '/api/v1/traces/reroute') {
-            const MAX_BODY = 8 * 1024;
-            let received = 0;
-            const chunks: Buffer[] = [];
-            let aborted = false;
-
-            req.on('data', (chunk: Buffer) => {
-                if (aborted) return;
-                received += chunk.length;
-                if (received > MAX_BODY) {
-                    aborted = true;
-                    writeJson(413, { error: 'payload_too_large', max_bytes: MAX_BODY });
-                    req.destroy();
-                    return;
-                }
-                chunks.push(chunk);
-            });
-
-            req.on('error', () => {
-                if (!aborted) writeJson(400, { error: 'request_stream_error' });
-            });
-
-            req.on('end', () => {
-                if (aborted) return;
-                let body: Record<string, unknown> = {};
-                const raw = Buffer.concat(chunks).toString('utf8');
-                if (raw.length > 0) {
-                    try {
-                        body = JSON.parse(raw) as Record<string, unknown>;
-                    } catch {
-                        writeJson(400, { error: 'invalid_json' });
-                        return;
-                    }
-                }
-                const source = safeNodeId(body.source);
-                const target = safeNodeId(body.target);
-                if (!source || !target) {
-                    writeJson(400, { error: 'missing_required_fields', need: ['source', 'target'] });
-                    return;
-                }
-                const event = {
-                    type: 'trace.rerouted',
-                    source,
-                    target,
-                    sourceHandle: safeOptionalNodeId(body.sourceHandle),
-                    targetHandle: safeOptionalNodeId(body.targetHandle),
-                    requestedAt: Date.now(),
-                };
-                this.context.broadcast(event);
-                writeJson(200, event);
-            });
+            const body = await this.readJsonBody(req, res, 8 * 1024);
+            if (body === null) return;
+            const source = safeNodeId(body.source);
+            const target = safeNodeId(body.target);
+            if (!source || !target) {
+                this.writeJson(res, 400, { error: 'missing_required_fields', need: ['source', 'target'] });
+                return;
+            }
+            const event = {
+                type: 'trace.rerouted',
+                source,
+                target,
+                sourceHandle: safeOptionalNodeId(body.sourceHandle),
+                targetHandle: safeOptionalNodeId(body.targetHandle),
+                requestedAt: Date.now(),
+            };
+            this.context.broadcast(event);
+            this.writeJson(res, 200, event);
             return;
         }
 
         if (req.method !== 'GET') {
-            writeJson(405, { error: 'method_not_allowed' });
+            this.writeJson(res, 405, { error: 'method_not_allowed' });
             return;
         }
 
         const detailMatch = url.pathname.match(/^\/api\/v1\/traces\/([^/]+)\/?$/);
         if (detailMatch) {
             const cycleId = detailMatch[1];
-            const trace = (this.context as any).tracing?.ring?.get(cycleId);
+            const trace = this.context.tracing?.ring?.get(cycleId);
             if (!trace) {
-                writeJson(404, { error: 'trace_not_found', cycleId });
+                this.writeJson(res, 404, { error: 'trace_not_found', cycleId });
                 return;
             }
-            writeJson(200, trace as unknown as Record<string, unknown>);
+            this.writeJson(res, 200, trace);
             return;
         }
 
         const limitParam = url.searchParams.get('limit');
         const limit = limitParam ? Math.max(1, Math.min(1000, Number.parseInt(limitParam, 10) || 20)) : 20;
-        const items = ((this.context as any).tracing?.ring?.list(limit) ?? []).map((t: any) => ({
+        const items = (this.context.tracing?.ring?.list(limit) ?? []).map((t: any) => ({
             cycleId: t.cycleId,
             traceId: t.traceId,
             startedAt: t.startedAt,
@@ -568,118 +540,81 @@ export class HttpApiRouter {
             durationMs: t.endedAt - t.startedAt,
             spanCount: t.spans.length,
         }));
-        writeJson(200, { items, stats: (this.context as any).tracing?.ring?.stats() ?? null });
+        this.writeJson(res, 200, { items, stats: this.context.tracing?.ring?.stats() ?? null });
     }
 
-    private handleComfyRequest(req: http.IncomingMessage, res: http.ServerResponse): void {
-        const writeJson = (status: number, body: Record<string, unknown>): void => {
-            res.writeHead(status, {
-                'Content-Type': 'application/json',
-                'Cache-Control': 'no-store',
-                'Access-Control-Allow-Origin': '*',
-            });
-            res.end(JSON.stringify(body));
-        };
-
+    private async handleComfyRequest(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
         if (req.method !== 'POST') {
-            writeJson(405, { error: 'method_not_allowed' });
+            this.writeJson(res, 405, { error: 'method_not_allowed' });
             return;
         }
 
         const url = new URL(req.url || '/', `http://${req.headers.host}`);
         const action = url.pathname.replace(/^\/api\/v1\/comfy\/?/, '') || '';
-        const MAX_BODY = 16 * 1024;
-        let received = 0;
-        const chunks: Buffer[] = [];
-        let aborted = false;
 
-        req.on('data', (chunk: Buffer) => {
-            if (aborted) return;
-            received += chunk.length;
-            if (received > MAX_BODY) {
-                aborted = true;
-                writeJson(413, { error: 'payload_too_large', max_bytes: MAX_BODY });
-                req.destroy();
+        const body = await this.readJsonBody(req, res);
+        if (body === null) return;
+
+        if (action === 'render' || action === 'mix') {
+            const agentId = typeof body.agentId === 'string' ? (body.agentId as string).trim() : '';
+            const prompt = typeof body.prompt === 'string' ? (body.prompt as string).trim() : '';
+            if (!agentId || !prompt) {
+                this.writeJson(res, 400, { error: 'missing_required_fields', need: ['agentId', 'prompt'] });
                 return;
             }
-            chunks.push(chunk);
-        });
-        req.on('error', () => {
-            if (!aborted) writeJson(400, { error: 'request_stream_error' });
-        });
-        req.on('end', async () => {
-            if (aborted) return;
-            let body: any = {};
-            const raw = Buffer.concat(chunks).toString('utf8');
-            if (raw.length > 0) {
-                try {
-                    body = JSON.parse(raw);
-                } catch {
-                    writeJson(400, { error: 'invalid_json' });
-                    return;
-                }
+            try {
+                const mixer = Array.isArray(body.mixer) ? sanitizeMixer(body.mixer as unknown[]) : [];
+                const result = mixer.length > 0
+                    ? await this.context.comfyBridge.renderWithMixer({
+                          agentId,
+                          prompt,
+                          aspectRatio: safeAspectRatio(body.aspectRatio),
+                          traceId: typeof body.traceId === 'string' ? body.traceId : undefined,
+                          mixer,
+                       })
+                    : await this.context.comfyBridge.renderPortrait({
+                          agentId,
+                          prompt,
+                          aspectRatio: safeAspectRatio(body.aspectRatio),
+                          traceId: typeof body.traceId === 'string' ? body.traceId : undefined,
+                       });
+                const stream = result.promptId ? this.context.comfyBridge.streamDescriptor(result.promptId) : undefined;
+                this.writeJson(res, 200, {
+                    source: result.source,
+                    agentId: result.agentId,
+                    width: result.width,
+                    height: result.height,
+                    mimeType: result.mimeType,
+                    promptId: result.promptId,
+                    svg: result.svg,
+                    palette: result.palette,
+                    error: result.error,
+                    stream,
+                });
+            } catch (err) {
+                this.writeJson(res, 500, { error: 'comfy_render_failed', message: err instanceof Error ? err.message : String(err) });
             }
+            return;
+        }
 
-            if (action === 'render' || action === 'mix') {
-                const agentId = typeof body.agentId === 'string' ? body.agentId.trim() : '';
-                const prompt = typeof body.prompt === 'string' ? body.prompt.trim() : '';
-                if (!agentId || !prompt) {
-                    writeJson(400, { error: 'missing_required_fields', need: ['agentId', 'prompt'] });
-                    return;
-                }
-                try {
-                    const mixer = Array.isArray(body.mixer) ? sanitizeMixer(body.mixer) : [];
-                    const result = mixer.length > 0
-                        ? await this.context.comfyBridge.renderWithMixer({
-                              agentId,
-                              prompt,
-                              aspectRatio: safeAspectRatio(body.aspectRatio),
-                              traceId: typeof body.traceId === 'string' ? body.traceId : undefined,
-                              mixer,
-                           })
-                        : await this.context.comfyBridge.renderPortrait({
-                              agentId,
-                              prompt,
-                              aspectRatio: safeAspectRatio(body.aspectRatio),
-                              traceId: typeof body.traceId === 'string' ? body.traceId : undefined,
-                           });
-                    const stream = result.promptId ? this.context.comfyBridge.streamDescriptor(result.promptId) : undefined;
-                    writeJson(200, {
-                        source: result.source,
-                        agentId: result.agentId,
-                        width: result.width,
-                        height: result.height,
-                        mimeType: result.mimeType,
-                        promptId: result.promptId,
-                        svg: result.svg,
-                        palette: result.palette,
-                        error: result.error,
-                        stream,
-                    });
-                } catch (err) {
-                    writeJson(500, { error: 'comfy_render_failed', message: err instanceof Error ? err.message : String(err) });
-                }
+        if (action === 'stream-url') {
+            const promptId = typeof body.promptId === 'string' ? (body.promptId as string).trim() : '';
+            if (!promptId) {
+                this.writeJson(res, 400, { error: 'missing_required_fields', need: ['promptId'] });
                 return;
             }
+            this.writeJson(res, 200, this.context.comfyBridge.streamDescriptor(promptId, typeof body.clientId === 'string' ? body.clientId : undefined));
+            return;
+        }
 
-            if (action === 'stream-url') {
-                const promptId = typeof body.promptId === 'string' ? body.promptId.trim() : '';
-                if (!promptId) {
-                    writeJson(400, { error: 'missing_required_fields', need: ['promptId'] });
-                    return;
-                }
-                writeJson(200, this.context.comfyBridge.streamDescriptor(promptId, typeof body.clientId === 'string' ? body.clientId : undefined) as any);
-                return;
-            }
-
-            writeJson(404, { error: 'unknown_comfy_action', action });
-        });
+        this.writeJson(res, 404, { error: 'unknown_comfy_action', action });
     }
 }
 
+const ALLOWED_ASPECT_RATIOS = new Set<ComfyAspectRatio>(['1:1', '16:9', '9:16', '4:3', '3:4', 'portrait', 'landscape', 'theater-card', 'flowchart']);
+
 function safeAspectRatio(value: unknown): ComfyAspectRatio | undefined {
-    const allowed = new Set<ComfyAspectRatio>(['1:1', '16:9', '9:16', '4:3', '3:4', 'portrait', 'landscape', 'theater-card', 'flowchart']);
-    return typeof value === 'string' && allowed.has(value as ComfyAspectRatio) ? value as ComfyAspectRatio : undefined;
+    return typeof value === 'string' && ALLOWED_ASPECT_RATIOS.has(value as ComfyAspectRatio) ? value as ComfyAspectRatio : undefined;
 }
 
 function safeConsensusThreshold(value: unknown, fallback: number, min: number, max: number): number {

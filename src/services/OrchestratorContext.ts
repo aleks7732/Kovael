@@ -15,6 +15,14 @@ import type { HealthEndpoints } from './HealthEndpoints.js';
 import type { MevHandshake } from './MevHandshake.js';
 import type { MevBridge } from '../MevBridge.js';
 import type { SemanticIngestor } from './SemanticIngestor.js';
+import type { RetryQueue } from './RetryQueue.js';
+import type { Reconciler } from './Reconciler.js';
+import type { WorkspaceManager } from './WorkspaceManager.js';
+import type { HookRunner } from './HookRunner.js';
+import type { WorkflowLoader } from './WorkflowLoader.js';
+import type { RateLimitTracker } from './RateLimitTracker.js';
+import type { TracingBridge } from './Tracing.js';
+import type { WebSocketServer } from 'ws';
 
 export interface OrchestratorContext {
     readonly memoryDb: DatabaseSync;
@@ -33,6 +41,26 @@ export interface OrchestratorContext {
     readonly ingestor: SemanticIngestor;
     readonly log: Logger;
     readonly maxWsMessageBytes: number;
+
+    // --- Services accessed by HttpApiRouter (previously `as any`) ---
+    readonly retryQueue: RetryQueue;
+    readonly reconciler: Reconciler;
+    readonly workspaces: WorkspaceManager;
+    readonly hooks: HookRunner;
+    readonly workflowLoader: WorkflowLoader;
+    readonly rateLimits: RateLimitTracker;
+    readonly tracing?: TracingBridge;
+    readonly wss: WebSocketServer;
+
+    // --- Inter-agent chat state (accessed by WebSocketBus) ---
+    interAgentChatEnabled: boolean;
+    interAgentChatMode: 'technical' | 'interests';
+    startInterAgentChatLoop(): void;
+    stopInterAgentChatLoop(): void;
+    triggerInterAgentChat(): void;
+
+    // --- EventEmitter surface (used by WebSocketBus.handleTelemetry) ---
+    emit(event: string, ...args: any[]): boolean;
 
     // Orchestrator caches and mutable state
     agentCards: any[];

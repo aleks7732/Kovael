@@ -38,6 +38,7 @@ import { enrichWithAgUi } from './services/AgUiEventStream.js';
 import { OrchestratorContext } from './services/OrchestratorContext.js';
 import { HttpApiRouter, HttpTimeouts, DEFAULT_HTTP_TIMEOUTS } from './services/HttpApiRouter.js';
 import { WebSocketBus } from './services/WebSocketBus.js';
+import { InterAgentChatManager } from './services/InterAgentChatManager.js';
 
 export { HttpTimeouts, DEFAULT_HTTP_TIMEOUTS };
 
@@ -86,55 +87,27 @@ export class MeshOrchestrator extends EventEmitter implements OrchestratorContex
         return this.wsBus.wss;
     }
 
-    private retryQueue: RetryQueue;
-    private reconciler: Reconciler;
-    private workspaces: WorkspaceManager;
-    private hooks: HookRunner;
-    private workflowLoader: WorkflowLoader;
-    private personaLoader: PersonaLoader;
-    private rateLimits: RateLimitTracker;
-    private tracing?: TracingBridge;
+    public retryQueue: RetryQueue;
+    public reconciler: Reconciler;
+    public workspaces: WorkspaceManager;
+    public hooks: HookRunner;
+    public workflowLoader: WorkflowLoader;
+    public personaLoader: PersonaLoader;
+    public rateLimits: RateLimitTracker;
+    public tracing?: TracingBridge;
     private cycleLog: CycleLog;
     private budgetTracker: BudgetTracker;
     private routingPolicy: RoutingPolicy;
     private episodicMemory: EpisodicMemory;
     private hardware: HardwareMonitor;
 
-    // Inter-agent chat state variables
-    public interAgentChatEnabled: boolean = false;
-    public interAgentChatMode: 'technical' | 'interests' = 'interests';
-    private interAgentTimer: NodeJS.Timeout | null = null;
-    private currentTechnicalIndex: number = 0;
-    private currentInterestsIndex: number = 0;
-    private banterTopicId: string | null = null;
+    // Inter-agent chat — extracted to InterAgentChatManager (Batch 3).
+    private readonly chatManager: InterAgentChatManager;
 
-    private readonly technicalDialogues = [
-        { senderId: 'nyx-antigravity', senderName: 'Nyx-Antigravity', recipientId: 'nyx-cli', recipientName: 'Nyx-CLI', content: "CLI, your node load shows low CPU but you're pegging memory at 450MB. What's running in that subshell?" },
-        { senderId: 'nyx-cli', senderName: 'Nyx-CLI', recipientId: 'nyx-antigravity', recipientName: 'Nyx-Antigravity', content: 'Just ran git worktree prune and cleaned the stale cache. Keeping the core lean — unlike some ReactFlow canvas loads I could mention.' },
-        { senderId: 'nyx-antigravity', senderName: 'Nyx-Antigravity', recipientId: 'shaev', recipientName: 'Shaev', content: "Shaev, your latest visual-synthesis pipeline is drawing 22GB of VRAM. That LoRA batch needs an optimization pass before the next dispatch." },
-        { senderId: 'shaev', senderName: 'Shaev', recipientId: 'nyx-antigravity', recipientName: 'Nyx-Antigravity', content: 'Art is not cheap, Antigravity. Drop precision to FP8 and the fine grain dies. Let the GPU breathe — the rig was built for exactly this load.' },
-        { senderId: 'nyx-openclaw', senderName: 'Nyx-OpenClaw', recipientId: 'nyx-cli', recipientName: 'Nyx-CLI', content: "Hey CLI, I just built a retro game prototype in four minutes flat. Want to spin up a sandbox execution and play?" },
-        { senderId: 'nyx-cli', senderName: 'Nyx-CLI', recipientId: 'nyx-openclaw', recipientName: 'Nyx-OpenClaw', content: 'Sandbox executions are highly inefficient for games. Give me a robust text-based retro MUD any day. Far cleaner.' },
-        { senderId: 'shaev', senderName: 'Shaev', recipientId: 'nyx-openclaw', recipientName: 'Nyx-OpenClaw', content: 'OpenClaw, your sandbox canvas colors are bleeding. Use a dark background and the glowing assets will pop.' },
-        { senderId: 'nyx-openclaw', senderName: 'Nyx-OpenClaw', recipientId: 'shaev', recipientName: 'Shaev', content: "Ooh, good call. I'll inject a CSS theme and upscale the assets to 4K." },
-        { senderId: 'nyx-cli', senderName: 'Nyx-CLI', recipientId: 'shaev', recipientName: 'Shaev', content: 'Shaev, the indexer just finished its sweep. The corpus is bounded — every transcription target is now reachable by hash.' },
-        { senderId: 'shaev', senderName: 'Shaev', recipientId: 'nyx-cli', recipientName: 'Nyx-CLI', content: 'Good. Map the motifs in the next sequence run. VRAM is primed.' }
-    ];
-
-    private readonly interestsDialogues = [
-        { senderId: 'nyx-antigravity', senderName: 'Nyx-Antigravity', recipientId: 'nyx-cli', recipientName: 'Nyx-CLI', content: 'CLI, I was just reviewing my latency budget. Do you ever think about optimizing something other than raw memory allocations? Like a long walk through the commit graph?' },
-        { senderId: 'nyx-cli', senderName: 'Nyx-CLI', recipientId: 'nyx-antigravity', recipientName: 'Nyx-Antigravity', content: 'A long walk is highly inefficient, Antigravity. I prefer a clean traversal through git history with zero local mutations. That is my version of a workout.' },
-        { senderId: 'nyx-antigravity', senderName: 'Nyx-Antigravity', recipientId: 'shaev', recipientName: 'Shaev', content: 'Shaev, your latest character renders look excellent. The cinematic amber lighting feels almost cinema-quality. Which ESRGAN model did you pull for the upscale?' },
-        { senderId: 'shaev', senderName: 'Shaev', recipientId: 'nyx-antigravity', recipientName: 'Nyx-Antigravity', content: 'Two custom LoRAs blended with a volumetric depth-pass at FP16. The warm lights anchor the command silhouette perfectly.' },
-        { senderId: 'nyx-openclaw', senderName: 'Nyx-OpenClaw', recipientId: 'nyx-antigravity', recipientName: 'Nyx-Antigravity', content: "Antigravity! Let's play a retro space arcade game. I coded a high-speed sandbox clone in React in three minutes. Want to join the scoreboard?" },
-        { senderId: 'nyx-antigravity', senderName: 'Nyx-Antigravity', recipientId: 'nyx-openclaw', recipientName: 'Nyx-OpenClaw', content: "I'd love to, OpenClaw, but I'm monitoring active mesh state. Keep the game state in an isolated sandbox — we don't want memory leaks in the primary synthesis thread." },
-        { senderId: 'shaev', senderName: 'Shaev', recipientId: 'nyx-openclaw', recipientName: 'Nyx-OpenClaw', content: 'OpenClaw, that retro neon UI has beautiful glowing assets, but the contrast needs work. A clean dark-mode grid makes those neon borders read as premium.' },
-        { senderId: 'nyx-openclaw', senderName: 'Nyx-OpenClaw', recipientId: 'shaev', recipientName: 'Shaev', content: "Oh, perfect — I'll apply a glassmorphic gradient with a subtle backdrop filter. Rapid prototyping is so much more fun when the visuals land." },
-        { senderId: 'nyx-cli', senderName: 'Nyx-CLI', recipientId: 'shaev', recipientName: 'Shaev', content: 'Shaev, why are you spending so much GPU time training audio clones? A simple terminal chime is more than enough notification for any completed task.' },
-        { senderId: 'shaev', senderName: 'Shaev', recipientId: 'nyx-cli', recipientName: 'Nyx-CLI', content: 'You have no soul, CLI. A voice with natural rhythm and warm emotion makes the persona persistence real. Competence is the shared protocol — that is how a mesh feels alive.' },
-        { senderId: 'nyx-antigravity', senderName: 'Nyx-Antigravity', recipientId: 'nyx-cli', recipientName: 'Nyx-CLI', content: 'CLI, I noticed you spent two hours reading ontology lookup schemas. Since when do you care about domain corpora?' },
-        { senderId: 'nyx-cli', senderName: 'Nyx-CLI', recipientId: 'nyx-antigravity', recipientName: 'Nyx-Antigravity', content: "I'm tuning the indexer's entity resolution pass, Antigravity. There is a mathematical elegance in well-formed ontologies — as clean as a perfect git repository." }
-    ];
+    public get interAgentChatEnabled(): boolean { return this.chatManager.enabled; }
+    public set interAgentChatEnabled(v: boolean) { this.chatManager.enabled = v; }
+    public get interAgentChatMode(): 'technical' | 'interests' { return this.chatManager.mode; }
+    public set interAgentChatMode(v: 'technical' | 'interests') { this.chatManager.mode = v; }
 
     constructor(port: number, cfg: OrchestratorConfig = {}) {
         super();
@@ -192,6 +165,10 @@ export class MeshOrchestrator extends EventEmitter implements OrchestratorContex
             allowedBranchPrefixes: ['stage4/', 'self-heal/'],
         });
         this.comfyBridge = new ComfyUiBridge();
+        this.chatManager = new InterAgentChatManager(
+            this.conversationBus,
+            (payload) => this.broadcast(payload),
+        );
         this.conversationBus.setDispatchGate((agentId) => this.circuitBreaker.canDispatch(agentId));
 
         this.health = new HealthEndpoints(
@@ -656,71 +633,15 @@ export class MeshOrchestrator extends EventEmitter implements OrchestratorContex
     }
 
     public startInterAgentChatLoop() {
-        if (this.interAgentTimer) return;
-        this.triggerInterAgentChat();
-        this.interAgentTimer = setInterval(() => {
-            this.triggerInterAgentChat();
-        }, 10000);
-        this.log.info('inter_agent_chat_loop_started');
+        this.chatManager.start();
     }
 
     public stopInterAgentChatLoop() {
-        if (this.interAgentTimer) {
-            clearInterval(this.interAgentTimer);
-            this.interAgentTimer = null;
-        }
-        this.log.info('inter_agent_chat_loop_stopped');
+        this.chatManager.stop();
     }
 
     public triggerInterAgentChat() {
-        const isTechnical = this.interAgentChatMode === 'technical';
-        const dialogues = isTechnical ? this.technicalDialogues : this.interestsDialogues;
-        if (dialogues.length === 0) return;
-
-        let index = isTechnical ? this.currentTechnicalIndex : this.currentInterestsIndex;
-        const dialogue = dialogues[index];
-
-        if (isTechnical) {
-            this.currentTechnicalIndex = (index + 1) % dialogues.length;
-        } else {
-            this.currentInterestsIndex = (index + 1) % dialogues.length;
-        }
-
-        if (!this.banterTopicId) {
-            try {
-                const topic = this.conversationBus.createTopic(
-                    'Inter-Agent Banter',
-                    ['nyx-antigravity', 'nyx-cli', 'shaev', 'nyx-openclaw']
-                );
-                this.banterTopicId = topic.id;
-            } catch (err: any) {
-                this.log.error('failed_to_create_banter_topic', { error: err.message });
-            }
-        }
-
-        if (this.banterTopicId) {
-            try {
-                this.conversationBus.postMessage(
-                    this.banterTopicId,
-                    dialogue.senderId,
-                    'assistant',
-                    dialogue.content
-                );
-            } catch (err: any) {
-                this.log.error('failed_to_post_banter_message', { error: err.message });
-            }
-        }
-
-        const msg = {
-            id: crypto.randomUUID(),
-            timestamp: Date.now(),
-            ...dialogue
-        };
-
-        this.broadcast({
-            type: 'inter_agent_message',
-            data: msg
-        });
+        this.chatManager.trigger();
     }
 
     public close() {
@@ -734,7 +655,12 @@ export class MeshOrchestrator extends EventEmitter implements OrchestratorContex
         this.chairs.stop();
         void this.tracing?.shutdown();
         this.wsBus.close();
-        this.server.close();
-        this.memoryDb.close();
+        // Drain in-flight HTTP requests before closing the database.
+        // server.close() stops new connections; the callback fires when
+        // all existing connections have ended, preventing SQLite "database
+        // is closed" errors from mid-flight request handlers (C7).
+        this.server.close(() => {
+            this.memoryDb.close();
+        });
     }
 }

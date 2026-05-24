@@ -1,6 +1,7 @@
 import { EventEmitter } from 'node:events';
 import crypto from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
+import { Logger, rootLogger } from './Logger.js';
 import { ChairRegistry } from './ChairRegistry.js';
 import { PersonaLoader } from './PersonaLoader.js';
 import {
@@ -14,9 +15,8 @@ import {
     CommitteeOptions,
     CommitteeVerdict,
     CommitteeVote,
-    evaluateCommittee,
-    synthesizeVotes,
 } from './ConsensusEngine.js';
+import { conveneCommitteeVote } from './CommitteeVoting.js';
 
 export interface ActiveTopic {
     id: string;
@@ -44,6 +44,7 @@ export interface ConversationMessage {
 }
 
 export class ConversationBus extends EventEmitter {
+    private readonly log: Logger = rootLogger;
     private activeTopics = new Map<string, ActiveTopic>();
     private dispatchGate: (agentId: string) => boolean = () => true;
 
@@ -159,6 +160,12 @@ export class ConversationBus extends EventEmitter {
      * LIMIT N` would pin to the first N forever as the topic grows.
      */
     public getHistory(topicId: string, limit = 200): ChatMessage[] {
+        interface HistoryRow {
+            sender_id: string;
+            role: string;
+            content: string;
+            timestamp: number;
+        }
         // rowid is the SQLite-implicit insertion sequence and tiebreaks when
         // two messages share a timestamp (Date.now() collisions happen in
         // tight loops and inside the convene speaker loop).
@@ -168,11 +175,11 @@ export class ConversationBus extends EventEmitter {
             ORDER BY timestamp DESC, rowid DESC
             LIMIT ?
         `);
-        const rows = stmt.all(topicId, limit) as any[];
+        const rows = stmt.all(topicId, limit) as unknown as HistoryRow[];
         return rows
             .reverse()
             .map((r) => ({
-                role: r.role,
+                role: r.role as ChatMessage['role'],
                 content: r.content,
                 name: r.sender_id,
             }));
@@ -434,7 +441,7 @@ Discipline Invariants:
                 }).catch(() => {});
 
             } catch (err: any) {
-                console.error(`[ConversationBus] Turn execution failed for agent "${currentSpeaker}": ${err.message}`);
+                this.log.error('turn_execution_failed', { agent: currentSpeaker, error: err.message });
                 this.emit('bus_event', {
                     type: 'chair_dispatch_failure',
                     agentId: currentSpeaker,
@@ -466,43 +473,15 @@ Discipline Invariants:
         goal: string,
         opts: CommitteeOptions & { votes?: CommitteeVote[] } = {},
     ): CommitteeVerdict {
-        const active = this.activeTopics.get(topicId);
-        if (!active) {
-            throw Object.assign(new Error('committee_topic_not_active'), { code: 'committee_topic_not_active' });
-        }
-        const participants = [...active.participants];
-        const votes = opts.votes ?? synthesizeVotes(goal, participants, opts.traceparent, opts.tracestate);
-        this.emit('bus_event', {
-            type: 'committee.started',
+        return conveneCommitteeVote(
+            {
+                topicFor: (id) => this.activeTopics.get(id),
+                emitBusEvent: (event) => this.emit('bus_event', event),
+                postSummary: (id, content) => this.postMessage(id, 'committee', 'system', content),
+            },
             topicId,
-            goalPreview: goal.slice(0, 160),
-            participants,
-            traceparent: opts.traceparent,
-            tracestate: opts.tracestate,
-        });
-        for (const vote of votes) {
-            this.emit('bus_event', {
-                type: 'committee.vote',
-                topicId,
-                vote,
-            });
-        }
-        const verdict = evaluateCommittee(votes, {
-            ...opts,
-            activeParticipants: participants,
-            sidecarCandidates: opts.sidecarCandidates ?? ['nyx-openclaw', 'shaev', 'nyx-codex'],
-        });
-        this.emit('bus_event', {
-            type: verdict.status === 'accepted' ? 'committee.verdict' : 'committee.failed',
-            topicId,
-            verdict,
-        });
-        this.postMessage(
-            topicId,
-            'committee',
-            'system',
-            `Committee ${verdict.status}: support=${verdict.supportScore}, confidence=${verdict.confidenceMean}`,
+            goal,
+            opts,
         );
-        return verdict;
     }
 }

@@ -5,6 +5,13 @@ import crypto from 'node:crypto';
 import type { OrchestratorContext } from './OrchestratorContext.js';
 import { enrichWithAgUi } from './AgUiEventStream.js';
 
+/** Extended request carrying auth/rate-limit outcome through the WS upgrade pipeline. */
+interface KovaelUpgradeRequest extends http.IncomingMessage {
+    __kovaelGateRejected?: boolean;
+    __kovaelRateLimitRejected?: boolean;
+    __kovaelSelectedSubprotocol?: string;
+}
+
 export class WebSocketBus {
     public readonly wss: WebSocketServer;
     private readonly context: OrchestratorContext;
@@ -15,13 +22,14 @@ export class WebSocketBus {
             noServer: true,
             maxPayload: this.context.maxWsMessageBytes,
             handleProtocols: (offered: Set<string>, req: http.IncomingMessage) => {
-                const picked = (req as any).__kovaelSelectedSubprotocol;
+                const kreq = req as KovaelUpgradeRequest;
+                const picked = kreq.__kovaelSelectedSubprotocol;
                 if (typeof picked === 'string') return picked;
                 // Rejected-but-upgrading: echo any offered value so ws does not
                 // abort the handshake before the client can receive our
                 // application close frame. Returning the first offered value
                 // is harmless — the socket closes immediately after.
-                if ((req as any).__kovaelGateRejected || (req as any).__kovaelRateLimitRejected) {
+                if (kreq.__kovaelGateRejected || kreq.__kovaelRateLimitRejected) {
                     const first = offered.values().next().value;
                     return typeof first === 'string' ? first : false;
                 }
@@ -30,10 +38,11 @@ export class WebSocketBus {
         });
 
         server.on('upgrade', (req, socket, head) => {
+            const kreq = req as KovaelUpgradeRequest;
             const key = this.context.rateLimiter.clientKey(req);
             const decision = this.context.rateLimiter.consume(key);
             if (!decision.allowed) {
-                (req as any).__kovaelRateLimitRejected = true;
+                kreq.__kovaelRateLimitRejected = true;
                 this.wss.handleUpgrade(req, socket as Socket, head, (ws) => {
                     ws.close(4429, 'rate_limited');
                 });
@@ -42,14 +51,14 @@ export class WebSocketBus {
 
             const outcome = this.context.apiGate.verifyWebSocketUpgrade(req);
             if (!outcome.allowed) {
-                (req as any).__kovaelGateRejected = true;
+                kreq.__kovaelGateRejected = true;
                 this.wss.handleUpgrade(req, socket as Socket, head, (ws) => {
                     ws.close(4401, 'unauthorized');
                 });
                 return;
             }
             if (outcome.selectedSubprotocol) {
-                (req as any).__kovaelSelectedSubprotocol = outcome.selectedSubprotocol;
+                kreq.__kovaelSelectedSubprotocol = outcome.selectedSubprotocol;
             }
             // Scrub the ?token= query param so the secret can't leak to
             // downstream handlers, access logs, or anything that reads req.url.
@@ -126,8 +135,8 @@ export class WebSocketBus {
                 JSON.stringify({
                     type: 'inter_agent_chat_state',
                     data: {
-                        enabled: (this.context as any).interAgentChatEnabled,
-                        mode: (this.context as any).interAgentChatMode,
+                        enabled: this.context.interAgentChatEnabled,
+                        mode: this.context.interAgentChatMode,
                     },
                 }),
             );
@@ -168,17 +177,17 @@ export class WebSocketBus {
                 }
 
                 if (payload && payload.type === 'toggle_inter_agent_chat' && typeof payload.enabled === 'boolean') {
-                    (this.context as any).interAgentChatEnabled = payload.enabled;
-                    if ((this.context as any).interAgentChatEnabled) {
-                        (this.context as any).startInterAgentChatLoop();
+                    this.context.interAgentChatEnabled = payload.enabled;
+                    if (this.context.interAgentChatEnabled) {
+                        this.context.startInterAgentChatLoop();
                     } else {
-                        (this.context as any).stopInterAgentChatLoop();
+                        this.context.stopInterAgentChatLoop();
                     }
                     this.broadcast({
                         type: 'inter_agent_chat_state',
                         data: {
-                            enabled: (this.context as any).interAgentChatEnabled,
-                            mode: (this.context as any).interAgentChatMode,
+                            enabled: this.context.interAgentChatEnabled,
+                            mode: this.context.interAgentChatMode,
                         },
                     });
                     return;
@@ -189,16 +198,16 @@ export class WebSocketBus {
                     payload.type === 'set_inter_agent_chat_mode' &&
                     (payload.mode === 'technical' || payload.mode === 'interests')
                 ) {
-                    (this.context as any).interAgentChatMode = payload.mode;
+                    this.context.interAgentChatMode = payload.mode;
                     this.broadcast({
                         type: 'inter_agent_chat_state',
                         data: {
-                            enabled: (this.context as any).interAgentChatEnabled,
-                            mode: (this.context as any).interAgentChatMode,
+                            enabled: this.context.interAgentChatEnabled,
+                            mode: this.context.interAgentChatMode,
                         },
                     });
-                    if ((this.context as any).interAgentChatEnabled) {
-                        (this.context as any).triggerInterAgentChat();
+                    if (this.context.interAgentChatEnabled) {
+                        this.context.triggerInterAgentChat();
                     }
                     return;
                 }
@@ -210,12 +219,17 @@ export class WebSocketBus {
 
     private extractNodeId(request: any): string {
         const url = new URL(request.url || '', `http://${request.headers.host}`);
-        return url.searchParams.get('nodeId') || 'unknown';
+        const raw = url.searchParams.get('nodeId') || 'unknown';
+        // Validate: cap length, strip control chars to prevent log injection
+        // and broadcast payload bloat (M3).
+        return raw.replace(/[\x00-\x1f]/g, '').slice(0, 128);
     }
 
     private async handleTelemetry(nodeId: string, payload: any) {
-        const fullPayload = { nodeId, type: 'telemetry', ...payload };
-        (this.context as any).emit('telemetry', fullPayload);
+        // Spread payload FIRST, then override with trusted values so a
+        // malicious client cannot forge `type` or `nodeId` (H5 security fix).
+        const fullPayload = { ...payload, nodeId, type: 'telemetry' };
+        this.context.emit('telemetry', fullPayload);
         this.broadcast(fullPayload);
     }
 
