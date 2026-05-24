@@ -4,27 +4,51 @@
 
 This note records the graph-guided architecture read for `MeshOrchestrator.ts`. It is meant to help reviewers and future contributors understand why this file behaves as the repository's central coordination point before making further security, scaling, API, or UI changes.
 
-The map was produced from `graphify-out/graph.json` after a repository graph extraction. The graph identified `MeshOrchestrator.ts` as the highest-connectivity node in the codebase.
+The current map was refreshed on 2026-05-24 with:
+
+```bash
+npx -y @nodesify/graphify run .
+```
+
+That run writes local cache/output under `.graphify/` (`graph.json`,
+`graph_report.md`, `db.sqlite`). The directory is intentionally ignored by
+git; use the command above to regenerate it.
 
 ## Graph snapshot
 
-At the time of the graph pass:
+At the 2026-05-24 graph pass:
 
-- `MeshOrchestrator.ts` had **91 graph edges**.
-- It was the top "god node" in the repository graph.
-- Its betweenness centrality was reported as **0.556**, making it the strongest cross-community bridge in the project.
-- The graph found it connected backend services, state machines, persistence, observability, frontend event consumers, and tests.
+- The repository graph contained **1,480 nodes**, **3,998 edges**, and
+  **224 communities**.
+- By source-file edge count, the largest backend files were
+  `src/services/HttpApiRouter.ts` (**266**),
+  `src/MeshOrchestrator.ts` (**257**),
+  `src/MevBridge.ts` (**110**),
+  `src/services/ConversationBus.ts` (**109**),
+  `src/services/Tracing.ts` (**91**), and
+  `src/services/WebSocketBus.ts` (**88**).
+- `MeshOrchestrator` remains the central composition root, but it is no
+  longer the only obvious pressure point. The HTTP router is now the top
+  source-file hub after the routing split.
+- The highest `MeshOrchestrator` symbol degrees were constructor (**46**),
+  file node (**42**), `injectTask` (**37**), class node (**29**), and
+  `wireMevBridge` (**17**).
 
-This does not mean the file is wrong. It means changes to it have unusually high blast radius and should be reviewed with that in mind.
+This does not mean these files are wrong. It means changes to them have
+unusually high blast radius and should be reviewed with that in mind.
 
 ## Responsibility clusters connected through `MeshOrchestrator.ts`
 
 ### HTTP API and request routing
 
-The orchestrator owns the HTTP server boundary for the mesh. It routes health checks, metrics, state snapshots, chair APIs, conversations, traces, and handshake handling.
+The orchestrator constructs the HTTP server boundary, while
+`HttpApiRouter.ts` now owns request dispatch, CORS preflight, body parsing,
+JSON responses, health/metrics routing, chair APIs, conversations, traces,
+ComfyUI requests, and handshake fallthrough.
 
 Relevant neighbors in the graph include:
 
+- `HttpApiRouter.ts`
 - `HealthEndpoints.ts`
 - `ApiTokenGate.ts`
 - `RateLimiter.ts`
@@ -34,11 +58,17 @@ Relevant neighbors in the graph include:
 - `handleConversationRequest`
 - `handleTracesRequest`
 
-Review implication: API changes should consider authentication, rate limiting, response shape stability, and frontend consumers together.
+Review implication: API changes should consider authentication, rate
+limiting, body limits, response shape stability, and frontend consumers
+together. Because `HttpApiRouter.ts` is now the top source-file hub,
+route additions should be split or tested locally rather than packed into
+one large method.
 
 ### WebSocket lifecycle and event fanout
 
-The orchestrator owns the WebSocket upgrade path and broadcasts unified runtime events to connected clients.
+The orchestrator constructs the WebSocket bus, while `WebSocketBus.ts`
+owns upgrade auth, rate limiting, cached event replay, telemetry
+normalization, and broadcast fanout.
 
 Relevant neighbors include:
 
@@ -51,7 +81,10 @@ Relevant neighbors include:
 - `AgentRosterPanel`
 - `ClaimsStrip`
 
-Review implication: changing event names, event order, or payload shape can break both backend E2E tests and the spatial war-room UI. Event-contract changes should include tests and, where possible, documented expected ordering.
+Review implication: changing event names, event order, or payload shape
+can break both backend E2E tests and the spatial war-room UI.
+Event-contract changes should include tests and, where possible,
+documented expected ordering.
 
 ### Mission lifecycle and claim state
 
@@ -159,16 +192,18 @@ Use this checklist for any PR that modifies `src/MeshOrchestrator.ts` or the eve
 
 ## Recommended PR lanes from the graph
 
-The graph suggests splitting future work into independent lanes instead of repeatedly expanding the orchestrator.
+The graph suggests splitting future work into independent lanes instead of
+re-expanding the orchestrator or growing the router into a second
+composition root.
 
-### Lane 1: API hardening
+### Lane 1: API router decomposition
 
 Candidate changes:
 
-- extract reusable JSON-body parsing and limits
-- centralize API error response helpers
-- add targeted tests for malformed input and oversized payloads
-- make rate-limit/auth decisions easier to audit
+- split chair, conversation, trace, and Comfy handlers into focused modules
+- keep `readJsonBody` and `writeJson` shared and tested
+- preserve `/api/v1/*` response shapes while moving code
+- add route-level tests before moving each handler
 
 ### Lane 2: WebSocket contract clarity
 
@@ -184,7 +219,7 @@ Candidate changes:
 Candidate changes:
 
 - document single-writer assumptions
-- align Kubernetes replica defaults with current state model
+- align Kubernetes replica guidance with SQLite/local-memory state
 - add explicit warnings/runbook guidance before enabling horizontal replicas
 
 ### Lane 4: UI state readability
@@ -197,4 +232,8 @@ Candidate changes:
 
 ## Bottom line
 
-`MeshOrchestrator.ts` is currently the project bridge between protocol, runtime, persistence, observability, and UI event flow. That makes it a good integration point, but a poor place for unrelated growth. Future work should either keep changes extremely narrow or extract responsibility into services with clear tests and documented contracts.
+`MeshOrchestrator.ts` is still the project bridge between protocol,
+runtime, persistence, observability, and UI event flow. `HttpApiRouter.ts`
+is now the largest source-file hub and deserves the same caution.
+Future work should either keep changes extremely narrow or extract
+responsibility into services with clear tests and documented contracts.

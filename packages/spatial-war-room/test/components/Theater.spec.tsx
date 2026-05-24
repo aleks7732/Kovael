@@ -75,7 +75,7 @@ describe('StoppingCard', () => {
 });
 
 // ---------------------------------------------------------------------------
-// TraceBreadcrumb — placeholder until Day 7 OTel wiring; verify it survives.
+// TraceBreadcrumb — verifies the trace timeline launch event contract.
 // ---------------------------------------------------------------------------
 describe('TraceBreadcrumb', () => {
     it('renders the OTEL TRACE pill with the topic id as title text', () => {

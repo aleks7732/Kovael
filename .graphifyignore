@@ -1,0 +1,21 @@
+# Dependencies and build output
+node_modules
+packages/*/node_modules
+dist
+packages/*/dist
+build
+coverage
+
+# VCS and local agent/tool state
+.git
+.claude
+.notes
+.kovael
+.graphify
+
+# Runtime state and scratch data
+storage
+*.db
+*.sqlite
+*.sqlite3
+*.log

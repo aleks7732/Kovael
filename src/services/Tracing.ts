@@ -1,7 +1,7 @@
 /**
  * OpenTelemetry GenAI instrumentation for the Triad cycle.
  *
- * Iter 14 ships the smallest end-to-end version that PHOENIX §4 demands:
+ * This module ships the smallest end-to-end tracing surface the mesh needs:
  *   - cycle.run (root) spans wrap each MevBridge.execute() call
  *   - triad.architect / triad.operator / triad.verifier are siblings under it
  *   - each triad.* span carries the OTel GenAI SemConv attributes

@@ -51,6 +51,7 @@ GEMINI.md
 # Local agent notes — kept out of public repo by design
 .notes/
 .claude/
+.graphify/
 .secrets.baseline.local
 
 # PII forbidden patterns — kept out of the public repo by design.

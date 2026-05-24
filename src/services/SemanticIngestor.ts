@@ -44,12 +44,13 @@ export class SemanticIngestor {
     /**
      * Directories the crawler MUST NOT enter. These either explode the
      * indexed corpus (node_modules) or contain PII / agent internals that
-     * must not bleed into runtime memory (.notes is the local agent plan;
-     * .kovael is the per-cycle workspace; .tsupgrader holds tooling KB).
+     * must not bleed into runtime memory (.notes/.claude are local agent
+     * state; .kovael is the per-cycle workspace; .graphify is generated
+     * code-graph cache; .tsupgrader holds tooling KB).
      */
     private static readonly SKIP_DIRS: ReadonlySet<string> = new Set([
-        'node_modules', '.git', 'dist', '.notes', '.kovael', '.tsupgrader',
-        '.next', 'build', 'coverage',
+        'node_modules', '.git', 'dist', '.notes', '.claude', '.kovael',
+        '.graphify', '.tsupgrader', '.next', 'build', 'coverage',
     ]);
 
     private crawl(dir: string) {

@@ -248,7 +248,7 @@ export class ConversationBus extends EventEmitter {
         const speakerQueue: string[] = [...participants];
 
         let turnCount = 0;
-        const maxTurns = 6; // Hard cap of 6 rounds per PHOENIX specifications
+        const maxTurns = 6; // Hard cap to prevent unbounded convene loops.
 
         // For adaptive stability metric tracker
         const rollingConfidence: number[] = [];

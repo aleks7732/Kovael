@@ -117,6 +117,20 @@ describe('SemanticIngestor — ingest()', () => {
         expect(countRows(db)).toBe(0);
     });
 
+    it('skips local agent and graph cache directories', async () => {
+        for (const dirName of ['.claude', '.graphify', '.notes', '.kovael']) {
+            const localDir = path.join(tmpDir, dirName);
+            fs.mkdirSync(localDir, { recursive: true });
+            fs.writeFileSync(path.join(localDir, 'local.md'), '# private local state');
+        }
+        fs.writeFileSync(path.join(tmpDir, 'public.md'), '# public project note');
+        const ingestor = new SemanticIngestor(db);
+
+        await ingestor.ingest(tmpDir);
+
+        expect(countRows(db)).toBe(1);
+    });
+
     it('does not throw when the target directory does not exist', async () => {
         const ingestor = new SemanticIngestor(db);
         const nonExistent = path.join(tmpDir, 'does-not-exist');
