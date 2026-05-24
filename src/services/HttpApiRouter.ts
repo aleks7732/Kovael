@@ -1,12 +1,12 @@
 import * as http from 'node:http';
 import type { Socket } from 'node:net';
 import type { OrchestratorContext } from './OrchestratorContext.js';
-import { sanitizeTraceparent, sanitizeTracestate } from './ConsensusEngine.js';
 import { readJsonBody, writeJson, writeNoContent } from './http/HttpApiSupport.js';
 import { handleStateSnapshot } from './http/StateRoutes.js';
 import { handleComfyRequest } from './http/ComfyRoutes.js';
 import { handleTracesRequest } from './http/TraceRoutes.js';
 import { handleChairRequest } from './http/ChairRoutes.js';
+import { handleConversationRequest } from './http/ConversationRoutes.js';
 
 export interface HttpTimeouts {
     headersTimeout: number;
@@ -94,7 +94,7 @@ export class HttpApiRouter {
                 return;
             }
             if (url.startsWith('/api/v1/conversations')) {
-                this.handleConversationRequest(req, res);
+                handleConversationRequest(this.context, req, res, { readJsonBody, writeJson });
                 return;
             }
             if (url.startsWith('/api/v1/traces')) {
@@ -159,119 +159,4 @@ export class HttpApiRouter {
         this.headerDeadlineTimers.delete(socket);
     }
 
-    private async handleConversationRequest(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
-        const url = new URL(req.url || '/', `http://${req.headers.host}`);
-        const pathname = url.pathname;
-
-        // Path regexes
-        const topicMatch = pathname.match(/^\/api\/v1\/conversations\/?$/);
-        const messageMatch = pathname.match(/^\/api\/v1\/conversations\/([^/]+)\/message\/?$/);
-        const committeeMatch = pathname.match(/^\/api\/v1\/conversations\/([^/]+)\/committee\/?$/);
-        const closeMatch = pathname.match(/^\/api\/v1\/conversations\/([^/]+)\/close\/?$/);
-        const historyMatch = pathname.match(/^\/api\/v1\/conversations\/([^/]+)\/history\/?$/);
-
-        if (req.method === 'GET' && historyMatch) {
-            const topicId = historyMatch[1];
-            try {
-                const history = this.context.conversationBus.getHistory(topicId);
-                writeJson(res, 200, history);
-            } catch (err: any) {
-                writeJson(res, 500, { error: 'failed_to_get_history', message: err.message });
-            }
-            return;
-        }
-
-        if (req.method !== 'POST') {
-            writeJson(res, 405, { error: 'method_not_allowed' });
-            return;
-        }
-
-        const body = await readJsonBody(req, res);
-        if (body === null) return;
-
-        if (topicMatch) {
-            const title = typeof body.title === 'string' ? (body.title as string).trim() : '';
-            const participants = Array.isArray(body.participants) ? body.participants : [];
-            if (!title || participants.length === 0) {
-                writeJson(res, 400, { error: 'missing_required_fields', need: ['title', 'participants'] });
-                return;
-            }
-            try {
-                const topic = this.context.conversationBus.createTopic(title, participants as string[]);
-                writeJson(res, 200, topic);
-            } catch (err: any) {
-                writeJson(res, 500, { error: 'failed_to_create_topic', message: err.message });
-            }
-            return;
-        }
-
-        if (messageMatch) {
-            const topicId = messageMatch[1];
-            const senderId = typeof body.senderId === 'string' ? (body.senderId as string).trim() : '';
-            const content = typeof body.content === 'string' ? (body.content as string).trim() : '';
-            if (!senderId || !content) {
-                writeJson(res, 400, { error: 'missing_required_fields', need: ['senderId', 'content'] });
-                return;
-            }
-            try {
-                const msg = this.context.conversationBus.postMessage(topicId, senderId, 'user', content);
-                
-                // Asynchronously trigger convene loop in background
-                this.context.conversationBus.convene(topicId, content).catch((err) => {
-                    this.context.log.error('convene_loop_failed', { topicId, error: err.message });
-                });
-
-                writeJson(res, 200, msg);
-            } catch (err: any) {
-                writeJson(res, 500, { error: 'failed_to_post_message', message: err.message });
-            }
-            return;
-        }
-
-        if (committeeMatch) {
-            const topicId = committeeMatch[1];
-            const goal = typeof body.goal === 'string' ? (body.goal as string).trim() : '';
-            if (!goal) {
-                writeJson(res, 400, { error: 'missing_required_fields', need: ['goal'] });
-                return;
-            }
-            try {
-                const quorumThreshold = safeConsensusThreshold(body.quorumThreshold, 0.85, 0.6, 1);
-                const failureThreshold = safeConsensusThreshold(body.failureThreshold, 0.5, 0.5, quorumThreshold);
-                const verdict = this.context.conversationBus.conveneCommittee(topicId, goal, {
-                    quorumThreshold,
-                    failureThreshold,
-                    traceparent: sanitizeTraceparent(typeof req.headers.traceparent === 'string' ? req.headers.traceparent : undefined),
-                    tracestate: sanitizeTracestate(typeof req.headers.tracestate === 'string' ? req.headers.tracestate : undefined),
-                });
-                writeJson(res, 200, verdict);
-            } catch (err: any) {
-                const code = err?.code === 'committee_topic_not_active' ? 404 : 500;
-                writeJson(res, code, {
-                    error: code === 404 ? 'committee_topic_not_active' : 'failed_to_convene_committee',
-                });
-            }
-            return;
-        }
-
-        if (closeMatch) {
-            const topicId = closeMatch[1];
-            try {
-                this.context.conversationBus.closeTopic(topicId);
-                writeJson(res, 200, { success: true });
-            } catch (err: any) {
-                writeJson(res, 500, { error: 'failed_to_close_topic', message: err.message });
-            }
-            return;
-        }
-
-        writeJson(res, 404, { error: 'unknown_conversation_action' });
-    }
-
-}
-
-function safeConsensusThreshold(value: unknown, fallback: number, min: number, max: number): number {
-    const n = typeof value === 'number' ? value : Number(value);
-    if (!Number.isFinite(n)) return fallback;
-    return Math.min(max, Math.max(min, n));
 }
