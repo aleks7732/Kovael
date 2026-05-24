@@ -1,7 +1,7 @@
 import * as http from 'node:http';
 import type { Socket } from 'node:net';
 import type { OrchestratorContext } from './OrchestratorContext.js';
-import { readJsonBody, writeJson, writeNoContent } from './http/HttpApiSupport.js';
+import { readJsonBody, type RouteDeps, writeJson, writeNoContent } from './http/HttpApiSupport.js';
 import { handleStateSnapshot } from './http/StateRoutes.js';
 import { handleComfyRequest } from './http/ComfyRoutes.js';
 import { handleTracesRequest } from './http/TraceRoutes.js';
@@ -19,6 +19,8 @@ export const DEFAULT_HTTP_TIMEOUTS: HttpTimeouts = {
     requestTimeout: 30_000,
     keepAliveTimeout: 10_000,
 };
+
+const ROUTE_DEPS: RouteDeps = { readJsonBody, writeJson };
 
 export class HttpApiRouter {
     private readonly context: OrchestratorContext;
@@ -90,19 +92,19 @@ export class HttpApiRouter {
                 return;
             }
             if (url.startsWith('/api/v1/chairs')) {
-                handleChairRequest(this.context, req, res, { readJsonBody, writeJson });
+                handleChairRequest(this.context, req, res, ROUTE_DEPS);
                 return;
             }
             if (url.startsWith('/api/v1/conversations')) {
-                handleConversationRequest(this.context, req, res, { readJsonBody, writeJson });
+                handleConversationRequest(this.context, req, res, ROUTE_DEPS);
                 return;
             }
             if (url.startsWith('/api/v1/traces')) {
-                handleTracesRequest(this.context, req, res, { readJsonBody, writeJson });
+                handleTracesRequest(this.context, req, res, ROUTE_DEPS);
                 return;
             }
             if (url.startsWith('/api/v1/comfy')) {
-                handleComfyRequest(this.context, req, res, { readJsonBody, writeJson });
+                handleComfyRequest(this.context, req, res, ROUTE_DEPS);
                 return;
             }
 
@@ -158,5 +160,4 @@ export class HttpApiRouter {
         clearTimeout(timer);
         this.headerDeadlineTimers.delete(socket);
     }
-
 }
