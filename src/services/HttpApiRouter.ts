@@ -2,10 +2,10 @@ import * as http from 'node:http';
 import type { Socket } from 'node:net';
 import type { OrchestratorContext } from './OrchestratorContext.js';
 import { ChairBridgeProvider } from './ModelProvider.js';
-import type { ComfyAspectRatio, LoraMixerUpdate } from './ComfyUiBridge.js';
 import { sanitizeTraceparent, sanitizeTracestate } from './ConsensusEngine.js';
 import { readJsonBody, writeJson, writeNoContent } from './http/HttpApiSupport.js';
 import { handleStateSnapshot } from './http/StateRoutes.js';
+import { handleComfyRequest } from './http/ComfyRoutes.js';
 
 export interface HttpTimeouts {
     headersTimeout: number;
@@ -101,7 +101,7 @@ export class HttpApiRouter {
                 return;
             }
             if (url.startsWith('/api/v1/comfy')) {
-                this.handleComfyRequest(req, res);
+                handleComfyRequest(this.context, req, res, { readJsonBody, writeJson });
                 return;
             }
 
@@ -413,78 +413,6 @@ export class HttpApiRouter {
         writeJson(res, 200, { items, stats: this.context.tracing?.ring?.stats() ?? null });
     }
 
-    private async handleComfyRequest(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
-        if (req.method !== 'POST') {
-            writeJson(res, 405, { error: 'method_not_allowed' });
-            return;
-        }
-
-        const url = new URL(req.url || '/', `http://${req.headers.host}`);
-        const action = url.pathname.replace(/^\/api\/v1\/comfy\/?/, '') || '';
-
-        const body = await readJsonBody(req, res);
-        if (body === null) return;
-
-        if (action === 'render' || action === 'mix') {
-            const agentId = typeof body.agentId === 'string' ? (body.agentId as string).trim() : '';
-            const prompt = typeof body.prompt === 'string' ? (body.prompt as string).trim() : '';
-            if (!agentId || !prompt) {
-                writeJson(res, 400, { error: 'missing_required_fields', need: ['agentId', 'prompt'] });
-                return;
-            }
-            try {
-                const mixer = Array.isArray(body.mixer) ? sanitizeMixer(body.mixer as unknown[]) : [];
-                const result = mixer.length > 0
-                    ? await this.context.comfyBridge.renderWithMixer({
-                          agentId,
-                          prompt,
-                          aspectRatio: safeAspectRatio(body.aspectRatio),
-                          traceId: typeof body.traceId === 'string' ? body.traceId : undefined,
-                          mixer,
-                       })
-                    : await this.context.comfyBridge.renderPortrait({
-                          agentId,
-                          prompt,
-                          aspectRatio: safeAspectRatio(body.aspectRatio),
-                          traceId: typeof body.traceId === 'string' ? body.traceId : undefined,
-                       });
-                const stream = result.promptId ? this.context.comfyBridge.streamDescriptor(result.promptId) : undefined;
-                writeJson(res, 200, {
-                    source: result.source,
-                    agentId: result.agentId,
-                    width: result.width,
-                    height: result.height,
-                    mimeType: result.mimeType,
-                    promptId: result.promptId,
-                    svg: result.svg,
-                    palette: result.palette,
-                    error: result.error,
-                    stream,
-                });
-            } catch (err) {
-                writeJson(res, 500, { error: 'comfy_render_failed', message: err instanceof Error ? err.message : String(err) });
-            }
-            return;
-        }
-
-        if (action === 'stream-url') {
-            const promptId = typeof body.promptId === 'string' ? (body.promptId as string).trim() : '';
-            if (!promptId) {
-                writeJson(res, 400, { error: 'missing_required_fields', need: ['promptId'] });
-                return;
-            }
-            writeJson(res, 200, this.context.comfyBridge.streamDescriptor(promptId, typeof body.clientId === 'string' ? body.clientId : undefined));
-            return;
-        }
-
-        writeJson(res, 404, { error: 'unknown_comfy_action', action });
-    }
-}
-
-const ALLOWED_ASPECT_RATIOS = new Set<ComfyAspectRatio>(['1:1', '16:9', '9:16', '4:3', '3:4', 'portrait', 'landscape', 'theater-card', 'flowchart']);
-
-function safeAspectRatio(value: unknown): ComfyAspectRatio | undefined {
-    return typeof value === 'string' && ALLOWED_ASPECT_RATIOS.has(value as ComfyAspectRatio) ? value as ComfyAspectRatio : undefined;
 }
 
 function safeConsensusThreshold(value: unknown, fallback: number, min: number, max: number): number {
@@ -502,30 +430,4 @@ function safeNodeId(value: unknown): string | null {
 
 function safeOptionalNodeId(value: unknown): string | undefined {
     return value === undefined ? undefined : safeNodeId(value) ?? undefined;
-}
-
-function sanitizeMixer(input: unknown[]): LoraMixerUpdate[] {
-    const out: LoraMixerUpdate[] = [];
-    for (const item of input) {
-        const raw = item as Record<string, unknown>;
-        const recipeId = typeof raw.recipeId === 'string' ? raw.recipeId.replace(/[\r\n\t]/g, ' ').trim() : '';
-        if (!recipeId) continue;
-        const update: LoraMixerUpdate = {
-            recipeId: recipeId.slice(0, 80),
-            strength: boundedNumber(raw.strength, 0, 2, 1),
-            denoise: boundedNumber(raw.denoise, 0, 1, 0.55),
-        };
-        if (typeof raw.trigger === 'string') {
-            update.trigger = raw.trigger.replace(/[\r\n\t]/g, ' ').trim().slice(0, 240);
-        }
-        out.push(update);
-        if (out.length >= 16) break;
-    }
-    return out;
-}
-
-function boundedNumber(value: unknown, min: number, max: number, fallback: number): number {
-    const n = typeof value === 'number' ? value : Number(value);
-    if (!Number.isFinite(n)) return fallback;
-    return Math.min(max, Math.max(min, n));
 }
