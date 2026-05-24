@@ -1,12 +1,12 @@
 import * as http from 'node:http';
 import type { Socket } from 'node:net';
 import type { OrchestratorContext } from './OrchestratorContext.js';
-import { ChairBridgeProvider } from './ModelProvider.js';
 import { sanitizeTraceparent, sanitizeTracestate } from './ConsensusEngine.js';
 import { readJsonBody, writeJson, writeNoContent } from './http/HttpApiSupport.js';
 import { handleStateSnapshot } from './http/StateRoutes.js';
 import { handleComfyRequest } from './http/ComfyRoutes.js';
 import { handleTracesRequest } from './http/TraceRoutes.js';
+import { handleChairRequest } from './http/ChairRoutes.js';
 
 export interface HttpTimeouts {
     headersTimeout: number;
@@ -90,7 +90,7 @@ export class HttpApiRouter {
                 return;
             }
             if (url.startsWith('/api/v1/chairs')) {
-                this.handleChairRequest(req, res);
+                handleChairRequest(this.context, req, res, { readJsonBody, writeJson });
                 return;
             }
             if (url.startsWith('/api/v1/conversations')) {
@@ -157,98 +157,6 @@ export class HttpApiRouter {
         if (!timer) return;
         clearTimeout(timer);
         this.headerDeadlineTimers.delete(socket);
-    }
-
-    private async handleChairRequest(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
-        const url = new URL(req.url || '/', `http://${req.headers.host}`);
-        const action = url.pathname.replace(/^\/api\/v1\/chairs\/?/, '') || '';
-
-        if (req.method === 'GET' && (action === '' || action === 'snapshot')) {
-            writeJson(res, 200, { chairs: this.context.chairs.snapshot(), stats: this.context.chairs.stats() });
-            return;
-        }
-
-        if (req.method !== 'POST') {
-            writeJson(res, 405, { error: 'method_not_allowed' });
-            return;
-        }
-
-        const body = await readJsonBody(req, res);
-        if (body === null) return;
-
-        if (action === 'claim') {
-            const agentId = typeof body.agentId === 'string' ? (body.agentId as string).trim() : '';
-            const provider = typeof body.provider === 'string' ? (body.provider as string).trim() : '';
-            if (!agentId || !provider) {
-                writeJson(res, 400, { error: 'missing_required_fields', need: ['agentId', 'provider'] });
-                return;
-            }
-            const claim = this.context.chairs.claim({
-                agentId,
-                provider,
-                capabilities: Array.isArray(body.capabilities)
-                    ? (body.capabilities as unknown[]).filter((c: unknown) => typeof c === 'string').slice(0, 32) as string[]
-                    : [],
-                trustTier: typeof body.trustTier === 'number' ? body.trustTier : undefined,
-                host: typeof body.host === 'string' ? body.host : undefined,
-                note: typeof body.note === 'string' ? (body.note as string).slice(0, 200) : undefined,
-                inboxUrl: typeof body.inboxUrl === 'string' ? (body.inboxUrl as string).trim() : undefined,
-            });
-            writeJson(res, 200, {
-                agentId: claim.agentId,
-                sessionId: claim.sessionId,
-                ttlMs: this.context.chairs.config().offlineMs,
-                heartbeatIntervalMs: Math.floor(this.context.chairs.config().healthyMs / 2),
-            });
-            return;
-        }
-
-        if (action === 'heartbeat') {
-            const agentId = typeof body.agentId === 'string' ? (body.agentId as string).trim() : '';
-            const sessionId = typeof body.sessionId === 'string' ? (body.sessionId as string).trim() : '';
-            if (!agentId || !sessionId) {
-                writeJson(res, 400, { error: 'missing_required_fields', need: ['agentId', 'sessionId'] });
-                return;
-            }
-            const claim = this.context.chairs.heartbeat(
-                agentId,
-                sessionId,
-                typeof body.note === 'string' ? (body.note as string).slice(0, 200) : undefined,
-            );
-            if (!claim) {
-                writeJson(res, 409, { error: 'unknown_or_superseded_session' });
-                return;
-            }
-            writeJson(res, 200, { status: claim.status, lastBeaconAt: claim.lastBeaconAt });
-            return;
-        }
-
-        if (action === 'release') {
-            const agentId = typeof body.agentId === 'string' ? (body.agentId as string).trim() : '';
-            const sessionId = typeof body.sessionId === 'string' ? (body.sessionId as string).trim() : '';
-            if (!agentId || !sessionId) {
-                writeJson(res, 400, { error: 'missing_required_fields', need: ['agentId', 'sessionId'] });
-                return;
-            }
-            const ok = this.context.chairs.release(agentId, sessionId, 'client_release');
-            writeJson(res, 200, { released: ok });
-            return;
-        }
-
-        if (action === 'reply') {
-            const topicId = typeof body.topicId === 'string' ? (body.topicId as string).trim() : '';
-            const agentId = typeof body.agentId === 'string' ? (body.agentId as string).trim() : '';
-            const content = typeof body.content === 'string' ? body.content as string : '';
-            if (!topicId || !agentId) {
-                writeJson(res, 400, { error: 'missing_required_fields', need: ['topicId', 'agentId'] });
-                return;
-            }
-            const success = ChairBridgeProvider.submitReply(topicId, agentId, content);
-            writeJson(res, 200, { success });
-            return;
-        }
-
-        writeJson(res, 404, { error: 'unknown_chair_action', action });
     }
 
     private async handleConversationRequest(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
