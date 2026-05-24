@@ -120,6 +120,31 @@ describe('ConvenePanel', () => {
         await waitFor(() => expect(onTopicCreated).toHaveBeenCalledWith('topic-xyz-123'));
     });
 
+    it('selects the created topic when the API returns the direct topic contract', async () => {
+        fetchMock.mockResolvedValueOnce({
+            ok: true,
+            json: () => Promise.resolve({
+                id: 'topic-direct-123',
+                title: 'direct topic',
+                participants: ['shaev'],
+                active: true,
+            }),
+            text: () => Promise.resolve(''),
+        });
+
+        const onTopicCreated = vi.fn();
+        render(<ConvenePanel roster={ROSTER} onTopicCreated={onTopicCreated} />);
+
+        fireEvent.change(screen.getByLabelText(/TOPIC TITLE/i), { target: { value: 'direct topic' } });
+        fireEvent.change(screen.getByLabelText(/CONVENE INSTRUCTION/i), { target: { value: 'reply once' } });
+        const chairButtons = screen.getAllByRole('button').filter((b) => b.getAttribute('type') === 'button');
+        fireEvent.click(chairButtons[0]);
+
+        fireEvent.click(screen.getByRole('button', { name: /DISPATCH CONVENER/i }));
+
+        await waitFor(() => expect(onTopicCreated).toHaveBeenCalledWith('topic-direct-123'));
+    });
+
     it('caps participant selection at 9 (selecting a 10th has no effect)', () => {
         const overfull = Array.from({ length: 12 }, (_, i) => card(`agent-${i}`, { chair: liveChair(`agent-${i}-session`) }));
         render(<ConvenePanel roster={overfull} />);

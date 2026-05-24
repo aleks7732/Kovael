@@ -246,6 +246,8 @@ export class ConversationBus extends EventEmitter {
 
         // Maintain an speaker execution queue
         const speakerQueue: string[] = [...participants];
+        const firstPassTarget = new Set(participants);
+        const respondedParticipants = new Set<string>();
 
         let turnCount = 0;
         const maxTurns = 6; // Hard cap to prevent unbounded convene loops.
@@ -352,6 +354,7 @@ Discipline Invariants:
                         topicId,
                     });
                 }
+                respondedParticipants.add(currentSpeaker);
                 turnCount++;
 
                 // Parse @mentions to dynamically prioritize the next speaker queue
@@ -393,7 +396,8 @@ Discipline Invariants:
                 const currentConfidence = Math.min(0.98, baseConfidence + turnCount * turnGain);
                 rollingConfidence.push(currentConfidence);
 
-                if (rollingConfidence.length >= stabilityK) {
+                const firstPassComplete = respondedParticipants.size >= firstPassTarget.size;
+                if (firstPassComplete && rollingConfidence.length >= stabilityK) {
                     const lastIdx = rollingConfidence.length - 1;
                     const deltaConf = Math.abs(rollingConfidence[lastIdx] - rollingConfidence[lastIdx - 1]);
                     const verifierMet = currentConfidence >= verifierThreshold;

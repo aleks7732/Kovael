@@ -40,13 +40,19 @@ export async function handleConversationRequest(
 
     if (topicMatch) {
         const title = typeof body.title === 'string' ? body.title.trim() : '';
-        const participants = Array.isArray(body.participants) ? body.participants : [];
+        const participants = sanitizeParticipants(body.participants);
+        const goal = typeof body.goal === 'string' ? body.goal.trim() : '';
         if (!title || participants.length === 0) {
             deps.writeJson(res, 400, { error: 'missing_required_fields', need: ['title', 'participants'] });
             return;
         }
         try {
-            const topic = context.conversationBus.createTopic(title, participants as string[]);
+            const topic = context.conversationBus.createTopic(title, participants);
+            if (goal) {
+                context.conversationBus.convene(topic.id, goal).catch((err) => {
+                    context.log.error('convene_loop_failed', { topicId: topic.id, error: errorMessage(err) });
+                });
+            }
             deps.writeJson(res, 200, topic);
         } catch (err) {
             deps.writeJson(res, 500, { error: 'failed_to_create_topic', message: errorMessage(err) });
@@ -120,6 +126,15 @@ function safeConsensusThreshold(value: unknown, fallback: number, min: number, m
     const n = typeof value === 'number' ? value : Number(value);
     if (!Number.isFinite(n)) return fallback;
     return Math.min(max, Math.max(min, n));
+}
+
+function sanitizeParticipants(value: unknown): string[] {
+    if (!Array.isArray(value)) return [];
+    const participants = value
+        .filter((participant): participant is string => typeof participant === 'string')
+        .map((participant) => participant.trim())
+        .filter((participant) => participant.length > 0);
+    return Array.from(new Set(participants));
 }
 
 function errorMessage(err: unknown): string {

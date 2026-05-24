@@ -4,6 +4,7 @@ import { AgentAvatarFallback } from '../AgentAvatarFallback';
 
 export interface StageProps {
   roster: AgentRosterCard[];
+  participantIds?: string[];
   activeSpeakerId: string | null;
   height?: number;
 }
@@ -15,14 +16,22 @@ type StageStyle = CSSProperties & {
 export const areStagePropsEqual = (prev: StageProps, next: StageProps): boolean => {
   if (prev.activeSpeakerId !== next.activeSpeakerId) return false;
   if (prev.height !== next.height) return false;
+  if (stageParticipantSignature(prev.participantIds) !== stageParticipantSignature(next.participantIds)) return false;
   return stageRosterSignature(prev.roster) === stageRosterSignature(next.roster);
 };
 
-export const Stage = memo(({ roster, activeSpeakerId, height = 320 }: StageProps) => {
+export const Stage = memo(({ roster, participantIds, activeSpeakerId, height = 320 }: StageProps) => {
   const rosterSignature = stageRosterSignature(roster);
+  const participantSignature = stageParticipantSignature(participantIds);
   const seats = useMemo(
-    () => [...roster].sort((a, b) => a.id.localeCompare(b.id)).slice(0, 9),
-    [rosterSignature, roster]
+    () => {
+      const participantSet = participantIds && participantIds.length > 0 ? new Set(participantIds) : null;
+      return [...roster]
+        .filter((agent) => !participantSet || participantSet.has(agent.id))
+        .sort((a, b) => a.id.localeCompare(b.id))
+        .slice(0, 9);
+    },
+    [rosterSignature, roster, participantIds, participantSignature]
   );
   const totalSeats = seats.length;
 
@@ -165,6 +174,11 @@ function stageRosterSignature(roster: AgentRosterCard[]): string {
       agent.chair?.presence ?? '',
     ].join('\u001f'))
     .join('\u001e');
+}
+
+function stageParticipantSignature(participantIds: string[] | undefined): string {
+  if (!participantIds) return '';
+  return [...new Set(participantIds)].sort((a, b) => a.localeCompare(b)).join('\u001f');
 }
 
 Stage.displayName = 'Stage';

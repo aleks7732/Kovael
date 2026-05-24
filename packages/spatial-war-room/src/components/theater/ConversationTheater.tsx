@@ -192,7 +192,12 @@ export const ConversationTheater = memo(() => {
             </div>
 
             {/* Stage: Seating seating table */}
-            <Stage roster={roster} activeSpeakerId={activeSpeakerId} height={stageHeight} />
+            <Stage
+              roster={roster}
+              participantIds={activeTopic.participants}
+              activeSpeakerId={activeSpeakerId}
+              height={stageHeight}
+            />
             <ResizeHandle
               axis="y"
               title="Resize round-table stage"

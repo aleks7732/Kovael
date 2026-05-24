@@ -63,18 +63,19 @@ export const ConvenePanel = memo(({ roster, onTopicCreated }: ConvenePanelProps)
         throw new Error(txt || `Server returned status ${response.status}`);
       }
 
-      const res = await response.json();
+      const res = await response.json() as unknown;
+      const topicId = extractTopicId(res);
       
       // Clear forms on success
       setTitle('');
       setGoal('');
       setSelectedIds([]);
       
-      if (onTopicCreated && res.topic?.id) {
-        onTopicCreated(res.topic.id);
+      if (onTopicCreated && topicId) {
+        onTopicCreated(topicId);
       }
-    } catch (err: any) {
-      setError(err.message || 'Failed to convene panel.');
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : 'Failed to convene panel.');
     } finally {
       setLoading(false);
     }
@@ -214,3 +215,14 @@ export const ConvenePanel = memo(({ roster, onTopicCreated }: ConvenePanelProps)
 
 ConvenePanel.displayName = 'ConvenePanel';
 export default ConvenePanel;
+
+function extractTopicId(responseBody: unknown): string | null {
+  if (!isRecord(responseBody)) return null;
+  if (typeof responseBody.id === 'string') return responseBody.id;
+  const nestedTopic = responseBody.topic;
+  return isRecord(nestedTopic) && typeof nestedTopic.id === 'string' ? nestedTopic.id : null;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
+}
