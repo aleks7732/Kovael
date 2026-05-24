@@ -4,9 +4,10 @@ import { useWarRoomStore } from '../../store/useWarRoomStore';
 
 interface CommitteeDrawerProps {
   topicId: string | null;
+  width?: number;
 }
 
-export const CommitteeDrawer = memo(({ topicId }: CommitteeDrawerProps) => {
+export const CommitteeDrawer = memo(({ topicId, width = 288 }: CommitteeDrawerProps) => {
   const verdicts = useWarRoomStore((s) => s.committeeVerdicts);
   const events = useWarRoomStore((s) => s.committeeEvents);
   const circuits = useWarRoomStore((s) => s.chairCircuits);
@@ -20,7 +21,11 @@ export const CommitteeDrawer = memo(({ topicId }: CommitteeDrawerProps) => {
   const openCircuits = Object.values(circuits).filter((circuit) => circuit.state !== 'closed');
 
   return (
-    <aside className="w-72 shrink-0 border-l border-white/5 bg-black/20 min-h-0 flex flex-col">
+    <aside
+      data-layout-panel="committee-drawer"
+      className="shrink-0 border-l border-white/5 bg-black/20 min-h-0 flex flex-col"
+      style={{ width }}
+    >
       <div className="p-3 border-b border-white/5 flex items-center gap-2">
         <GitBranch className="w-4 h-4 text-command-accent" aria-hidden="true" />
         <span className="text-[10px] font-extrabold uppercase tracking-widest text-command-warm-white/60">

@@ -28,6 +28,8 @@ export class HardwareMonitor extends EventEmitter {
     private latest: VramMetrics;
     private readonly intervalMs: number;
     private inFlight: boolean = false;
+    private running: boolean = false;
+    private generation: number = 0;
 
     constructor(intervalMs: number = 2000) {
         super();
@@ -44,12 +46,17 @@ export class HardwareMonitor extends EventEmitter {
     }
 
     public start(): void {
-        if (this.timer) return;
-        this.poll();
-        this.timer = setInterval(() => this.poll(), this.intervalMs);
+        if (this.running) return;
+        this.running = true;
+        const generation = this.generation;
+        this.poll(generation);
+        this.timer = setInterval(() => this.poll(generation), this.intervalMs);
     }
 
     public stop(): void {
+        if (!this.running && !this.timer) return;
+        this.running = false;
+        this.generation += 1;
         if (this.timer) {
             clearInterval(this.timer);
             this.timer = null;
@@ -60,8 +67,8 @@ export class HardwareMonitor extends EventEmitter {
         return { ...this.latest };
     }
 
-    private poll(): void {
-        if (this.inFlight) return;
+    private poll(generation: number): void {
+        if (!this.running || generation !== this.generation || this.inFlight) return;
         this.inFlight = true;
 
         let stdout = '';
@@ -72,6 +79,7 @@ export class HardwareMonitor extends EventEmitter {
             child = spawn('nvidia-smi', SMI_ARGS, { stdio: ['ignore', 'pipe', 'pipe'] });
         } catch {
             this.inFlight = false;
+            if (!this.running || generation !== this.generation) return;
             this.publishUnavailable('spawn_failed');
             return;
         }
@@ -81,11 +89,13 @@ export class HardwareMonitor extends EventEmitter {
 
         child.on('error', () => {
             this.inFlight = false;
+            if (!this.running || generation !== this.generation) return;
             this.publishUnavailable('nvidia-smi_missing');
         });
 
         child.on('close', (code) => {
             this.inFlight = false;
+            if (!this.running || generation !== this.generation) return;
             if (code !== 0) {
                 this.publishUnavailable(stderr.trim().split('\n')[0] || `exit_${code}`);
                 return;

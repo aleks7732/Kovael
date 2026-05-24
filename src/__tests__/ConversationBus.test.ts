@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { DatabaseSync } from 'node:sqlite';
 import { ChairRegistry } from '../services/ChairRegistry.js';
 import { PersonaLoader } from '../services/PersonaLoader.js';
@@ -125,6 +125,48 @@ describe('ConversationBus', () => {
         const stopping = busEvents.find((e) => e.type === 'conversation_stopping_criterion');
         expect(stopping).toBeDefined();
     }, 15000);
+
+    it('gives every selected participant one turn before adaptive stopping can end the round', async () => {
+        const participants = ['nyx-codex', 'shaev', 'nyx-openclaw'];
+        for (const agentId of participants) {
+            chairs.claim({
+                agentId,
+                provider: 'vitest',
+                inboxUrl: `http://localhost:9999/${agentId}/inbox`,
+            });
+        }
+
+        const topic = bus.createTopic('First Pass Guarantee', participants);
+        const originalFetch = global.fetch;
+        const randomSpy = vi.spyOn(Math, 'random')
+            .mockReturnValueOnce(0)
+            .mockReturnValueOnce(0.8)
+            .mockReturnValueOnce(0)
+            .mockReturnValueOnce(0.4)
+            .mockReturnValue(0.4);
+
+        global.fetch = (async (_url: string | URL | Request, init?: RequestInit) => {
+            const payload = JSON.parse(String(init?.body ?? '{}')) as { topicId: string; agentId: string };
+            queueMicrotask(() => {
+                ChairBridgeProvider.submitReply(payload.topicId, payload.agentId, `ack-${payload.agentId}`);
+            });
+            return new Response('', { status: 200 });
+        }) as typeof fetch;
+
+        try {
+            await bus.convene(topic.id, 'Each selected chair replies once.');
+        } finally {
+            global.fetch = originalFetch;
+            randomSpy.mockRestore();
+        }
+
+        const assistantNames = bus.getHistory(topic.id)
+            .filter((message) => message.role === 'assistant')
+            .map((message) => message.name)
+            .filter((name): name is string => typeof name === 'string');
+
+        expect(Array.from(new Set(assistantNames)).sort()).toEqual([...participants].sort());
+    }, 10000);
 
     it('bridges execution to live chairs using ChairBridgeProvider and handles replies', async () => {
         // Register/Claim a live chair with an inboxUrl

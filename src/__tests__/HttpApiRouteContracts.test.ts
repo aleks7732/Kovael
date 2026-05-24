@@ -124,6 +124,31 @@ describe('HttpApiRouter — route contracts', () => {
         expect(await closeRes.json()).toEqual({ success: true });
     });
 
+    it('creating a conversation with a goal starts replies from only the selected participants', async () => {
+        const participants = ['nyx-codex', 'shaev', 'nyx-openclaw'];
+        const topicRes = await fetch(api('/api/v1/conversations'), {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                title: 'Selected Chair Dispatch',
+                participants,
+                goal: 'Each selected chair should reply once.',
+            }),
+        });
+        expect(topicRes.status).toBe(200);
+        const topic = await topicRes.json() as { id: string; participants: string[] };
+        expect(topic.participants).toEqual(participants);
+
+        const history = await waitForConversationHistory(api, topic.id, participants.length);
+        const assistantNames = history
+            .filter((message) => message.role === 'assistant')
+            .map((message) => message.name)
+            .filter((name): name is string => typeof name === 'string');
+        const uniqueAssistantNames = Array.from(new Set(assistantNames)).sort();
+
+        expect(uniqueAssistantNames).toEqual([...participants].sort());
+    }, 15000);
+
     it('trace routes preserve list, detail miss, and reroute contracts', async () => {
         const list = await fetch(api('/api/v1/traces?limit=5'));
         expect(list.status).toBe(200);
@@ -210,3 +235,31 @@ describe('HttpApiRouter — route contracts', () => {
         });
     });
 });
+
+type HistoryMessage = {
+    role: string;
+    name?: string;
+    content: string;
+};
+
+async function waitForConversationHistory(
+    api: (path: string) => string,
+    topicId: string,
+    assistantCount: number,
+): Promise<HistoryMessage[]> {
+    const deadline = Date.now() + 10_000;
+    let lastHistory: HistoryMessage[] = [];
+    while (Date.now() < deadline) {
+        const historyRes = await fetch(api(`/api/v1/conversations/${topicId}/history`));
+        expect(historyRes.status).toBe(200);
+        lastHistory = await historyRes.json() as HistoryMessage[];
+        const uniqueAssistants = new Set(
+            lastHistory
+                .filter((message) => message.role === 'assistant' && typeof message.name === 'string')
+                .map((message) => message.name),
+        );
+        if (uniqueAssistants.size >= assistantCount) return lastHistory;
+        await new Promise((resolve) => setTimeout(resolve, 500));
+    }
+    throw new Error(`Timed out waiting for ${assistantCount} assistant replies; last history: ${JSON.stringify(lastHistory)}`);
+}

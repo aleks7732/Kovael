@@ -85,6 +85,7 @@ export class HttpApiRouter {
                     this.context.apiGate.respond401(res, reason);
                     return;
                 }
+                this.noteInteractiveActivity(req, url);
             }
 
             if (url.startsWith('/api/v1/state')) {
@@ -133,6 +134,9 @@ export class HttpApiRouter {
             this.armHeaderDeadline(socket, this.timeouts.headersTimeout);
             socket.on('close', () => this.disarmHeaderDeadline(socket));
         });
+        server.on('upgrade', (_req, socket) => {
+            this.disarmHeaderDeadline(socket as Socket);
+        });
 
         return server;
     }
@@ -159,5 +163,11 @@ export class HttpApiRouter {
         if (!timer) return;
         clearTimeout(timer);
         this.headerDeadlineTimers.delete(socket);
+    }
+
+    private noteInteractiveActivity(req: http.IncomingMessage, rawUrl: string): void {
+        const pathname = rawUrl.split('?')[0] || '/';
+        if (pathname.startsWith('/api/v1/chairs')) return;
+        this.context.resourceGovernor.noteActivity(`http:${req.method ?? 'GET'}:${pathname}`);
     }
 }

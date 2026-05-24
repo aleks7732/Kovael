@@ -24,6 +24,8 @@ import { ToastStack } from './components/ToastStack.js';
 import { CycleInspector } from './components/CycleInspector.js';
 import { StatusLegend } from './components/StatusLegend.js';
 import { ConversationTheater } from './components/theater/ConversationTheater.js';
+import { ResizeHandle } from './components/ResizeHandle.js';
+import { usePersistentDimension } from './hooks/usePersistentDimension.js';
 
 const nodeTypes = {
   agentHeartbeat: AgentHeartbeatNode,
@@ -58,6 +60,10 @@ const SpatialWarRoom = () => {
   const interAgentChatMode = useWarRoomStore((s) => s.interAgentChatMode);
   const interAgentMessages = useWarRoomStore((s) => s.interAgentMessages);
   const [shortcutSheetOpen, setShortcutSheetOpen] = useState(false);
+  const compactLayout = typeof window !== 'undefined' && window.innerWidth < 1180;
+  const [missionWidth, setMissionWidth] = usePersistentDimension('kovael.layout.missionWidth', compactLayout ? 180 : 340, 140, 560);
+  const [rosterWidth, setRosterWidth] = usePersistentDimension('kovael.layout.rosterWidth', compactLayout ? 200 : 300, 180, 620);
+  const [feedHeight, setFeedHeight] = usePersistentDimension('kovael.layout.feedHeight', 44, 44, 220);
 
   const wsConnected = useWarRoomStore((s) => s.wsConnected);
   const selectedCycleId = useWarRoomStore((s) => s.selectedCycleId);
@@ -305,8 +311,13 @@ const SpatialWarRoom = () => {
 
       <ClaimsStrip stats={claimStats} retryPending={retryPendingCount} />
 
-      <div className="flex flex-1 min-h-0">
-        <MissionBriefPanel briefings={anxBriefings} phaseEvents={phaseEvents} />
+      <div className="flex flex-1 min-h-0 overflow-hidden">
+        <MissionBriefPanel briefings={anxBriefings} phaseEvents={phaseEvents} width={missionWidth} />
+        <ResizeHandle
+          axis="x"
+          title="Resize mission brief"
+          onResize={(delta) => setMissionWidth((width) => width + delta)}
+        />
 
         {activeTab === 'theater' ? (
           <ConversationTheater />
@@ -353,6 +364,11 @@ const SpatialWarRoom = () => {
           </main>
         )}
 
+        <ResizeHandle
+          axis="x"
+          title="Resize agent roster"
+          onResize={(delta) => setRosterWidth((width) => width - delta)}
+        />
         <AgentRosterPanel
           roster={agentRoster}
           hardware={hardware}
@@ -362,15 +378,22 @@ const SpatialWarRoom = () => {
           interAgentMessages={interAgentMessages}
           onToggleInterAgentChat={toggleInterAgentChat}
           onChangeInterAgentChatMode={changeInterAgentChatMode}
+          width={rosterWidth}
         />
       </div>
 
+      <ResizeHandle
+        axis="y"
+        title="Resize system feed"
+        onResize={(delta) => setFeedHeight((height) => height - delta)}
+      />
       <PhaseFeed
         phaseEvents={phaseEvents}
         hookEvents={hookEvents}
         retryEvents={retryEvents}
         reconcileActions={reconcileActions}
         onSelectCycle={setSelectedCycle}
+        height={feedHeight}
       />
 
       <ToastStack phaseEvents={phaseEvents} />

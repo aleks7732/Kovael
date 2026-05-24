@@ -5,6 +5,7 @@ import type { ANXBriefing, PhaseEvent } from '../store/useWarRoomStore';
 interface MissionBriefPanelProps {
   briefings: ANXBriefing[];
   phaseEvents: PhaseEvent[];
+  width?: number;
 }
 
 const TERMINAL_PHASES = new Set(['Succeeded', 'Failed', 'Stalled']);
@@ -128,13 +129,17 @@ ActiveMissionCard.displayName = 'MissionBriefPanel.ActiveMissionCard';
 
 const EMPTY_BRIEF_TEXT = 'No mission briefing pinned yet — drop an ANX SOP and it lands here.';
 
-export const MissionBriefPanel = memo(({ briefings, phaseEvents }: MissionBriefPanelProps) => {
+export const MissionBriefPanel = memo(({ briefings, phaseEvents, width = 340 }: MissionBriefPanelProps) => {
   const current = briefings[0];
   const archive = briefings.slice(1, 5);
   const activeMission = deriveActiveMission(phaseEvents);
 
   return (
-    <aside className="h-full w-[340px] shrink-0 border-r border-white/5 bg-black/20 backdrop-blur-xl flex flex-col">
+    <aside
+      data-layout-panel="mission-brief"
+      className="h-full shrink-0 border-r border-white/5 bg-black/20 backdrop-blur-xl flex flex-col"
+      style={{ width }}
+    >
       <div className="px-4 py-3 border-b border-white/5">
         <div className="text-[10px] font-semibold tracking-wider text-command-warm-white/80 uppercase">Mission Brief</div>
         <div className="font-display font-bold text-[14px] text-command-warm-white leading-tight mt-0.5">

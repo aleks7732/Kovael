@@ -13,8 +13,9 @@ export const ConvenePanel = memo(({ roster, onTopicCreated }: ConvenePanelProps)
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // Filter roster to distinct online/idle/dispatching agents (any live chair)
-  const availableChairs = roster.filter((r) => r.status !== 'offline');
+  // Only live Chair Beacon claims are eligible. Static roster status can be
+  // "online" even when no agent process has claimed the chair.
+  const availableChairs = roster.filter((r) => r.status !== 'offline' && r.chair?.presence === 'live');
 
   // Toggle selection of a participant
   const toggleSelection = (agentId: string) => {
@@ -62,18 +63,19 @@ export const ConvenePanel = memo(({ roster, onTopicCreated }: ConvenePanelProps)
         throw new Error(txt || `Server returned status ${response.status}`);
       }
 
-      const res = await response.json();
+      const res = await response.json() as unknown;
+      const topicId = extractTopicId(res);
       
       // Clear forms on success
       setTitle('');
       setGoal('');
       setSelectedIds([]);
       
-      if (onTopicCreated && res.topic?.id) {
-        onTopicCreated(res.topic.id);
+      if (onTopicCreated && topicId) {
+        onTopicCreated(topicId);
       }
-    } catch (err: any) {
-      setError(err.message || 'Failed to convene panel.');
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : 'Failed to convene panel.');
     } finally {
       setLoading(false);
     }
@@ -129,7 +131,7 @@ export const ConvenePanel = memo(({ roster, onTopicCreated }: ConvenePanelProps)
             <div className="grid grid-cols-3 gap-2 max-h-[135px] overflow-y-auto pr-1 scrollbar-thin">
               {availableChairs.length === 0 ? (
                 <div className="col-span-3 text-[10px] text-command-warm-white/25 py-6 text-center">
-                  No online agents registered on the mesh.
+                  No live chairs registered on the mesh.
                 </div>
               ) : (
                 availableChairs.map((agent) => {
@@ -213,3 +215,14 @@ export const ConvenePanel = memo(({ roster, onTopicCreated }: ConvenePanelProps)
 
 ConvenePanel.displayName = 'ConvenePanel';
 export default ConvenePanel;
+
+function extractTopicId(responseBody: unknown): string | null {
+  if (!isRecord(responseBody)) return null;
+  if (typeof responseBody.id === 'string') return responseBody.id;
+  const nestedTopic = responseBody.topic;
+  return isRecord(nestedTopic) && typeof nestedTopic.id === 'string' ? nestedTopic.id : null;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
+}

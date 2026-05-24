@@ -252,6 +252,27 @@ describe('Stage', () => {
         expect(seatLabels.length).toBe(9);
     });
 
+    it('shows only the selected topic participants when participantIds are provided', () => {
+        const { container } = render(
+            <Stage
+                roster={[
+                    makeCard('nyx-codex', { name: 'nyx-codex' }),
+                    makeCard('shaev', { name: 'Shaev' }),
+                    makeCard('nyx-openclaw', { name: 'nyx-openclaw' }),
+                    makeCard('nyx-cli', { name: 'nyx-cli' }),
+                ]}
+                participantIds={['nyx-codex', 'shaev', 'nyx-openclaw']}
+                activeSpeakerId={null}
+            />,
+        );
+
+        const labels = Array.from(container.querySelectorAll('.max-w-\\[80px\\] span:first-child')).map(
+            (node) => node.textContent?.trim(),
+        );
+        expect(labels).toEqual(['codex', 'openclaw', 'Shaev']);
+        expect(screen.queryByText('cli')).toBeNull();
+    });
+
     it('strips the nyx- prefix from the display name chip', () => {
         render(
             <Stage

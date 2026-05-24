@@ -22,6 +22,7 @@ import type { HookRunner } from './HookRunner.js';
 import type { WorkflowLoader } from './WorkflowLoader.js';
 import type { RateLimitTracker } from './RateLimitTracker.js';
 import type { TracingBridge } from './Tracing.js';
+import type { ResourceGovernor } from './ResourceGovernor.js';
 import type { WebSocketServer } from 'ws';
 
 export interface OrchestratorContext {
@@ -50,6 +51,7 @@ export interface OrchestratorContext {
     readonly workflowLoader: WorkflowLoader;
     readonly rateLimits: RateLimitTracker;
     readonly tracing?: TracingBridge;
+    readonly resourceGovernor: ResourceGovernor;
     readonly wss: WebSocketServer;
 
     // --- Inter-agent chat state (accessed by WebSocketBus) ---

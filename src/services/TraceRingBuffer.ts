@@ -105,6 +105,19 @@ export class TraceRingBuffer {
         return out;
     }
 
+    public trimTo(retained: number): number {
+        const limit = Math.max(0, Math.floor(retained));
+        let droppedCount = 0;
+        while (this.order.length > limit) {
+            const dropped = this.order.shift();
+            if (dropped !== undefined && this.byCycle.delete(dropped)) {
+                this.evictedCount += 1;
+                droppedCount += 1;
+            }
+        }
+        return droppedCount;
+    }
+
     public size(): number {
         return this.order.length;
     }

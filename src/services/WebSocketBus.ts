@@ -97,6 +97,7 @@ export class WebSocketBus {
     private initializeBus(): void {
         this.wss.on('connection', (ws: WebSocket, request) => {
             const nodeId = this.extractNodeId(request);
+            this.context.resourceGovernor.noteActivity(`ws:connect:${nodeId}`);
             ws.on('error', (err) => {
                 this.context.log.warn('ws_client_error', {
                     node_id: nodeId,
@@ -154,6 +155,7 @@ export class WebSocketBus {
             }
 
             ws.on('message', async (data: Buffer | ArrayBuffer | Buffer[]) => {
+                this.context.resourceGovernor.noteActivity(`ws:message:${nodeId}`);
                 const messageBytes = wsMessageByteLength(data);
                 if (messageBytes > this.context.maxWsMessageBytes) {
                     ws.close(1009, 'payload_too_large');

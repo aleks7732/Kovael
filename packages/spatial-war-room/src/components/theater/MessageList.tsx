@@ -10,11 +10,14 @@ interface MessageListProps {
 }
 
 export const MessageList = memo(({ messages, roster, activeTopicId, activeSpeakerId }: MessageListProps) => {
-  const bottomRef = useRef<HTMLDivElement | null>(null);
+  const transcriptRef = useRef<HTMLDivElement | null>(null);
 
-  // Auto-scroll transcript pane when new tokens or messages stream in
+  // Auto-scroll only the transcript pane. scrollIntoView also scrolls parent
+  // Theater containers, which can pull the round-table stage off screen.
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
+    const transcript = transcriptRef.current;
+    if (!transcript) return;
+    transcript.scrollTop = transcript.scrollHeight;
   }, [messages, activeTopicId]);
 
   // Find dynamic details of sender
@@ -91,7 +94,7 @@ export const MessageList = memo(({ messages, roster, activeTopicId, activeSpeake
       </div>
 
       {/* Transcript Scroll Area */}
-      <div className="flex-1 overflow-y-auto px-4 py-4 space-y-4 max-h-[420px] scrollbar-thin">
+      <div ref={transcriptRef} data-transcript-scroll className="flex-1 overflow-y-auto px-4 py-4 space-y-4 scrollbar-thin">
         {messages.length === 0 ? (
           <div className="py-12 flex flex-col items-center justify-center text-command-warm-white/25">
             <span className="text-[11px] uppercase tracking-widest animate-pulse">Awaiting first participant reply...</span>
@@ -197,7 +200,6 @@ export const MessageList = memo(({ messages, roster, activeTopicId, activeSpeake
             );
           })
         )}
-        <div ref={bottomRef} />
       </div>
     </div>
   );

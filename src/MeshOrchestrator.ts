@@ -5,7 +5,7 @@ import { MevHandshake } from './services/MevHandshake.js';
 import { SemanticIngestor } from './services/SemanticIngestor.js';
 import { HardwareMonitor, VramMetrics } from './services/HardwareMonitor.js';
 import { PhaseEvent } from './protocols/TriadStateMachine.js';
-import { TaskClaimMachine, ClaimEvent } from './protocols/TaskClaimMachine.js';
+import { TaskClaimMachine, ClaimEvent, ClaimState } from './protocols/TaskClaimMachine.js';
 import { RetryQueue, RetryDispatch, RetryConfig } from './services/RetryQueue.js';
 import { Reconciler, ReconcileAction, ReconcilerConfig } from './services/Reconciler.js';
 import { WorkspaceManager } from './services/WorkspaceManager.js';
@@ -39,8 +39,17 @@ import { OrchestratorContext } from './services/OrchestratorContext.js';
 import { HttpApiRouter, HttpTimeouts, DEFAULT_HTTP_TIMEOUTS } from './services/HttpApiRouter.js';
 import { WebSocketBus } from './services/WebSocketBus.js';
 import { InterAgentChatManager } from './services/InterAgentChatManager.js';
+import { ResourceGovernor, ResourceModeChange } from './services/ResourceGovernor.js';
 
 export { HttpTimeouts, DEFAULT_HTTP_TIMEOUTS };
+
+export interface OrchestratorResourceModeConfig {
+    enabled?: boolean;
+    idleAfterMs?: number;
+    sweepIntervalMs?: number;
+    idleTaskCacheRetain?: number;
+    idleTraceRetain?: number;
+}
 
 export interface OrchestratorConfig {
     retryQueue?: Partial<RetryConfig>;
@@ -50,7 +59,16 @@ export interface OrchestratorConfig {
     minReadyChairs?: number;
     dbPath?: string;
     rateLimit?: Partial<RateLimiterConfig>;
+    resourceMode?: Partial<OrchestratorResourceModeConfig>;
 }
+
+const DEFAULT_RESOURCE_MODE_CONFIG: Required<OrchestratorResourceModeConfig> = {
+    enabled: true,
+    idleAfterMs: 10 * 60 * 1000,
+    sweepIntervalMs: 5_000,
+    idleTaskCacheRetain: 20,
+    idleTraceRetain: 20,
+};
 
 export class MeshOrchestrator extends EventEmitter implements OrchestratorContext {
     public readonly memoryDb: DatabaseSync;
@@ -69,6 +87,7 @@ export class MeshOrchestrator extends EventEmitter implements OrchestratorContex
     public readonly ingestor: SemanticIngestor;
     public readonly log: Logger = rootLogger;
     public readonly maxWsMessageBytes: number = 5 * 1024 * 1024;
+    public readonly resourceGovernor: ResourceGovernor;
 
     // Caches and state variables
     public agentCards: any[] = [];
@@ -82,6 +101,7 @@ export class MeshOrchestrator extends EventEmitter implements OrchestratorContex
     private readonly server: http.Server;
     private readonly wsBus: WebSocketBus;
     private readonly apiRouter: HttpApiRouter;
+    private readonly resourceModeConfig: Required<OrchestratorResourceModeConfig>;
 
     public get wss() {
         return this.wsBus.wss;
@@ -171,6 +191,16 @@ export class MeshOrchestrator extends EventEmitter implements OrchestratorContex
         );
         this.conversationBus.setDispatchGate((agentId) => this.circuitBreaker.canDispatch(agentId));
 
+        this.resourceModeConfig = resolveResourceModeConfig(cfg.resourceMode ?? {});
+        this.resourceGovernor = new ResourceGovernor({
+            enabled: this.resourceModeConfig.enabled,
+            idleAfterMs: this.resourceModeConfig.idleAfterMs,
+            sweepIntervalMs: this.resourceModeConfig.sweepIntervalMs,
+            isBusy: () => this.hasInteractiveWork(),
+            onEnterIdle: (event) => this.enterLightweightMode(event),
+            onEnterActive: (event) => this.enterActiveMode(event),
+        });
+
         this.health = new HealthEndpoints(
             () => ({
                 chairsActive: this.chairs.stats().online,
@@ -214,6 +244,7 @@ export class MeshOrchestrator extends EventEmitter implements OrchestratorContex
         });
 
         this.hardware.start();
+        this.resourceGovernor.start();
         this.triggerIngest();
 
         this.health.setReady();
@@ -539,6 +570,7 @@ export class MeshOrchestrator extends EventEmitter implements OrchestratorContex
     }
 
     public async injectTask(goal: string): Promise<VerificationReceipt> {
+        this.resourceGovernor.noteActivity('task:inject');
         const taskHash = crypto.createHash('sha256').update(goal).digest('hex');
         const cycleId = crypto.randomUUID();
         const cycleLog = this.log.scope({ cycle_id: cycleId, task_hash: taskHash });
@@ -646,6 +678,7 @@ export class MeshOrchestrator extends EventEmitter implements OrchestratorContex
 
     public close() {
         this.apiRouter.close();
+        this.resourceGovernor.stop();
         this.stopInterAgentChatLoop();
         this.personaLoader.stop();
         this.workflowLoader.stop();
@@ -663,4 +696,95 @@ export class MeshOrchestrator extends EventEmitter implements OrchestratorContex
             this.memoryDb.close();
         });
     }
+
+    private hasInteractiveWork(): boolean {
+        if ((this.wsBus?.wss?.clients?.size ?? 0) > 0) return true;
+        if (this.conversationBus.activeTopicCount() > 0) return true;
+        const stats = this.claims.stats();
+        return stats[ClaimState.Claimed] > 0 || stats[ClaimState.Running] > 0;
+    }
+
+    private enterLightweightMode(event: ResourceModeChange): void {
+        this.hardware.stop();
+        if (this.interAgentChatEnabled) {
+            this.stopInterAgentChatLoop();
+        }
+
+        const droppedNodes = this.nodeCache.size;
+        this.nodeCache.clear();
+
+        const droppedTasks = Math.max(0, this.taskCache.length - this.resourceModeConfig.idleTaskCacheRetain);
+        if (droppedTasks > 0) {
+            this.taskCache = this.taskCache.slice(-this.resourceModeConfig.idleTaskCacheRetain);
+        }
+
+        this.hardwareCache = null;
+        this.activeCycles.clear();
+        const droppedTraces = this.tracing?.ring.trimTo(this.resourceModeConfig.idleTraceRetain) ?? 0;
+        const maybeGc = (globalThis as { gc?: () => void }).gc;
+        if (typeof maybeGc === 'function') {
+            try {
+                maybeGc();
+            } catch {
+                // GC is best-effort and only available when Node is run with --expose-gc.
+            }
+        }
+
+        this.log.info('resource_mode_idle', {
+            idle_for_ms: event.idleForMs,
+            dropped_nodes: droppedNodes,
+            dropped_tasks: droppedTasks,
+            dropped_traces: droppedTraces,
+        });
+    }
+
+    private enterActiveMode(event: ResourceModeChange): void {
+        this.hardware.start();
+        if (this.interAgentChatEnabled) {
+            this.startInterAgentChatLoop();
+        }
+        this.log.info('resource_mode_active', { reason: event.reason });
+        this.broadcast({
+            type: 'resource_mode',
+            nodeId: 'resource-governor',
+            data: this.resourceGovernor.snapshot(),
+        });
+    }
+}
+
+function resolveResourceModeConfig(
+    overrides: Partial<OrchestratorResourceModeConfig>,
+): Required<OrchestratorResourceModeConfig> {
+    return {
+        ...DEFAULT_RESOURCE_MODE_CONFIG,
+        enabled: readBooleanEnv('KOVAEL_RESOURCE_MODE_ENABLED', DEFAULT_RESOURCE_MODE_CONFIG.enabled),
+        idleAfterMs: readPositiveIntEnv('KOVAEL_RESOURCE_IDLE_AFTER_MS', DEFAULT_RESOURCE_MODE_CONFIG.idleAfterMs),
+        sweepIntervalMs: readPositiveIntEnv('KOVAEL_RESOURCE_SWEEP_INTERVAL_MS', DEFAULT_RESOURCE_MODE_CONFIG.sweepIntervalMs),
+        idleTaskCacheRetain: readNonNegativeIntEnv(
+            'KOVAEL_RESOURCE_IDLE_TASK_RETAIN',
+            DEFAULT_RESOURCE_MODE_CONFIG.idleTaskCacheRetain,
+        ),
+        idleTraceRetain: readNonNegativeIntEnv(
+            'KOVAEL_RESOURCE_IDLE_TRACE_RETAIN',
+            DEFAULT_RESOURCE_MODE_CONFIG.idleTraceRetain,
+        ),
+        ...overrides,
+    };
+}
+
+function readBooleanEnv(name: string, fallback: boolean): boolean {
+    const value = process.env[name]?.trim().toLowerCase();
+    if (value === '1' || value === 'true' || value === 'yes' || value === 'on') return true;
+    if (value === '0' || value === 'false' || value === 'no' || value === 'off') return false;
+    return fallback;
+}
+
+function readPositiveIntEnv(name: string, fallback: number): number {
+    const parsed = Number.parseInt(process.env[name] ?? '', 10);
+    return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function readNonNegativeIntEnv(name: string, fallback: number): number {
+    const parsed = Number.parseInt(process.env[name] ?? '', 10);
+    return Number.isInteger(parsed) && parsed >= 0 ? parsed : fallback;
 }

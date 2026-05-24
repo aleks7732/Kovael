@@ -12,6 +12,7 @@ interface AgentRosterPanelProps {
   interAgentMessages: InterAgentMessage[];
   onToggleInterAgentChat: (enabled: boolean) => void;
   onChangeInterAgentChatMode: (mode: 'technical' | 'interests') => void;
+  width?: number;
 }
 
 interface StatusStyle { dot: string; text: string; label: string }
@@ -156,35 +157,36 @@ const AgentCard = memo(({ card, rate, isSpeaking }: { card: AgentRosterCard; rat
       </div>
 
       <div className="flex-1 min-w-0">
-        <div className="flex items-start justify-between gap-2">
-          <div className="font-display font-bold text-[14px] text-command-warm-white leading-none truncate flex items-center gap-1.5">
-            {card.name}
+        <div data-roster-name-row className="flex items-center justify-between gap-2 min-w-0">
+          <div className="font-display font-bold text-[14px] text-command-warm-white leading-none min-w-0 flex flex-1 items-center gap-1.5">
+            <span className="truncate">{card.name}</span>
             {isSpeaking && (
               <span className="w-1.5 h-1.5 rounded-full bg-command-accent animate-pulse shadow-[0_0_4px_rgba(193,95,60,0.8)]" title="Speaking" />
             )}
           </div>
-          <div className="flex items-center gap-1.5 shrink-0">
-            <ChairBeaconPill card={card} />
-            {rate && (
-              <span
-                className={`t-mono text-[8.5px] font-semibold tracking-wide px-1.5 py-0.5 rounded tabular-nums ${
-                  rate.blocked
-                    ? 'bg-red-500/15 text-red-300'
-                    : rate.inWindow / rate.capacity > 0.7
-                      ? 'bg-amber-500/15 text-amber-300'
-                      : 'bg-emerald-500/10 text-emerald-300/80'
-                }`}
-                title={`Rate-limit: ${rate.inWindow} of ${rate.capacity} dispatches in last ${Math.round(rate.windowMs / 1000)}s`}
-              >
-                {rate.inWindow}/{rate.capacity}
-              </span>
-            )}
-            {card.trust_tier !== undefined && (
-              <div className="t-mono text-[9px] text-command-accent/85 font-bold tracking-wider" title={TRUST_LABEL[card.trust_tier] ?? `Trust tier ${card.trust_tier}`}>
-                T{card.trust_tier}
-              </div>
-            )}
-          </div>
+          {card.trust_tier !== undefined && (
+            <div className="t-mono text-[9px] text-command-accent/85 font-bold tracking-wider shrink-0" title={TRUST_LABEL[card.trust_tier] ?? `Trust tier ${card.trust_tier}`}>
+              T{card.trust_tier}
+            </div>
+          )}
+        </div>
+
+        <div data-roster-beacon-row className="mt-1 flex min-w-0 flex-wrap items-center gap-1.5">
+          <ChairBeaconPill card={card} />
+          {rate && (
+            <span
+              className={`t-mono text-[8.5px] font-semibold tracking-wide px-1.5 py-0.5 rounded tabular-nums ${
+                rate.blocked
+                  ? 'bg-red-500/15 text-red-300'
+                  : rate.inWindow / rate.capacity > 0.7
+                    ? 'bg-amber-500/15 text-amber-300'
+                    : 'bg-emerald-500/10 text-emerald-300/80'
+              }`}
+              title={`Rate-limit: ${rate.inWindow} of ${rate.capacity} dispatches in last ${Math.round(rate.windowMs / 1000)}s`}
+            >
+              {rate.inWindow}/{rate.capacity}
+            </span>
+          )}
         </div>
 
         <div className="flex items-center justify-between mt-1">
@@ -295,6 +297,7 @@ export const AgentRosterPanel = memo(({
   interAgentMessages,
   onToggleInterAgentChat,
   onChangeInterAgentChatMode,
+  width = 300,
 }: AgentRosterPanelProps) => {
   const activeTopicId = useWarRoomStore((s) => s.activeTopicId);
   const topics = useWarRoomStore((s) => s.topics);
@@ -318,7 +321,11 @@ export const AgentRosterPanel = memo(({
   );
 
   return (
-  <aside className="h-full w-[300px] shrink-0 border-l border-white/5 bg-black/20 backdrop-blur-xl flex flex-col">
+  <aside
+    data-layout-panel="agent-roster"
+    className="h-full shrink-0 border-l border-white/5 bg-black/20 backdrop-blur-xl flex flex-col"
+    style={{ width }}
+  >
     <div className="px-4 py-3 border-b border-white/5 flex items-center justify-between">
       <div>
         <div className="t-eyebrow">AGENT_ROSTER</div>

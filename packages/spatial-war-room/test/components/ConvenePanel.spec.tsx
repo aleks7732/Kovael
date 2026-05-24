@@ -14,10 +14,19 @@ function card(id: string, overrides: Partial<AgentRosterCard> = {}): AgentRoster
     };
 }
 
+function liveChair(sessionId: string): NonNullable<AgentRosterCard['chair']> {
+    return {
+        sessionId,
+        claimedAt: Date.now() - 1_000,
+        lastBeaconAt: Date.now() - 500,
+        presence: 'live',
+    };
+}
+
 const ROSTER: AgentRosterCard[] = [
     card('nyx-antigravity', { name: 'Nyx-Antigravity', accent_hex: '#d97706' }),
-    card('shaev',           { name: 'Shaev', accent_hex: '#059669' }),
-    card('nyx-codex',       { name: 'Nyx-Codex', accent_hex: '#7c3aed' }),
+    card('shaev',           { name: 'Shaev', accent_hex: '#059669', chair: liveChair('shaev-session') }),
+    card('nyx-codex',       { name: 'Nyx-Codex', accent_hex: '#7c3aed', chair: liveChair('codex-session') }),
     card('offline-chair',   { status: 'offline' }), // should be filtered out
 ];
 
@@ -46,15 +55,16 @@ describe('ConvenePanel', () => {
         expect(screen.getByRole('button', { name: /DISPATCH CONVENER/i })).toBeTruthy();
     });
 
-    it('hides offline chairs from the participant grid', () => {
+    it('shows only live claimed chairs in the participant grid', () => {
         const { container } = render(<ConvenePanel roster={ROSTER} />);
         // Each chair button is a <button type="button"> inside the grid;
-        // offline chairs must be excluded so they cannot be selected.
+        // offline and unclaimed static chairs must be excluded so they cannot
+        // be selected by accident.
         const chairButtons = container.querySelectorAll('button[type="button"]');
         const ids = Array.from(chairButtons).map((b) => b.textContent ?? '');
+        expect(ids.some((t) => t.toLowerCase().includes('nyx-antigravity'))).toBe(false);
         expect(ids.some((t) => t.toLowerCase().includes('offline-chair'))).toBe(false);
-        // Exactly 3 online chairs in our roster
-        expect(chairButtons.length).toBe(3);
+        expect(chairButtons.length).toBe(2);
     });
 
     it('shows an error and does not POST if the form is submitted with no title', async () => {
@@ -110,8 +120,33 @@ describe('ConvenePanel', () => {
         await waitFor(() => expect(onTopicCreated).toHaveBeenCalledWith('topic-xyz-123'));
     });
 
+    it('selects the created topic when the API returns the direct topic contract', async () => {
+        fetchMock.mockResolvedValueOnce({
+            ok: true,
+            json: () => Promise.resolve({
+                id: 'topic-direct-123',
+                title: 'direct topic',
+                participants: ['shaev'],
+                active: true,
+            }),
+            text: () => Promise.resolve(''),
+        });
+
+        const onTopicCreated = vi.fn();
+        render(<ConvenePanel roster={ROSTER} onTopicCreated={onTopicCreated} />);
+
+        fireEvent.change(screen.getByLabelText(/TOPIC TITLE/i), { target: { value: 'direct topic' } });
+        fireEvent.change(screen.getByLabelText(/CONVENE INSTRUCTION/i), { target: { value: 'reply once' } });
+        const chairButtons = screen.getAllByRole('button').filter((b) => b.getAttribute('type') === 'button');
+        fireEvent.click(chairButtons[0]);
+
+        fireEvent.click(screen.getByRole('button', { name: /DISPATCH CONVENER/i }));
+
+        await waitFor(() => expect(onTopicCreated).toHaveBeenCalledWith('topic-direct-123'));
+    });
+
     it('caps participant selection at 9 (selecting a 10th has no effect)', () => {
-        const overfull = Array.from({ length: 12 }, (_, i) => card(`agent-${i}`));
+        const overfull = Array.from({ length: 12 }, (_, i) => card(`agent-${i}`, { chair: liveChair(`agent-${i}-session`) }));
         render(<ConvenePanel roster={overfull} />);
         const chairButtons = screen.getAllByRole('button').filter((b) => b.getAttribute('type') === 'button');
 
@@ -146,8 +181,8 @@ describe('ConvenePanel', () => {
         await waitFor(() => expect(screen.getByText(/orchestrator unavailable/i)).toBeTruthy());
     });
 
-    it('disables the dispatch button when there are no online chairs', () => {
-        render(<ConvenePanel roster={[card('offline-only', { status: 'offline' })]} />);
+    it('disables the dispatch button when there are no live claimed chairs', () => {
+        render(<ConvenePanel roster={[card('unclaimed-online'), card('offline-only', { status: 'offline' })]} />);
         const submit = screen.getByRole('button', { name: /DISPATCH CONVENER/i });
         expect((submit as HTMLButtonElement).disabled).toBe(true);
     });

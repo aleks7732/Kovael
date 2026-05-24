@@ -113,4 +113,13 @@ describe('MessageList', () => {
         );
         expect(screen.getByText('2 MESSAGES')).toBeTruthy();
     });
+
+    it('does not auto-scroll parent Theater layout containers', () => {
+        const scrollIntoView = vi.fn();
+        Element.prototype.scrollIntoView = scrollIntoView;
+
+        render(<MessageList messages={[msg({})]} roster={ROSTER} activeTopicId="t1" activeSpeakerId={null} />);
+
+        expect(scrollIntoView).not.toHaveBeenCalled();
+    });
 });
