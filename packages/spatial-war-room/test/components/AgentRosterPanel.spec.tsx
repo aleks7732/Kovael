@@ -83,6 +83,22 @@ describe('AgentRosterPanel', () => {
         expect(screen.getByText(/LIVE/)).toBeTruthy();
     });
 
+    it('keeps the live chair beacon out of the agent name row', () => {
+        const c = card('nyx-codex', {
+            name: 'Nyx-Codex',
+            trust_tier: 2,
+            chair: { sessionId: 'sess-1', claimedAt: Date.now() - 1000, lastBeaconAt: Date.now() - 1000, presence: 'live' },
+        });
+        render(<AgentRosterPanel {...defaultProps} roster={[c]} hardware={null} width={180} />);
+
+        const nameRow = screen.getByText('Nyx-Codex').closest('[data-roster-name-row]');
+        const beaconRow = screen.getByText(/LIVE/).closest('[data-roster-beacon-row]');
+
+        expect(nameRow).toBeTruthy();
+        expect(beaconRow).toBeTruthy();
+        expect(nameRow).not.toBe(beaconRow);
+    });
+
     it('shows the rate-limit pill with inWindow/capacity tally', () => {
         const c = card('nyx-antigravity', { name: 'Nyx-Antigravity' });
         render(
