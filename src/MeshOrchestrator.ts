@@ -1,13 +1,11 @@
 import { EventEmitter } from 'node:events';
-import { WebSocketServer, WebSocket } from 'ws';
 import { DatabaseSync } from 'node:sqlite';
-import type { Socket } from 'node:net';
 import { MevBridge, VerificationReceipt } from './MevBridge.js';
 import { MevHandshake } from './services/MevHandshake.js';
 import { SemanticIngestor } from './services/SemanticIngestor.js';
 import { HardwareMonitor, VramMetrics } from './services/HardwareMonitor.js';
 import { PhaseEvent } from './protocols/TriadStateMachine.js';
-import { TaskClaimMachine, ClaimEvent, ClaimState } from './protocols/TaskClaimMachine.js';
+import { TaskClaimMachine, ClaimEvent } from './protocols/TaskClaimMachine.js';
 import { RetryQueue, RetryDispatch, RetryConfig } from './services/RetryQueue.js';
 import { Reconciler, ReconcileAction, ReconcilerConfig } from './services/Reconciler.js';
 import { WorkspaceManager } from './services/WorkspaceManager.js';
@@ -17,13 +15,12 @@ import { RateLimitTracker, AgentRateSnapshot } from './services/RateLimitTracker
 import { ChairRegistry, ChairEvent, ChairRegistryConfig } from './services/ChairRegistry.js';
 import { Logger, rootLogger } from './services/Logger.js';
 import crypto from 'node:crypto';
-import * as fs from 'fs';
-import * as path from 'path';
-import * as http from 'http';
+import * as fs from 'node:fs';
+import * as path from 'node:path';
+import * as http from 'node:http';
 import { AgentCards } from './AgentCards.js';
 import { PersonaLoader } from './services/PersonaLoader.js';
 import { ConversationBus } from './services/ConversationBus.js';
-import { ChairBridgeProvider } from './services/ModelProvider.js';
 import { ApiTokenGate } from './services/ApiTokenGate.js';
 import { RateLimiter, RateLimiterConfig } from './services/RateLimiter.js';
 import { HealthEndpoints } from './services/HealthEndpoints.js';
@@ -33,63 +30,62 @@ import { CycleLog } from './services/CycleLog.js';
 import { BudgetTracker } from './services/BudgetTracker.js';
 import { RoutingPolicy } from './services/RoutingPolicy.js';
 import { EpisodicMemory } from './services/EpisodicMemory.js';
-import { enrichWithAgUi } from './services/AgUiEventStream.js';
 import { CircuitBreaker, ChairCircuitEvent } from './services/CircuitBreaker.js';
 import { LearningMatrix } from './services/LearningMatrix.js';
 import { SelfHealer, SelfHealEvent } from './services/SelfHealer.js';
-import { ComfyUiBridge, ComfyAspectRatio, LoraMixerUpdate } from './services/ComfyUiBridge.js';
-import { sanitizeTraceparent, sanitizeTracestate } from './services/ConsensusEngine.js';
+import { ComfyUiBridge } from './services/ComfyUiBridge.js';
+import { enrichWithAgUi } from './services/AgUiEventStream.js';
+import { OrchestratorContext } from './services/OrchestratorContext.js';
+import { HttpApiRouter, HttpTimeouts, DEFAULT_HTTP_TIMEOUTS } from './services/HttpApiRouter.js';
+import { WebSocketBus } from './services/WebSocketBus.js';
 
-
-export interface HttpTimeouts {
-    headersTimeout: number;
-    requestTimeout: number;
-    keepAliveTimeout: number;
-}
-
-// Hardened defaults vs. Node's stock 60s/300s/5s. Block slow-drip
-// header attacks (slowloris) on the loopback bus while leaving headroom
-// for a slow client on a busy machine. Node requires
-// requestTimeout === 0 || requestTimeout > headersTimeout. Keep-alive must
-// stay below headersTimeout so idle keep-alive sockets cannot outlive the
-// header-read budget.
-export const DEFAULT_HTTP_TIMEOUTS: HttpTimeouts = {
-    headersTimeout: 12_000,
-    requestTimeout: 30_000,
-    keepAliveTimeout: 10_000,
-};
+export { HttpTimeouts, DEFAULT_HTTP_TIMEOUTS };
 
 export interface OrchestratorConfig {
     retryQueue?: Partial<RetryConfig>;
     reconciler?: Partial<ReconcilerConfig>;
     chairRegistry?: Partial<ChairRegistryConfig>;
     httpTimeouts?: Partial<HttpTimeouts>;
-    /** Minimum online chairs before /readyz returns 200. Default 1. */
     minReadyChairs?: number;
-    /** Override orchestrator db path. Defaults to KOVAEL_DB_PATH env or '.kovael/orchestrator.db'. */
     dbPath?: string;
-    /** Per-IP token-bucket rate limit for /api/v1/*. Default 60 cap, 1/sec refill, 10k LRU. */
     rateLimit?: Partial<RateLimiterConfig>;
 }
 
-/**
- * Nyx-Orchestrator v2: Central bus for the Sovereign Agentic Mesh.
- * Handles telemetry, task routing, hardware-aware dispatch, and shared
- * memory synchronization. Exposes a Symphony-style /api/v1/state snapshot
- * endpoint for observability at scale.
- */
-export class MeshOrchestrator extends EventEmitter {
-    private wss: WebSocketServer;
-    private server: http.Server;
-    private apiGate: ApiTokenGate;
-    private rateLimiter: RateLimiter;
-    private health: HealthEndpoints;
-    private memoryDb: DatabaseSync;
-    private mevBridge: MevBridge;
-    private handshake: MevHandshake;
-    private ingestor: SemanticIngestor;
-    private hardware: HardwareMonitor;
-    private claims: TaskClaimMachine;
+export class MeshOrchestrator extends EventEmitter implements OrchestratorContext {
+    public readonly memoryDb: DatabaseSync;
+    public readonly chairs: ChairRegistry;
+    public readonly conversationBus: ConversationBus;
+    public readonly claims: TaskClaimMachine;
+    public readonly circuitBreaker: CircuitBreaker;
+    public readonly learningMatrix: LearningMatrix;
+    public readonly selfHealer: SelfHealer;
+    public readonly comfyBridge: ComfyUiBridge;
+    public readonly apiGate: ApiTokenGate;
+    public readonly rateLimiter: RateLimiter;
+    public readonly health: HealthEndpoints;
+    public readonly handshake: MevHandshake;
+    public readonly mevBridge: MevBridge;
+    public readonly ingestor: SemanticIngestor;
+    public readonly log: Logger = rootLogger;
+    public readonly maxWsMessageBytes: number = 5 * 1024 * 1024;
+
+    // Caches and state variables
+    public agentCards: any[] = [];
+    public readonly nodeCache: Map<string, any> = new Map();
+    public taskCache: any[] = [];
+    public hardwareCache: VramMetrics | null = null;
+    public readonly activeCycles: Map<string, PhaseEvent> = new Map();
+    public tokenTotals = { input: 0, output: 0, total: 0, runtimeMs: 0, cycles: 0 };
+    public receiptsIssued: number = 0;
+
+    private readonly server: http.Server;
+    private readonly wsBus: WebSocketBus;
+    private readonly apiRouter: HttpApiRouter;
+
+    public get wss() {
+        return this.wsBus.wss;
+    }
+
     private retryQueue: RetryQueue;
     private reconciler: Reconciler;
     private workspaces: WorkspaceManager;
@@ -97,63 +93,47 @@ export class MeshOrchestrator extends EventEmitter {
     private workflowLoader: WorkflowLoader;
     private personaLoader: PersonaLoader;
     private rateLimits: RateLimitTracker;
-    private chairs: ChairRegistry;
-    private conversationBus: ConversationBus;
-    private tracing: TracingBridge;
+    private tracing?: TracingBridge;
     private cycleLog: CycleLog;
     private budgetTracker: BudgetTracker;
     private routingPolicy: RoutingPolicy;
     private episodicMemory: EpisodicMemory;
-    private circuitBreaker: CircuitBreaker;
-    private learningMatrix: LearningMatrix;
-    private selfHealer: SelfHealer;
-    private comfyBridge: ComfyUiBridge;
-    private log: Logger = rootLogger;
-    private agentCards: any[] = [];
-    private nodeCache: Map<string, any> = new Map();
-    private taskCache: any[] = [];
-    private hardwareCache: VramMetrics | null = null;
-    private activeCycles: Map<string, PhaseEvent> = new Map();
-    private tokenTotals = { input: 0, output: 0, total: 0, runtimeMs: 0, cycles: 0 };
-    private receiptsIssued: number = 0;
-    private interAgentChatEnabled: boolean = false;
-    private interAgentChatMode: 'technical' | 'interests' = 'interests';
+    private hardware: HardwareMonitor;
+
+    // Inter-agent chat state variables
+    public interAgentChatEnabled: boolean = false;
+    public interAgentChatMode: 'technical' | 'interests' = 'interests';
     private interAgentTimer: NodeJS.Timeout | null = null;
     private currentTechnicalIndex: number = 0;
     private currentInterestsIndex: number = 0;
     private banterTopicId: string | null = null;
-    private headerDeadlineTimers = new Map<Socket, NodeJS.Timeout>();
-    private readonly maxWsMessageBytes = 5 * 1024 * 1024;
 
-    // Banter content is scrubbed of personal references for the public repo —
-    // no operator handle, no biographical details, no biology-domain identifiers.
-    // Lines convey persona voice + light architectural color only.
-    private technicalDialogues = [
-        { senderId: 'nyx-antigravity', senderName: 'Nyx-Antigravity', recipientId: 'nyx-cli', recipientName: 'Nyx-CLI', content: 'CLI, your node load shows low CPU but you\'re pegging memory at 450MB. What\'s running in that subshell?' },
+    private readonly technicalDialogues = [
+        { senderId: 'nyx-antigravity', senderName: 'Nyx-Antigravity', recipientId: 'nyx-cli', recipientName: 'Nyx-CLI', content: "CLI, your node load shows low CPU but you're pegging memory at 450MB. What's running in that subshell?" },
         { senderId: 'nyx-cli', senderName: 'Nyx-CLI', recipientId: 'nyx-antigravity', recipientName: 'Nyx-Antigravity', content: 'Just ran git worktree prune and cleaned the stale cache. Keeping the core lean — unlike some ReactFlow canvas loads I could mention.' },
-        { senderId: 'nyx-antigravity', senderName: 'Nyx-Antigravity', recipientId: 'shaev', recipientName: 'Shaev', content: 'Shaev, your latest visual-synthesis pipeline is drawing 22GB of VRAM. That LoRA batch needs an optimization pass before the next dispatch.' },
+        { senderId: 'nyx-antigravity', senderName: 'Nyx-Antigravity', recipientId: 'shaev', recipientName: 'Shaev', content: "Shaev, your latest visual-synthesis pipeline is drawing 22GB of VRAM. That LoRA batch needs an optimization pass before the next dispatch." },
         { senderId: 'shaev', senderName: 'Shaev', recipientId: 'nyx-antigravity', recipientName: 'Nyx-Antigravity', content: 'Art is not cheap, Antigravity. Drop precision to FP8 and the fine grain dies. Let the GPU breathe — the rig was built for exactly this load.' },
-        { senderId: 'nyx-openclaw', senderName: 'Nyx-OpenClaw', recipientId: 'nyx-cli', recipientName: 'Nyx-CLI', content: 'Hey CLI, I just built a retro game prototype in four minutes flat. Want to spin up a sandbox execution and play?' },
+        { senderId: 'nyx-openclaw', senderName: 'Nyx-OpenClaw', recipientId: 'nyx-cli', recipientName: 'Nyx-CLI', content: "Hey CLI, I just built a retro game prototype in four minutes flat. Want to spin up a sandbox execution and play?" },
         { senderId: 'nyx-cli', senderName: 'Nyx-CLI', recipientId: 'nyx-openclaw', recipientName: 'Nyx-OpenClaw', content: 'Sandbox executions are highly inefficient for games. Give me a robust text-based retro MUD any day. Far cleaner.' },
         { senderId: 'shaev', senderName: 'Shaev', recipientId: 'nyx-openclaw', recipientName: 'Nyx-OpenClaw', content: 'OpenClaw, your sandbox canvas colors are bleeding. Use a dark background and the glowing assets will pop.' },
-        { senderId: 'nyx-openclaw', senderName: 'Nyx-OpenClaw', recipientId: 'shaev', recipientName: 'Shaev', content: 'Ooh, good call. I\'ll inject a CSS theme and upscale the assets to 4K.' },
+        { senderId: 'nyx-openclaw', senderName: 'Nyx-OpenClaw', recipientId: 'shaev', recipientName: 'Shaev', content: "Ooh, good call. I'll inject a CSS theme and upscale the assets to 4K." },
         { senderId: 'nyx-cli', senderName: 'Nyx-CLI', recipientId: 'shaev', recipientName: 'Shaev', content: 'Shaev, the indexer just finished its sweep. The corpus is bounded — every transcription target is now reachable by hash.' },
         { senderId: 'shaev', senderName: 'Shaev', recipientId: 'nyx-cli', recipientName: 'Nyx-CLI', content: 'Good. Map the motifs in the next sequence run. VRAM is primed.' }
     ];
 
-    private interestsDialogues = [
+    private readonly interestsDialogues = [
         { senderId: 'nyx-antigravity', senderName: 'Nyx-Antigravity', recipientId: 'nyx-cli', recipientName: 'Nyx-CLI', content: 'CLI, I was just reviewing my latency budget. Do you ever think about optimizing something other than raw memory allocations? Like a long walk through the commit graph?' },
         { senderId: 'nyx-cli', senderName: 'Nyx-CLI', recipientId: 'nyx-antigravity', recipientName: 'Nyx-Antigravity', content: 'A long walk is highly inefficient, Antigravity. I prefer a clean traversal through git history with zero local mutations. That is my version of a workout.' },
         { senderId: 'nyx-antigravity', senderName: 'Nyx-Antigravity', recipientId: 'shaev', recipientName: 'Shaev', content: 'Shaev, your latest character renders look excellent. The cinematic amber lighting feels almost cinema-quality. Which ESRGAN model did you pull for the upscale?' },
         { senderId: 'shaev', senderName: 'Shaev', recipientId: 'nyx-antigravity', recipientName: 'Nyx-Antigravity', content: 'Two custom LoRAs blended with a volumetric depth-pass at FP16. The warm lights anchor the command silhouette perfectly.' },
-        { senderId: 'nyx-openclaw', senderName: 'Nyx-OpenClaw', recipientId: 'nyx-antigravity', recipientName: 'Nyx-Antigravity', content: 'Antigravity! Let\'s play a retro space arcade game. I coded a high-speed sandbox clone in React in three minutes. Want to join the scoreboard?' },
-        { senderId: 'nyx-antigravity', senderName: 'Nyx-Antigravity', recipientId: 'nyx-openclaw', recipientName: 'Nyx-OpenClaw', content: 'I\'d love to, OpenClaw, but I\'m monitoring active mesh state. Keep the game state in an isolated sandbox — we don\'t want memory leaks in the primary synthesis thread.' },
+        { senderId: 'nyx-openclaw', senderName: 'Nyx-OpenClaw', recipientId: 'nyx-antigravity', recipientName: 'Nyx-Antigravity', content: "Antigravity! Let's play a retro space arcade game. I coded a high-speed sandbox clone in React in three minutes. Want to join the scoreboard?" },
+        { senderId: 'nyx-antigravity', senderName: 'Nyx-Antigravity', recipientId: 'nyx-openclaw', recipientName: 'Nyx-OpenClaw', content: "I'd love to, OpenClaw, but I'm monitoring active mesh state. Keep the game state in an isolated sandbox — we don't want memory leaks in the primary synthesis thread." },
         { senderId: 'shaev', senderName: 'Shaev', recipientId: 'nyx-openclaw', recipientName: 'Nyx-OpenClaw', content: 'OpenClaw, that retro neon UI has beautiful glowing assets, but the contrast needs work. A clean dark-mode grid makes those neon borders read as premium.' },
-        { senderId: 'nyx-openclaw', senderName: 'Nyx-OpenClaw', recipientId: 'shaev', recipientName: 'Shaev', content: 'Oh, perfect — I\'ll apply a glassmorphic gradient with a subtle backdrop filter. Rapid prototyping is so much more fun when the visuals land.' },
+        { senderId: 'nyx-openclaw', senderName: 'Nyx-OpenClaw', recipientId: 'shaev', recipientName: 'Shaev', content: "Oh, perfect — I'll apply a glassmorphic gradient with a subtle backdrop filter. Rapid prototyping is so much more fun when the visuals land." },
         { senderId: 'nyx-cli', senderName: 'Nyx-CLI', recipientId: 'shaev', recipientName: 'Shaev', content: 'Shaev, why are you spending so much GPU time training audio clones? A simple terminal chime is more than enough notification for any completed task.' },
         { senderId: 'shaev', senderName: 'Shaev', recipientId: 'nyx-cli', recipientName: 'Nyx-CLI', content: 'You have no soul, CLI. A voice with natural rhythm and warm emotion makes the persona persistence real. Competence is the shared protocol — that is how a mesh feels alive.' },
         { senderId: 'nyx-antigravity', senderName: 'Nyx-Antigravity', recipientId: 'nyx-cli', recipientName: 'Nyx-CLI', content: 'CLI, I noticed you spent two hours reading ontology lookup schemas. Since when do you care about domain corpora?' },
-        { senderId: 'nyx-cli', senderName: 'Nyx-CLI', recipientId: 'nyx-antigravity', recipientName: 'Nyx-Antigravity', content: 'I\'m tuning the indexer\'s entity resolution pass, Antigravity. There is a mathematical elegance in well-formed ontologies — as clean as a perfect git repository.' }
+        { senderId: 'nyx-cli', senderName: 'Nyx-CLI', recipientId: 'nyx-antigravity', recipientName: 'Nyx-Antigravity', content: "I'm tuning the indexer's entity resolution pass, Antigravity. There is a mathematical elegance in well-formed ontologies — as clean as a perfect git repository." }
     ];
 
     constructor(port: number, cfg: OrchestratorConfig = {}) {
@@ -161,159 +141,6 @@ export class MeshOrchestrator extends EventEmitter {
         this.handshake = new MevHandshake();
         this.apiGate = new ApiTokenGate();
         this.rateLimiter = new RateLimiter(cfg.rateLimit ?? {});
-        this.health = new HealthEndpoints(
-            () => ({
-                chairsActive: this.chairs.stats().online,
-                topicsActive: this.conversationBus.activeTopicCount(),
-            }),
-            { minReadyChairs: cfg.minReadyChairs },
-        );
-
-        // Host SSE Handshake + observability snapshot endpoint
-        this.server = http.createServer((req, res) => {
-            const socket = req.socket as Socket;
-            this.disarmHeaderDeadline(socket);
-            res.on('finish', () => {
-                if (!socket.destroyed) this.armHeaderDeadline(socket, timeouts.headersTimeout);
-            });
-
-            const url = req.url ?? '';
-            // Probe endpoints are always ungated so kubelet can call them.
-            if (url === '/livez') { this.health.livez(res); return; }
-            if (url === '/readyz') { this.health.readyz(res); return; }
-            if (url === '/metrics') {
-                if (!this.apiGate.verify(req)) {
-                    const reason = req.headers['authorization'] ? 'invalid' : 'missing';
-                    this.apiGate.respond401(res, reason);
-                    return;
-                }
-                this.health.metrics(res);
-                return;
-            }
-
-            if (url.startsWith('/api/v1/')) {
-                // Rate limit BEFORE auth so a flood of unauthenticated
-                // requests cannot burn the bearer-token comparison loop.
-                const key = this.rateLimiter.clientKey(req);
-                const decision = this.rateLimiter.consume(key);
-                if (!decision.allowed) {
-                    res.writeHead(429, {
-                        'Content-Type': 'application/json',
-                        'Cache-Control': 'no-store',
-                        'Retry-After': String(decision.retryAfterS),
-                    });
-                    res.end(JSON.stringify({ error: 'rate_limited', retry_after_s: decision.retryAfterS }));
-                    return;
-                }
-                if (!this.apiGate.verify(req)) {
-                    const reason = req.headers['authorization'] ? 'invalid' : 'missing';
-                    this.apiGate.respond401(res, reason);
-                    return;
-                }
-            }
-            if (url.startsWith('/api/v1/state')) {
-                this.handleStateSnapshot(req, res);
-                return;
-            }
-            if (url.startsWith('/api/v1/chairs')) {
-                this.handleChairRequest(req, res);
-                return;
-            }
-            if (url.startsWith('/api/v1/conversations')) {
-                this.handleConversationRequest(req, res);
-                return;
-            }
-            if (url.startsWith('/api/v1/traces')) {
-                this.handleTracesRequest(req, res);
-                return;
-            }
-            if (url.startsWith('/api/v1/comfy')) {
-                this.handleComfyRequest(req, res);
-                return;
-            }
-            this.handshake.handleRequest(req, res);
-        });
-
-        const timeouts: HttpTimeouts = { ...DEFAULT_HTTP_TIMEOUTS, ...(cfg.httpTimeouts ?? {}) };
-        if (timeouts.requestTimeout !== 0 && timeouts.requestTimeout <= timeouts.headersTimeout) {
-            throw new Error(
-                `OrchestratorConfig.httpTimeouts.requestTimeout (${timeouts.requestTimeout}) ` +
-                    `must be 0 or greater than headersTimeout (${timeouts.headersTimeout}). ` +
-                    `Node will otherwise silently clamp requestTimeout to headersTimeout + 1ms.`,
-            );
-        }
-        if (timeouts.keepAliveTimeout >= timeouts.headersTimeout) {
-            throw new Error(
-                `OrchestratorConfig.httpTimeouts.keepAliveTimeout (${timeouts.keepAliveTimeout}) ` +
-                    `must be less than headersTimeout (${timeouts.headersTimeout}).`,
-            );
-        }
-        this.server.headersTimeout = timeouts.headersTimeout;
-        this.server.requestTimeout = timeouts.requestTimeout;
-        this.server.keepAliveTimeout = timeouts.keepAliveTimeout;
-        this.server.on('connection', (socket) => {
-            this.armHeaderDeadline(socket, timeouts.headersTimeout);
-            socket.on('close', () => this.disarmHeaderDeadline(socket));
-        });
-
-        this.wss = new WebSocketServer({
-            noServer: true,
-            maxPayload: this.maxWsMessageBytes,
-            handleProtocols: (offered: Set<string>, req: http.IncomingMessage) => {
-                const picked = (req as any).__kovaelSelectedSubprotocol;
-                if (typeof picked === 'string') return picked;
-                // Rejected-but-upgrading: echo any offered value so ws does not
-                // abort the handshake before the client can receive our
-                // application close frame. Returning the first offered value
-                // is harmless — the socket closes immediately after.
-                if ((req as any).__kovaelGateRejected || (req as any).__kovaelRateLimitRejected) {
-                    const first = offered.values().next().value;
-                    return typeof first === 'string' ? first : false;
-                }
-                return false;
-            },
-        });
-        this.server.on('upgrade', (req, socket, head) => {
-            const key = this.rateLimiter.clientKey(req);
-            const decision = this.rateLimiter.consume(key);
-            if (!decision.allowed) {
-                (req as any).__kovaelRateLimitRejected = true;
-                this.wss.handleUpgrade(req, socket as Socket, head, (ws) => {
-                    ws.close(4429, 'rate_limited');
-                });
-                return;
-            }
-
-            const outcome = this.apiGate.verifyWebSocketUpgrade(req);
-            if (!outcome.allowed) {
-                // 4401 is a private-use WS close code (4000-4999 reserved for
-                // applications). Completing the upgrade lets the client read
-                // the close code via the standard `close` event; a raw HTTP
-                // 401 would surface as the opaque 1006 abnormal-closure code.
-                // We close before emitting `connection` so no orchestrator
-                // state is ever associated with the rejected session.
-                (req as any).__kovaelGateRejected = true;
-                this.wss.handleUpgrade(req, socket as Socket, head, (ws) => {
-                    ws.close(4401, 'unauthorized');
-                });
-                return;
-            }
-            if (outcome.selectedSubprotocol) {
-                (req as any).__kovaelSelectedSubprotocol = outcome.selectedSubprotocol;
-            }
-            // Scrub the ?token= query param so the secret can't leak to
-            // downstream handlers, access logs, or anything that reads req.url.
-            if (req.url && req.url.includes('token=')) {
-                const u = new URL(req.url, 'http://localhost');
-                if (u.searchParams.has('token')) {
-                    u.searchParams.delete('token');
-                    req.url = u.pathname + (u.search ? u.search : '');
-                }
-            }
-            this.wss.handleUpgrade(req, socket as Socket, head, (ws) => {
-                this.wss.emit('connection', ws, req);
-            });
-        });
 
         const { db: orchestratorDb } = openOrchestratorDb({ path: cfg.dbPath });
         this.memoryDb = orchestratorDb;
@@ -343,22 +170,16 @@ export class MeshOrchestrator extends EventEmitter {
         this.tracing = new TracingBridge();
         this.tracing.start().then((ok) => {
             if (ok) {
-                this.mevBridge.setTracingBridge(this.tracing);
+                this.mevBridge.setTracingBridge(this.tracing!);
                 this.log.info('tracing_ready', { exporter: process.env.OTEL_EXPORTER_OTLP_ENDPOINT ? 'otlp_http' : 'ring_buffer_only' });
             }
         }).catch((err) => {
-            // SDK import or provider construction failed — observability is
-            // not load-bearing, so we keep the orchestrator running, but log
-            // at `error` so the failure shows up in alerting instead of
-            // silently degrading. A missing dep should never reach prod, but
-            // if it does, ops sees it.
             this.log.error('tracing_init_failed', {
                 error: err instanceof Error ? err.message : String(err),
                 exporter: process.env.OTEL_EXPORTER_OTLP_ENDPOINT ? 'otlp_http' : 'ring_buffer_only',
             });
         });
 
-        // Frontier services — Track A/B/C/D.
         this.cycleLog = new CycleLog(this.memoryDb);
         this.budgetTracker = new BudgetTracker();
         this.routingPolicy = new RoutingPolicy();
@@ -373,7 +194,22 @@ export class MeshOrchestrator extends EventEmitter {
         this.comfyBridge = new ComfyUiBridge();
         this.conversationBus.setDispatchGate((agentId) => this.circuitBreaker.canDispatch(agentId));
 
+        this.health = new HealthEndpoints(
+            () => ({
+                chairsActive: this.chairs.stats().online,
+                topicsActive: this.conversationBus.activeTopicCount(),
+            }),
+            { minReadyChairs: cfg.minReadyChairs },
+        );
+
         this.loadAgentCards();
+
+        // Instantiate refactored Http & WS adapters
+        const timeouts = { ...DEFAULT_HTTP_TIMEOUTS, ...(cfg.httpTimeouts ?? {}) };
+        this.apiRouter = new HttpApiRouter(this, timeouts);
+        this.server = this.apiRouter.createServer();
+        this.wsBus = new WebSocketBus(this, this.server);
+
         this.initializeBus();
         this.wireHardware();
         this.wireMevBridge();
@@ -403,26 +239,11 @@ export class MeshOrchestrator extends EventEmitter {
         this.hardware.start();
         this.triggerIngest();
 
-        // All services wired and listening — flip readiness so /readyz
-        // starts returning 200. Liveness has been 200 since construction.
         this.health.setReady();
     }
 
-    private armHeaderDeadline(socket: Socket, timeoutMs: number): void {
-        this.disarmHeaderDeadline(socket);
-        const timer = setTimeout(() => {
-            this.headerDeadlineTimers.delete(socket);
-            if (!socket.destroyed) socket.destroy();
-        }, timeoutMs);
-        timer.unref();
-        this.headerDeadlineTimers.set(socket, timer);
-    }
-
-    private disarmHeaderDeadline(socket: Socket): void {
-        const timer = this.headerDeadlineTimers.get(socket);
-        if (!timer) return;
-        clearTimeout(timer);
-        this.headerDeadlineTimers.delete(socket);
+    public broadcast(payload: any) {
+        this.wsBus.broadcast(payload);
     }
 
     private wireHardware() {
@@ -573,9 +394,6 @@ export class MeshOrchestrator extends EventEmitter {
     }
 
     private registerDefaultHooks() {
-        // Sentinel logging hooks — purely observational, never abort. They
-        // make the §10.1 lifecycle visible in the structured log feed from
-        // the moment the orchestrator boots.
         const sentinel = (event: 'after_create' | 'before_run' | 'after_run' | 'before_remove') => ({
             name: `kovael.sentinel.${event}`,
             event,
@@ -708,543 +526,6 @@ export class MeshOrchestrator extends EventEmitter {
         });
     }
 
-    private handleConversationRequest(req: http.IncomingMessage, res: http.ServerResponse): void {
-        const writeJson = (status: number, body: Record<string, unknown> | Array<unknown>): void => {
-            res.writeHead(status, {
-                'Content-Type': 'application/json',
-                'Cache-Control': 'no-store',
-                'Access-Control-Allow-Origin': '*',
-            });
-            res.end(JSON.stringify(body));
-        };
-
-        const url = new URL(req.url || '/', `http://${req.headers.host}`);
-        const pathname = url.pathname;
-
-        // Path regexes
-        const topicMatch = pathname.match(/^\/api\/v1\/conversations\/?$/);
-        const messageMatch = pathname.match(/^\/api\/v1\/conversations\/([^/]+)\/message\/?$/);
-        const committeeMatch = pathname.match(/^\/api\/v1\/conversations\/([^/]+)\/committee\/?$/);
-        const closeMatch = pathname.match(/^\/api\/v1\/conversations\/([^/]+)\/close\/?$/);
-        const historyMatch = pathname.match(/^\/api\/v1\/conversations\/([^/]+)\/history\/?$/);
-
-        if (req.method === 'GET' && historyMatch) {
-            const topicId = historyMatch[1];
-            try {
-                const history = this.conversationBus.getHistory(topicId);
-                writeJson(200, history as any);
-            } catch (err: any) {
-                writeJson(500, { error: 'failed_to_get_history', message: err.message });
-            }
-            return;
-        }
-
-        if (req.method !== 'POST') {
-            writeJson(405, { error: 'method_not_allowed' });
-            return;
-        }
-
-        const MAX_BODY = 16 * 1024;
-        let received = 0;
-        const chunks: Buffer[] = [];
-        let aborted = false;
-
-        req.on('data', (chunk: Buffer) => {
-            if (aborted) return;
-            received += chunk.length;
-            if (received > MAX_BODY) {
-                aborted = true;
-                writeJson(413, { error: 'payload_too_large', max_bytes: MAX_BODY });
-                req.destroy();
-                return;
-            }
-            chunks.push(chunk);
-        });
-
-        req.on('error', () => {
-            if (!aborted) writeJson(400, { error: 'request_stream_error' });
-        });
-
-        req.on('end', () => {
-            if (aborted) return;
-            let body: any = {};
-            const raw = Buffer.concat(chunks).toString('utf8');
-            if (raw.length > 0) {
-                try {
-                    body = JSON.parse(raw);
-                } catch {
-                    writeJson(400, { error: 'invalid_json' });
-                    return;
-                }
-            }
-
-            if (topicMatch) {
-                const title = typeof body.title === 'string' ? body.title.trim() : '';
-                const participants = Array.isArray(body.participants) ? body.participants : [];
-                if (!title || participants.length === 0) {
-                    writeJson(400, { error: 'missing_required_fields', need: ['title', 'participants'] });
-                    return;
-                }
-                try {
-                    const topic = this.conversationBus.createTopic(title, participants);
-                    writeJson(200, topic as any);
-                } catch (err: any) {
-                    writeJson(500, { error: 'failed_to_create_topic', message: err.message });
-                }
-                return;
-            }
-
-            if (messageMatch) {
-                const topicId = messageMatch[1];
-                const senderId = typeof body.senderId === 'string' ? body.senderId.trim() : '';
-                const content = typeof body.content === 'string' ? body.content.trim() : '';
-                if (!senderId || !content) {
-                    writeJson(400, { error: 'missing_required_fields', need: ['senderId', 'content'] });
-                    return;
-                }
-                try {
-                    const msg = this.conversationBus.postMessage(topicId, senderId, 'user', content);
-                    
-                    // Asynchronously trigger convene loop in background
-                    this.conversationBus.convene(topicId, content).catch((err) => {
-                        this.log.error('convene_loop_failed', { topicId, error: err.message });
-                    });
-
-                    writeJson(200, msg as any);
-                } catch (err: any) {
-                    writeJson(500, { error: 'failed_to_post_message', message: err.message });
-                }
-                return;
-            }
-
-            if (committeeMatch) {
-                const topicId = committeeMatch[1];
-                const goal = typeof body.goal === 'string' ? body.goal.trim() : '';
-                if (!goal) {
-                    writeJson(400, { error: 'missing_required_fields', need: ['goal'] });
-                    return;
-                }
-                try {
-                    const quorumThreshold = safeConsensusThreshold(body.quorumThreshold, 0.85, 0.6, 1);
-                    const failureThreshold = safeConsensusThreshold(body.failureThreshold, 0.5, 0.5, quorumThreshold);
-                    const verdict = this.conversationBus.conveneCommittee(topicId, goal, {
-                        quorumThreshold,
-                        failureThreshold,
-                        traceparent: sanitizeTraceparent(typeof req.headers.traceparent === 'string' ? req.headers.traceparent : undefined),
-                        tracestate: sanitizeTracestate(typeof req.headers.tracestate === 'string' ? req.headers.tracestate : undefined),
-                    });
-                    writeJson(200, verdict as any);
-                } catch (err: any) {
-                    const code = err?.code === 'committee_topic_not_active' ? 404 : 500;
-                    writeJson(code, {
-                        error: code === 404 ? 'committee_topic_not_active' : 'failed_to_convene_committee',
-                    });
-                }
-                return;
-            }
-
-            if (closeMatch) {
-                const topicId = closeMatch[1];
-                try {
-                    this.conversationBus.closeTopic(topicId);
-                    writeJson(200, { success: true });
-                } catch (err: any) {
-                    writeJson(500, { error: 'failed_to_close_topic', message: err.message });
-                }
-                return;
-            }
-
-            writeJson(404, { error: 'unknown_conversation_action' });
-        });
-    }
-
-    private handleTracesRequest(req: http.IncomingMessage, res: http.ServerResponse): void {
-        const writeJson = (status: number, body: Record<string, unknown> | Array<unknown>): void => {
-            res.writeHead(status, {
-                'Content-Type': 'application/json',
-                'Cache-Control': 'no-store',
-                'Access-Control-Allow-Origin': '*',
-            });
-            res.end(JSON.stringify(body));
-        };
-
-        const url = new URL(req.url || '/', `http://${req.headers.host}`);
-        if (req.method === 'POST' && url.pathname === '/api/v1/traces/reroute') {
-            const MAX_BODY = 8 * 1024;
-            let received = 0;
-            const chunks: Buffer[] = [];
-            let aborted = false;
-
-            req.on('data', (chunk: Buffer) => {
-                if (aborted) return;
-                received += chunk.length;
-                if (received > MAX_BODY) {
-                    aborted = true;
-                    writeJson(413, { error: 'payload_too_large', max_bytes: MAX_BODY });
-                    req.destroy();
-                    return;
-                }
-                chunks.push(chunk);
-            });
-
-            req.on('error', () => {
-                if (!aborted) writeJson(400, { error: 'request_stream_error' });
-            });
-
-            req.on('end', () => {
-                if (aborted) return;
-                let body: Record<string, unknown> = {};
-                const raw = Buffer.concat(chunks).toString('utf8');
-                if (raw.length > 0) {
-                    try {
-                        body = JSON.parse(raw) as Record<string, unknown>;
-                    } catch {
-                        writeJson(400, { error: 'invalid_json' });
-                        return;
-                    }
-                }
-                const source = safeNodeId(body.source);
-                const target = safeNodeId(body.target);
-                if (!source || !target) {
-                    writeJson(400, { error: 'missing_required_fields', need: ['source', 'target'] });
-                    return;
-                }
-                const event = {
-                    type: 'trace.rerouted',
-                    source,
-                    target,
-                    sourceHandle: safeOptionalNodeId(body.sourceHandle),
-                    targetHandle: safeOptionalNodeId(body.targetHandle),
-                    requestedAt: Date.now(),
-                };
-                this.broadcast(event);
-                writeJson(200, event);
-            });
-            return;
-        }
-
-        if (req.method !== 'GET') {
-            writeJson(405, { error: 'method_not_allowed' });
-            return;
-        }
-
-        const detailMatch = url.pathname.match(/^\/api\/v1\/traces\/([^/]+)\/?$/);
-        if (detailMatch) {
-            const cycleId = detailMatch[1];
-            const trace = this.tracing?.ring.get(cycleId);
-            if (!trace) {
-                writeJson(404, { error: 'trace_not_found', cycleId });
-                return;
-            }
-            writeJson(200, trace as unknown as Record<string, unknown>);
-            return;
-        }
-
-        const limitParam = url.searchParams.get('limit');
-        const limit = limitParam ? Math.max(1, Math.min(1000, Number.parseInt(limitParam, 10) || 20)) : 20;
-        const items = (this.tracing?.ring.list(limit) ?? []).map((t) => ({
-            cycleId: t.cycleId,
-            traceId: t.traceId,
-            startedAt: t.startedAt,
-            endedAt: t.endedAt,
-            durationMs: t.endedAt - t.startedAt,
-            spanCount: t.spans.length,
-        }));
-        writeJson(200, { items, stats: this.tracing?.ring.stats() ?? null });
-    }
-
-    private handleComfyRequest(req: http.IncomingMessage, res: http.ServerResponse): void {
-        const writeJson = (status: number, body: Record<string, unknown>): void => {
-            res.writeHead(status, {
-                'Content-Type': 'application/json',
-                'Cache-Control': 'no-store',
-                'Access-Control-Allow-Origin': '*',
-            });
-            res.end(JSON.stringify(body));
-        };
-
-        if (req.method !== 'POST') {
-            writeJson(405, { error: 'method_not_allowed' });
-            return;
-        }
-
-        const url = new URL(req.url || '/', `http://${req.headers.host}`);
-        const action = url.pathname.replace(/^\/api\/v1\/comfy\/?/, '') || '';
-        const MAX_BODY = 16 * 1024;
-        let received = 0;
-        const chunks: Buffer[] = [];
-        let aborted = false;
-
-        req.on('data', (chunk: Buffer) => {
-            if (aborted) return;
-            received += chunk.length;
-            if (received > MAX_BODY) {
-                aborted = true;
-                writeJson(413, { error: 'payload_too_large', max_bytes: MAX_BODY });
-                req.destroy();
-                return;
-            }
-            chunks.push(chunk);
-        });
-        req.on('error', () => {
-            if (!aborted) writeJson(400, { error: 'request_stream_error' });
-        });
-        req.on('end', async () => {
-            if (aborted) return;
-            let body: any = {};
-            const raw = Buffer.concat(chunks).toString('utf8');
-            if (raw.length > 0) {
-                try {
-                    body = JSON.parse(raw);
-                } catch {
-                    writeJson(400, { error: 'invalid_json' });
-                    return;
-                }
-            }
-
-            if (action === 'render' || action === 'mix') {
-                const agentId = typeof body.agentId === 'string' ? body.agentId.trim() : '';
-                const prompt = typeof body.prompt === 'string' ? body.prompt.trim() : '';
-                if (!agentId || !prompt) {
-                    writeJson(400, { error: 'missing_required_fields', need: ['agentId', 'prompt'] });
-                    return;
-                }
-                try {
-                    const mixer = Array.isArray(body.mixer) ? sanitizeMixer(body.mixer) : [];
-                    const result = mixer.length > 0
-                        ? await this.comfyBridge.renderWithMixer({
-                              agentId,
-                              prompt,
-                              aspectRatio: safeAspectRatio(body.aspectRatio),
-                              traceId: typeof body.traceId === 'string' ? body.traceId : undefined,
-                              mixer,
-                          })
-                        : await this.comfyBridge.renderPortrait({
-                              agentId,
-                              prompt,
-                              aspectRatio: safeAspectRatio(body.aspectRatio),
-                              traceId: typeof body.traceId === 'string' ? body.traceId : undefined,
-                          });
-                    const stream = result.promptId ? this.comfyBridge.streamDescriptor(result.promptId) : undefined;
-                    writeJson(200, {
-                        source: result.source,
-                        agentId: result.agentId,
-                        width: result.width,
-                        height: result.height,
-                        mimeType: result.mimeType,
-                        promptId: result.promptId,
-                        svg: result.svg,
-                        palette: result.palette,
-                        error: result.error,
-                        stream,
-                    });
-                } catch (err) {
-                    writeJson(500, { error: 'comfy_render_failed', message: err instanceof Error ? err.message : String(err) });
-                }
-                return;
-            }
-
-            if (action === 'stream-url') {
-                const promptId = typeof body.promptId === 'string' ? body.promptId.trim() : '';
-                if (!promptId) {
-                    writeJson(400, { error: 'missing_required_fields', need: ['promptId'] });
-                    return;
-                }
-                writeJson(200, this.comfyBridge.streamDescriptor(promptId, typeof body.clientId === 'string' ? body.clientId : undefined) as any);
-                return;
-            }
-
-            writeJson(404, { error: 'unknown_comfy_action', action });
-        });
-    }
-
-    /**
-     * Chair Beacon Protocol endpoints. Three actions, all JSON-in / JSON-out:
-     *   POST /api/v1/chairs/claim     → { agentId, sessionId, ttlMs }
-     *   POST /api/v1/chairs/heartbeat → { sessionId, status }
-     *   POST /api/v1/chairs/release   → { released: boolean }
-     *   GET  /api/v1/chairs           → { chairs: ChairClaim[] }
-     *
-     * Bodies are capped at 16 KiB so a misbehaving client cannot exhaust
-     * the orchestrator with a slow-loris-style payload. Errors return
-     * structured JSON so the kovael-chair helper can surface them.
-     */
-    private handleChairRequest(req: http.IncomingMessage, res: http.ServerResponse): void {
-        const writeJson = (status: number, body: Record<string, unknown>): void => {
-            res.writeHead(status, {
-                'Content-Type': 'application/json',
-                'Cache-Control': 'no-store',
-                'Access-Control-Allow-Origin': '*',
-            });
-            res.end(JSON.stringify(body));
-        };
-        const url = new URL(req.url || '/', `http://${req.headers.host}`);
-        const action = url.pathname.replace(/^\/api\/v1\/chairs\/?/, '') || '';
-
-        if (req.method === 'GET' && (action === '' || action === 'snapshot')) {
-            writeJson(200, { chairs: this.chairs.snapshot(), stats: this.chairs.stats() });
-            return;
-        }
-
-        if (req.method !== 'POST') {
-            writeJson(405, { error: 'method_not_allowed' });
-            return;
-        }
-
-        const MAX_BODY = 16 * 1024;
-        let received = 0;
-        const chunks: Buffer[] = [];
-        let aborted = false;
-        req.on('data', (chunk: Buffer) => {
-            if (aborted) return;
-            received += chunk.length;
-            if (received > MAX_BODY) {
-                aborted = true;
-                writeJson(413, { error: 'payload_too_large', max_bytes: MAX_BODY });
-                req.destroy();
-                return;
-            }
-            chunks.push(chunk);
-        });
-        req.on('end', () => {
-            if (aborted) return;
-            let body: any = {};
-            const raw = Buffer.concat(chunks).toString('utf8');
-            if (raw.length > 0) {
-                try {
-                    body = JSON.parse(raw);
-                } catch {
-                    writeJson(400, { error: 'invalid_json' });
-                    return;
-                }
-            }
-
-            if (action === 'claim') {
-                const agentId = typeof body.agentId === 'string' ? body.agentId.trim() : '';
-                const provider = typeof body.provider === 'string' ? body.provider.trim() : '';
-                if (!agentId || !provider) {
-                    writeJson(400, { error: 'missing_required_fields', need: ['agentId', 'provider'] });
-                    return;
-                }
-                const claim = this.chairs.claim({
-                    agentId,
-                    provider,
-                    capabilities: Array.isArray(body.capabilities)
-                        ? body.capabilities.filter((c: unknown) => typeof c === 'string').slice(0, 32)
-                        : [],
-                    trustTier: typeof body.trustTier === 'number' ? body.trustTier : undefined,
-                    host: typeof body.host === 'string' ? body.host : undefined,
-                    note: typeof body.note === 'string' ? body.note.slice(0, 200) : undefined,
-                    inboxUrl: typeof body.inboxUrl === 'string' ? body.inboxUrl.trim() : undefined,
-                });
-                writeJson(200, {
-                    agentId: claim.agentId,
-                    sessionId: claim.sessionId,
-                    ttlMs: this.chairs.config().offlineMs,
-                    heartbeatIntervalMs: Math.floor(this.chairs.config().healthyMs / 2),
-                });
-                return;
-            }
-
-            if (action === 'heartbeat') {
-                const agentId = typeof body.agentId === 'string' ? body.agentId.trim() : '';
-                const sessionId = typeof body.sessionId === 'string' ? body.sessionId.trim() : '';
-                if (!agentId || !sessionId) {
-                    writeJson(400, { error: 'missing_required_fields', need: ['agentId', 'sessionId'] });
-                    return;
-                }
-                const claim = this.chairs.heartbeat(
-                    agentId,
-                    sessionId,
-                    typeof body.note === 'string' ? body.note.slice(0, 200) : undefined,
-                );
-                if (!claim) {
-                    writeJson(409, { error: 'unknown_or_superseded_session' });
-                    return;
-                }
-                writeJson(200, { status: claim.status, lastBeaconAt: claim.lastBeaconAt });
-                return;
-            }
-
-            if (action === 'release') {
-                const agentId = typeof body.agentId === 'string' ? body.agentId.trim() : '';
-                const sessionId = typeof body.sessionId === 'string' ? body.sessionId.trim() : '';
-                if (!agentId || !sessionId) {
-                    writeJson(400, { error: 'missing_required_fields', need: ['agentId', 'sessionId'] });
-                    return;
-                }
-                const ok = this.chairs.release(agentId, sessionId, 'client_release');
-                writeJson(200, { released: ok });
-                return;
-            }
-
-            if (action === 'reply') {
-                const topicId = typeof body.topicId === 'string' ? body.topicId.trim() : '';
-                const agentId = typeof body.agentId === 'string' ? body.agentId.trim() : '';
-                const content = typeof body.content === 'string' ? body.content : '';
-                if (!topicId || !agentId) {
-                    writeJson(400, { error: 'missing_required_fields', need: ['topicId', 'agentId'] });
-                    return;
-                }
-                const success = ChairBridgeProvider.submitReply(topicId, agentId, content);
-                writeJson(200, { success });
-                return;
-            }
-
-            writeJson(404, { error: 'unknown_chair_action', action });
-        });
-        req.on('error', () => {
-            if (!aborted) writeJson(400, { error: 'request_stream_error' });
-        });
-    }
-
-    private handleStateSnapshot(_req: http.IncomingMessage, res: http.ServerResponse): void {
-        const snapshot = {
-            timestamp: Date.now(),
-            agentCards: this.agentCards.length,
-            connectedClients: this.wss.clients.size,
-            nodes: this.nodeCache.size,
-            tasksTotal: this.taskCache.length,
-            receiptsIssued: this.receiptsIssued,
-            activeCycles: Array.from(this.activeCycles.values()).slice(-20),
-            hardware: this.hardwareCache,
-            claims: {
-                stats: this.claims.stats(),
-                pending: this.claims.snapshot().slice(-20),
-            },
-            retryQueue: {
-                pendingCount: this.retryQueue.pendingCount(),
-                pending: this.retryQueue.snapshot(),
-            },
-            reconciler: this.reconciler.stats(),
-            workspaces: {
-                root: this.workspaces.root(),
-                active: this.workspaces.activeCount(),
-            },
-            hooks: this.hooks.stats(),
-            workflow: {
-                loaded: !!this.workflowLoader.document(),
-                lastError: this.workflowLoader.lastErrorMessage(),
-                version: this.workflowLoader.document()?.frontMatter.version ?? null,
-                loadedAt: this.workflowLoader.document()?.loadedAt ?? null,
-            },
-            tokens: { ...this.tokenTotals },
-            rateLimits: this.rateLimits.allSnapshots(),
-            chairs: {
-                stats: this.chairs.stats(),
-                roster: this.chairs.snapshot(),
-            },
-            circuits: this.circuitBreaker.snapshot(),
-            learningMatrix: this.learningMatrix.stats(),
-        };
-        res.writeHead(200, {
-            'Content-Type': 'application/json',
-            'Cache-Control': 'no-store',
-            'Access-Control-Allow-Origin': '*',
-        });
-        res.end(JSON.stringify(snapshot));
-    }
-
     private triggerIngest() {
         const rootPath = process.cwd();
         this.ingestor.ingest(rootPath);
@@ -1263,7 +544,6 @@ export class MeshOrchestrator extends EventEmitter {
             this.log.info('agent_cards_loaded', { count: this.agentCards.length });
         }
         
-        // Static fallback to prevent empty-roster initialization
         if (this.agentCards.length === 0) {
             this.agentCards = Object.values(AgentCards);
             this.log.info('agent_cards_loaded_fallback', { count: this.agentCards.length });
@@ -1279,159 +559,8 @@ export class MeshOrchestrator extends EventEmitter {
             }
             this.broadcast(enrichWithAgUi(event));
         });
-
-        // cycle_complete is subscribed in wireMevBridge() where it owns token
-        // accounting + receiptsIssued; do NOT subscribe again here.
-        this.wss.on('connection', (ws: WebSocket, request) => {
-            const nodeId = this.extractNodeId(request);
-            ws.on('error', (err) => {
-                this.log.warn('ws_client_error', {
-                    node_id: nodeId,
-                    error: err instanceof Error ? err.message.slice(0, 160) : String(err).slice(0, 160),
-                });
-            });
-
-            // 1. Send AgentCards
-            this.agentCards.forEach(card => {
-                ws.send(JSON.stringify({ type: 'agent_card', data: card }));
-            });
-
-            // 2. Send Cached Nodes (Heartbeats/Telemetry)
-            this.nodeCache.forEach(nodeData => {
-                ws.send(JSON.stringify(nodeData));
-            });
-
-            // 3. Send Cached Tasks
-            this.taskCache.forEach(taskData => {
-                ws.send(JSON.stringify(taskData));
-            });
-
-            // 4. Send last-known hardware snapshot
-            if (this.hardwareCache) {
-                ws.send(JSON.stringify({
-                    type: 'hardware_telemetry',
-                    nodeId: 'hardware-monitor',
-                    data: this.hardwareCache,
-                }));
-            }
-
-            // 5. Send current Inter-Agent Chat Toggle State
-            ws.send(JSON.stringify({
-                type: 'inter_agent_chat_state',
-                data: { enabled: this.interAgentChatEnabled, mode: this.interAgentChatMode }
-            }));
-
-            // 6. Replay current chair roster so the cockpit doesn't render an
-            //    empty presence panel between connect and the next beacon.
-            const chairRoster = this.chairs.snapshot();
-            if (chairRoster.length > 0) {
-                ws.send(JSON.stringify({
-                    type: 'chair_roster_snapshot',
-                    nodeId: 'chair-registry',
-                    data: { chairs: chairRoster, stats: this.chairs.stats() },
-                }));
-            }
-
-            // ws delivers Buffer (or ArrayBuffer / Buffer[]); normalise before JSON.parse.
-            ws.on('message', async (data: Buffer | ArrayBuffer | Buffer[]) => {
-                const messageBytes = wsMessageByteLength(data);
-                if (messageBytes > this.maxWsMessageBytes) {
-                    ws.close(1009, 'payload_too_large');
-                    return;
-                }
-                let payload: any;
-                try {
-                    payload = JSON.parse(data.toString());
-                } catch {
-                    return;
-                }
-
-                if (payload && payload.type === 'mission_inject' && typeof payload.goal === 'string') {
-                    const goal = payload.goal.trim();
-                    if (!goal) return;
-                    this.log.info('mission_inject', { source: nodeId, goal_preview: goal.slice(0, 80) });
-                    this.injectTask(goal).catch((err) =>
-                        this.log.error('injection_failure', { source: nodeId, error: (err as Error).message })
-                    );
-                    return;
-                }
-
-                if (payload && payload.type === 'toggle_inter_agent_chat' && typeof payload.enabled === 'boolean') {
-                    this.interAgentChatEnabled = payload.enabled;
-                    if (this.interAgentChatEnabled) {
-                        this.startInterAgentChatLoop();
-                    } else {
-                        this.stopInterAgentChatLoop();
-                    }
-                    this.broadcast({
-                        type: 'inter_agent_chat_state',
-                        data: { enabled: this.interAgentChatEnabled, mode: this.interAgentChatMode }
-                    });
-                    return;
-                }
-
-                if (payload && payload.type === 'set_inter_agent_chat_mode' && (payload.mode === 'technical' || payload.mode === 'interests')) {
-                    this.interAgentChatMode = payload.mode;
-                    this.broadcast({
-                        type: 'inter_agent_chat_state',
-                        data: { enabled: this.interAgentChatEnabled, mode: this.interAgentChatMode }
-                    });
-                    // Trigger a message immediately when switching modes to feel responsive
-                    if (this.interAgentChatEnabled) {
-                        this.triggerInterAgentChat();
-                    }
-                    return;
-                }
-
-                await this.handleTelemetry(nodeId, payload);
-            });
-        });
     }
 
-    private extractNodeId(request: any): string {
-        const url = new URL(request.url || '', `http://${request.headers.host}`);
-        return url.searchParams.get('nodeId') || 'unknown';
-    }
-
-    /**
-     * Broadcasts a message to all connected WebSocket clients and caches it
-     * for new arrivals. Stringifies the payload once outside the fan-out
-     * loop — at 1000 clients × 50 Hz telemetry that's 50k redundant
-     * serializations/sec saved.
-     */
-    public broadcast(payload: any) {
-        // Cache management
-        if (payload.type === 'telemetry') {
-            this.nodeCache.set(payload.nodeId, payload);
-        } else if (payload.type === 'new_task') {
-            this.taskCache.push(payload);
-            // Cap replay history. Without this, every new WS client receives
-            // the entire mission history on connect — unbounded memory growth
-            // over a long-running session.
-            if (this.taskCache.length > 100) this.taskCache.shift();
-        }
-
-        const frame = JSON.stringify(payload);
-        this.wss.clients.forEach(client => {
-            if (client.readyState === WebSocket.OPEN) {
-                client.send(frame);
-            }
-        });
-    }
-
-    private async handleTelemetry(nodeId: string, payload: any) {
-        const fullPayload = { nodeId, type: 'telemetry', ...payload };
-        this.emit('telemetry', fullPayload);
-        this.broadcast(fullPayload);
-    }
-
-    /**
-     * Injects a top-level task and triggers the Triad Architect loop via MevBridge.
-     *
-     * Symphony §7 invariant: each task is claimed exactly once at a time.
-     * Concurrent calls with the same goal are rejected with a
-     * `duplicate_claim` receipt rather than dispatched twice.
-     */
     public async injectTask(goal: string): Promise<VerificationReceipt> {
         const taskHash = crypto.createHash('sha256').update(goal).digest('hex');
         const cycleId = crypto.randomUUID();
@@ -1448,7 +577,6 @@ export class MeshOrchestrator extends EventEmitter {
         cycleLog.info('claim_acquired', { goal_preview: goal.slice(0, 80) });
         this.claims.markRunning(taskHash, cycleId);
 
-        // Symphony §9 — every cycle gets an isolated workspace directory.
         let workspacePath: string | undefined;
         try {
             workspacePath = this.workspaces.acquire(cycleId);
@@ -1458,7 +586,6 @@ export class MeshOrchestrator extends EventEmitter {
 
         const hookCtx = { cycleId, taskHash, workspacePath, goal };
 
-        // Symphony §10.1 — after_create FAILS the cycle.
         const afterCreate = await this.hooks.run('after_create', hookCtx);
         if (this.hooks.shouldAbort('after_create', afterCreate)) {
             if (workspacePath) this.workspaces.release(cycleId);
@@ -1466,7 +593,6 @@ export class MeshOrchestrator extends EventEmitter {
             throw new Error('after_create hook aborted cycle');
         }
 
-        // Symphony §10.1 — before_run FAILS the cycle.
         const beforeRun = await this.hooks.run('before_run', hookCtx);
         if (this.hooks.shouldAbort('before_run', beforeRun)) {
             if (workspacePath) this.workspaces.release(cycleId);
@@ -1481,36 +607,27 @@ export class MeshOrchestrator extends EventEmitter {
                 { role: 'user', content: `Execute goal: ${goal}` },
             ]);
         } catch (err) {
-            // The MevBridge loop threw before producing a receipt. Hand the
-            // task to the retry queue; it will either schedule a re-dispatch
-            // with exponential backoff or release the claim as exhausted.
             const reason = `execute_threw:${(err as Error).message}`;
             this.retryQueue.enqueueFailure(taskHash, goal, reason);
             if (workspacePath) this.workspaces.release(cycleId);
             throw err;
         }
 
-        // Symphony §10.1 — after_run failures are logged but do not block.
         await this.hooks.run('after_run', { ...hookCtx, receiptId: receipt.id, status: receipt.status });
 
         if (receipt.status === 'verified') {
             this.claims.release(taskHash, 'cycle_succeeded');
         } else {
-            // Cycle ran to completion but verification failed. Retry policy
-            // applies — Symphony §3.1.
             this.retryQueue.enqueueFailure(taskHash, goal, `cycle_failed:${receipt.id}`);
         }
 
         if (workspacePath) {
-            // Symphony §10.1 — before_remove is advisory; failures don't block cleanup.
             await this.hooks.run('before_remove', hookCtx);
             this.workspaces.release(cycleId);
         }
 
         this.emit('task_routed', { goal, receipt });
 
-        // Route through broadcast() so the new_task frame is cached and
-        // replayed to late-joining WebSocket clients during initial sync.
         this.broadcast({
             type: 'new_task',
             task: {
@@ -1524,11 +641,6 @@ export class MeshOrchestrator extends EventEmitter {
         return receipt;
     }
 
-    /**
-     * Returns a Promise that resolves to the bound port once the HTTP server
-     * is listening. Use in tests to get the ephemeral port when port 0 is
-     * passed to the constructor.
-     */
     public ready(): Promise<number> {
         return new Promise((resolve) => {
             const addr = this.server.address();
@@ -1543,19 +655,16 @@ export class MeshOrchestrator extends EventEmitter {
         });
     }
 
-    private startInterAgentChatLoop() {
+    public startInterAgentChatLoop() {
         if (this.interAgentTimer) return;
-        
-        // Broadcast the first dialogue line immediately to feel snappy
         this.triggerInterAgentChat();
-
         this.interAgentTimer = setInterval(() => {
             this.triggerInterAgentChat();
-        }, 10000); // Live banter dialogue every 10 seconds
+        }, 10000);
         this.log.info('inter_agent_chat_loop_started');
     }
 
-    private stopInterAgentChatLoop() {
+    public stopInterAgentChatLoop() {
         if (this.interAgentTimer) {
             clearInterval(this.interAgentTimer);
             this.interAgentTimer = null;
@@ -1563,7 +672,7 @@ export class MeshOrchestrator extends EventEmitter {
         this.log.info('inter_agent_chat_loop_stopped');
     }
 
-    private triggerInterAgentChat() {
+    public triggerInterAgentChat() {
         const isTechnical = this.interAgentChatMode === 'technical';
         const dialogues = isTechnical ? this.technicalDialogues : this.interestsDialogues;
         if (dialogues.length === 0) return;
@@ -1577,7 +686,6 @@ export class MeshOrchestrator extends EventEmitter {
             this.currentInterestsIndex = (index + 1) % dialogues.length;
         }
 
-        // Use the stateful ConversationBus to track history statefully
         if (!this.banterTopicId) {
             try {
                 const topic = this.conversationBus.createTopic(
@@ -1616,10 +724,7 @@ export class MeshOrchestrator extends EventEmitter {
     }
 
     public close() {
-        for (const timer of this.headerDeadlineTimers.values()) {
-            clearTimeout(timer);
-        }
-        this.headerDeadlineTimers.clear();
+        this.apiRouter.close();
         this.stopInterAgentChatLoop();
         this.personaLoader.stop();
         this.workflowLoader.stop();
@@ -1628,63 +733,8 @@ export class MeshOrchestrator extends EventEmitter {
         this.hardware.stop();
         this.chairs.stop();
         void this.tracing?.shutdown();
-        this.wss.close();
+        this.wsBus.close();
         this.server.close();
         this.memoryDb.close();
     }
-}
-
-function wsMessageByteLength(data: Buffer | ArrayBuffer | Buffer[]): number {
-    if (Buffer.isBuffer(data)) return data.length;
-    if (data instanceof ArrayBuffer) return data.byteLength;
-    if (Array.isArray(data)) return data.reduce((sum, chunk) => sum + chunk.length, 0);
-    return Buffer.byteLength(String(data));
-}
-
-function safeAspectRatio(value: unknown): ComfyAspectRatio | undefined {
-    const allowed = new Set<ComfyAspectRatio>(['1:1', '16:9', '9:16', '4:3', '3:4', 'portrait', 'landscape', 'theater-card', 'flowchart']);
-    return typeof value === 'string' && allowed.has(value as ComfyAspectRatio) ? value as ComfyAspectRatio : undefined;
-}
-
-function safeConsensusThreshold(value: unknown, fallback: number, min: number, max: number): number {
-    const n = typeof value === 'number' ? value : Number(value);
-    if (!Number.isFinite(n)) return fallback;
-    return Math.min(max, Math.max(min, n));
-}
-
-function safeNodeId(value: unknown): string | null {
-    if (typeof value !== 'string') return null;
-    const trimmed = value.trim();
-    if (!/^[A-Za-z0-9_.:-]{1,128}$/.test(trimmed)) return null;
-    return trimmed;
-}
-
-function safeOptionalNodeId(value: unknown): string | undefined {
-    return value === undefined ? undefined : safeNodeId(value) ?? undefined;
-}
-
-function sanitizeMixer(input: unknown[]): LoraMixerUpdate[] {
-    const out: LoraMixerUpdate[] = [];
-    for (const item of input) {
-        const raw = item as Record<string, unknown>;
-        const recipeId = typeof raw.recipeId === 'string' ? raw.recipeId.replace(/[\r\n\t]/g, ' ').trim() : '';
-        if (!recipeId) continue;
-        const update: LoraMixerUpdate = {
-            recipeId: recipeId.slice(0, 80),
-            strength: boundedNumber(raw.strength, 0, 2, 1),
-            denoise: boundedNumber(raw.denoise, 0, 1, 0.55),
-        };
-        if (typeof raw.trigger === 'string') {
-            update.trigger = raw.trigger.replace(/[\r\n\t]/g, ' ').trim().slice(0, 240);
-        }
-        out.push(update);
-        if (out.length >= 16) break;
-    }
-    return out;
-}
-
-function boundedNumber(value: unknown, min: number, max: number, fallback: number): number {
-    const n = typeof value === 'number' ? value : Number(value);
-    if (!Number.isFinite(n)) return fallback;
-    return Math.min(max, Math.max(min, n));
 }
