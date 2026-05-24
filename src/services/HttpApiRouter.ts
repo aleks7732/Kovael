@@ -5,6 +5,7 @@ import { ChairBridgeProvider } from './ModelProvider.js';
 import type { ComfyAspectRatio, LoraMixerUpdate } from './ComfyUiBridge.js';
 import { sanitizeTraceparent, sanitizeTracestate } from './ConsensusEngine.js';
 import { readJsonBody, writeJson, writeNoContent } from './http/HttpApiSupport.js';
+import { handleStateSnapshot } from './http/StateRoutes.js';
 
 export interface HttpTimeouts {
     headersTimeout: number;
@@ -84,7 +85,7 @@ export class HttpApiRouter {
             }
 
             if (url.startsWith('/api/v1/state')) {
-                this.handleStateSnapshot(req, res);
+                handleStateSnapshot(this.context, req, res);
                 return;
             }
             if (url.startsWith('/api/v1/chairs')) {
@@ -155,53 +156,6 @@ export class HttpApiRouter {
         if (!timer) return;
         clearTimeout(timer);
         this.headerDeadlineTimers.delete(socket);
-    }
-
-    private handleStateSnapshot(_req: http.IncomingMessage, res: http.ServerResponse): void {
-        const snapshot = {
-            timestamp: Date.now(),
-            agentCards: this.context.agentCards.length,
-            connectedClients: this.context.wss?.clients?.size ?? 0,
-            nodes: this.context.nodeCache.size,
-            tasksTotal: this.context.taskCache.length,
-            receiptsIssued: this.context.receiptsIssued,
-            activeCycles: Array.from(this.context.activeCycles.values()).slice(-20),
-            hardware: this.context.hardwareCache,
-            claims: {
-                stats: this.context.claims.stats(),
-                pending: this.context.claims.snapshot().slice(-20),
-            },
-            retryQueue: {
-                pendingCount: this.context.retryQueue?.pendingCount() ?? 0,
-                pending: this.context.retryQueue?.snapshot() ?? [],
-            },
-            reconciler: this.context.reconciler?.stats() ?? null,
-            workspaces: {
-                root: this.context.workspaces?.root() ?? '',
-                active: this.context.workspaces?.activeCount() ?? 0,
-            },
-            hooks: this.context.hooks?.stats() ?? null,
-            workflow: {
-                loaded: !!this.context.workflowLoader?.document(),
-                lastError: this.context.workflowLoader?.lastErrorMessage() ?? null,
-                version: this.context.workflowLoader?.document()?.frontMatter?.version ?? null,
-                loadedAt: this.context.workflowLoader?.document()?.loadedAt ?? null,
-            },
-            tokens: { ...this.context.tokenTotals },
-            rateLimits: this.context.rateLimits?.allSnapshots() ?? [],
-            chairs: {
-                stats: this.context.chairs.stats(),
-                roster: this.context.chairs.snapshot(),
-            },
-            circuits: this.context.circuitBreaker.snapshot(),
-            learningMatrix: this.context.learningMatrix.stats(),
-        };
-        res.writeHead(200, {
-            'Content-Type': 'application/json',
-            'Cache-Control': 'no-store',
-            'Access-Control-Allow-Origin': '*',
-        });
-        res.end(JSON.stringify(snapshot));
     }
 
     private async handleChairRequest(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
