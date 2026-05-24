@@ -6,6 +6,7 @@ import { sanitizeTraceparent, sanitizeTracestate } from './ConsensusEngine.js';
 import { readJsonBody, writeJson, writeNoContent } from './http/HttpApiSupport.js';
 import { handleStateSnapshot } from './http/StateRoutes.js';
 import { handleComfyRequest } from './http/ComfyRoutes.js';
+import { handleTracesRequest } from './http/TraceRoutes.js';
 
 export interface HttpTimeouts {
     headersTimeout: number;
@@ -97,7 +98,7 @@ export class HttpApiRouter {
                 return;
             }
             if (url.startsWith('/api/v1/traces')) {
-                this.handleTracesRequest(req, res);
+                handleTracesRequest(this.context, req, res, { readJsonBody, writeJson });
                 return;
             }
             if (url.startsWith('/api/v1/comfy')) {
@@ -359,75 +360,10 @@ export class HttpApiRouter {
         writeJson(res, 404, { error: 'unknown_conversation_action' });
     }
 
-    private async handleTracesRequest(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
-        const url = new URL(req.url || '/', `http://${req.headers.host}`);
-        if (req.method === 'POST' && url.pathname === '/api/v1/traces/reroute') {
-            const body = await readJsonBody(req, res, 8 * 1024);
-            if (body === null) return;
-            const source = safeNodeId(body.source);
-            const target = safeNodeId(body.target);
-            if (!source || !target) {
-                writeJson(res, 400, { error: 'missing_required_fields', need: ['source', 'target'] });
-                return;
-            }
-            const event = {
-                type: 'trace.rerouted',
-                source,
-                target,
-                sourceHandle: safeOptionalNodeId(body.sourceHandle),
-                targetHandle: safeOptionalNodeId(body.targetHandle),
-                requestedAt: Date.now(),
-            };
-            this.context.broadcast(event);
-            writeJson(res, 200, event);
-            return;
-        }
-
-        if (req.method !== 'GET') {
-            writeJson(res, 405, { error: 'method_not_allowed' });
-            return;
-        }
-
-        const detailMatch = url.pathname.match(/^\/api\/v1\/traces\/([^/]+)\/?$/);
-        if (detailMatch) {
-            const cycleId = detailMatch[1];
-            const trace = this.context.tracing?.ring?.get(cycleId);
-            if (!trace) {
-                writeJson(res, 404, { error: 'trace_not_found', cycleId });
-                return;
-            }
-            writeJson(res, 200, trace);
-            return;
-        }
-
-        const limitParam = url.searchParams.get('limit');
-        const limit = limitParam ? Math.max(1, Math.min(1000, Number.parseInt(limitParam, 10) || 20)) : 20;
-        const items = (this.context.tracing?.ring?.list(limit) ?? []).map((t: any) => ({
-            cycleId: t.cycleId,
-            traceId: t.traceId,
-            startedAt: t.startedAt,
-            endedAt: t.endedAt,
-            durationMs: t.endedAt - t.startedAt,
-            spanCount: t.spans.length,
-        }));
-        writeJson(res, 200, { items, stats: this.context.tracing?.ring?.stats() ?? null });
-    }
-
 }
 
 function safeConsensusThreshold(value: unknown, fallback: number, min: number, max: number): number {
     const n = typeof value === 'number' ? value : Number(value);
     if (!Number.isFinite(n)) return fallback;
     return Math.min(max, Math.max(min, n));
-}
-
-function safeNodeId(value: unknown): string | null {
-    if (typeof value !== 'string') return null;
-    const trimmed = value.trim();
-    if (!/^[A-Za-z0-9_.:-]{1,128}$/.test(trimmed)) return null;
-    return trimmed;
-}
-
-function safeOptionalNodeId(value: unknown): string | undefined {
-    return value === undefined ? undefined : safeNodeId(value) ?? undefined;
 }
