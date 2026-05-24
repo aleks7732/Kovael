@@ -91,7 +91,7 @@ export const MessageList = memo(({ messages, roster, activeTopicId, activeSpeake
       </div>
 
       {/* Transcript Scroll Area */}
-      <div className="flex-1 overflow-y-auto px-4 py-4 space-y-4 max-h-[420px] scrollbar-thin">
+      <div className="flex-1 overflow-y-auto px-4 py-4 space-y-4 scrollbar-thin">
         {messages.length === 0 ? (
           <div className="py-12 flex flex-col items-center justify-center text-command-warm-white/25">
             <span className="text-[11px] uppercase tracking-widest animate-pulse">Awaiting first participant reply...</span>

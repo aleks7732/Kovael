@@ -133,6 +133,9 @@ export class HttpApiRouter {
             this.armHeaderDeadline(socket, this.timeouts.headersTimeout);
             socket.on('close', () => this.disarmHeaderDeadline(socket));
         });
+        server.on('upgrade', (_req, socket) => {
+            this.disarmHeaderDeadline(socket as Socket);
+        });
 
         return server;
     }

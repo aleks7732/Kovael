@@ -12,6 +12,7 @@ interface PhaseFeedProps {
   retryEvents: RetryEvent[];
   reconcileActions: ReconcileAction[];
   onSelectCycle: (cycleId: string) => void;
+  height?: number;
 }
 
 interface UnifiedEvent {
@@ -191,14 +192,18 @@ const Row = memo(({ evt, onSelectCycle }: { evt: UnifiedEvent; onSelectCycle: (i
 });
 Row.displayName = 'PhaseFeed.Row';
 
-export const PhaseFeed = memo(({ phaseEvents, hookEvents, retryEvents, reconcileActions, onSelectCycle }: PhaseFeedProps) => {
+export const PhaseFeed = memo(({ phaseEvents, hookEvents, retryEvents, reconcileActions, onSelectCycle, height = 44 }: PhaseFeedProps) => {
   const events = useMemo(
     () => unify(phaseEvents, hookEvents, retryEvents, reconcileActions),
     [phaseEvents, hookEvents, retryEvents, reconcileActions],
   );
 
   return (
-    <footer className="h-11 border-t border-white/5 bg-black/40 backdrop-blur-xl flex items-stretch relative z-20">
+    <footer
+      data-layout-panel="system-feed"
+      className="border-t border-white/5 bg-black/40 backdrop-blur-xl flex items-stretch relative z-20"
+      style={{ height }}
+    >
       <div className="px-4 flex items-center gap-2 border-r border-white/5 shrink-0">
         <div className="w-1.5 h-1.5 rounded-full bg-command-accent animate-pulse shadow-[0_0_8px_rgba(193,95,60,0.6)]" />
         <div className="flex flex-col items-start leading-none">

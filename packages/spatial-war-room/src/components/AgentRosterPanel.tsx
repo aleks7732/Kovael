@@ -12,6 +12,7 @@ interface AgentRosterPanelProps {
   interAgentMessages: InterAgentMessage[];
   onToggleInterAgentChat: (enabled: boolean) => void;
   onChangeInterAgentChatMode: (mode: 'technical' | 'interests') => void;
+  width?: number;
 }
 
 interface StatusStyle { dot: string; text: string; label: string }
@@ -295,6 +296,7 @@ export const AgentRosterPanel = memo(({
   interAgentMessages,
   onToggleInterAgentChat,
   onChangeInterAgentChatMode,
+  width = 300,
 }: AgentRosterPanelProps) => {
   const activeTopicId = useWarRoomStore((s) => s.activeTopicId);
   const topics = useWarRoomStore((s) => s.topics);
@@ -318,7 +320,11 @@ export const AgentRosterPanel = memo(({
   );
 
   return (
-  <aside className="h-full w-[300px] shrink-0 border-l border-white/5 bg-black/20 backdrop-blur-xl flex flex-col">
+  <aside
+    data-layout-panel="agent-roster"
+    className="h-full shrink-0 border-l border-white/5 bg-black/20 backdrop-blur-xl flex flex-col"
+    style={{ width }}
+  >
     <div className="px-4 py-3 border-b border-white/5 flex items-center justify-between">
       <div>
         <div className="t-eyebrow">AGENT_ROSTER</div>

@@ -8,6 +8,8 @@ import { TraceBreadcrumb } from './TraceBreadcrumb';
 import { TraceTimeline } from './TraceTimeline';
 import { CommitteeDrawer } from './CommitteeDrawer';
 import { ComfyMixerPanel } from './ComfyMixerPanel';
+import { ResizeHandle } from '../ResizeHandle';
+import { usePersistentDimension } from '../../hooks/usePersistentDimension';
 
 export const ConversationTheater = memo(() => {
   const topics = useWarRoomStore((s) => s.topics);
@@ -20,11 +22,17 @@ export const ConversationTheater = memo(() => {
   const openConversation = useWarRoomStore((s) => s.openConversation);
 
   const [closingId, setClosingId] = useState<string | null>(null);
+  const compactLayout = typeof window !== 'undefined' && window.innerWidth < 1180;
+  const [topicRailWidth, setTopicRailWidth] = usePersistentDimension('kovael.layout.theater.topicRailWidth', compactLayout ? 120 : 256, 120, 420);
+  const [committeeWidth, setCommitteeWidth] = usePersistentDimension('kovael.layout.theater.committeeWidth', compactLayout ? 140 : 288, 120, 420);
+  const [stageHeight, setStageHeight] = usePersistentDimension('kovael.layout.theater.stageHeight', 360, 260, 680);
 
   // Active topic object
   const activeTopic = topics.find((t) => t.id === activeTopicId) || null;
   const messages = activeTopicId ? messagesByTopic[activeTopicId] || [] : [];
   const activeCriterion = activeTopicId ? stoppingCriterion[activeTopicId] || null : null;
+  const showTopicRail = topics.length > 0;
+  const showCommitteeDrawer = activeTopicId !== null;
 
   // Determine active speaker (last assistant message sender if thread is active)
   let activeSpeakerId: string | null = null;
@@ -83,73 +91,80 @@ export const ConversationTheater = memo(() => {
   return (
     <div className="w-full flex-1 flex min-h-0 text-command-warm-white select-none animate-[fadeIn_0.3s_ease-out]">
       {/* LEFT SIDEBAR: Topic History thread selection */}
-      <aside className="w-64 border-r border-white/5 bg-black/20 flex flex-col min-h-0">
-        {/* Sidebar Header */}
-        <div className="p-4 border-b border-white/5 bg-black/10 flex items-center justify-between">
-          <span className="text-[10px] font-extrabold tracking-wider text-command-warm-white/60 uppercase">
-            CONVENED DEBATES
-          </span>
-          <span className="px-1.5 py-0.5 rounded bg-white/5 text-[9px] font-mono text-command-warm-white/45">
-            {topics.length} THREADS
-          </span>
-        </div>
-
-        {/* Topics List */}
-        <div className="flex-1 overflow-y-auto p-2 space-y-1.5 scrollbar-thin">
-          {topics.length === 0 ? (
-            <div className="py-12 px-4 text-center text-command-warm-white/25 text-[10px] leading-relaxed">
-              No previous threads found. Convene a new panel to start.
+      {showTopicRail && (
+        <>
+          <aside
+            data-layout-panel="theater-topics"
+            className="border-r border-white/5 bg-black/20 flex flex-col min-h-0 shrink-0"
+            style={{ width: topicRailWidth }}
+          >
+            {/* Sidebar Header */}
+            <div className="p-4 border-b border-white/5 bg-black/10 flex items-center justify-between">
+              <span className="text-[10px] font-extrabold tracking-wider text-command-warm-white/60 uppercase">
+                CONVENED DEBATES
+              </span>
+              <span className="px-1.5 py-0.5 rounded bg-white/5 text-[9px] font-mono text-command-warm-white/45">
+                {topics.length} THREADS
+              </span>
             </div>
-          ) : (
-            topics.map((topic) => {
-              const isActive = topic.id === activeTopicId;
-              
-              return (
-                <div
-                  key={topic.id}
-                  onClick={() => selectTopic(topic.id)}
-                  className={`w-full p-3 rounded-lg border text-left cursor-pointer transition-all duration-150 flex flex-col gap-1.5 ${
-                    isActive
-                      ? 'bg-command-accent/10 border-command-accent/40 shadow-[0_0_10px_rgba(193,95,60,0.15)]'
-                      : 'bg-black/30 border-white/5 hover:bg-black/50 hover:border-white/10'
-                  }`}
-                >
-                  <div className="flex items-start justify-between gap-2">
-                    <span className="text-[11.5px] font-bold text-command-warm-white/90 leading-tight line-clamp-2">
-                      {topic.title}
-                    </span>
-                    
-                    {/* Live active beacon */}
-                    {topic.active ? (
-                      <span className="flex-shrink-0 w-2 h-2 rounded-full bg-command-accent shadow-[0_0_6px_rgba(193,95,60,0.8)] animate-pulse" />
-                    ) : (
-                      <span className="flex-shrink-0 w-2 h-2 rounded-full bg-zinc-600" />
-                    )}
-                  </div>
 
-                  {/* Topic footer details */}
-                  <div className="flex items-center justify-between mt-1 pt-1.5 border-t border-white/5 text-[9px] text-command-warm-white/35">
-                    <span className="font-mono">
-                      {topic.participants.length} CHAIR{topic.participants.length === 1 ? '' : 'S'}
-                    </span>
+            {/* Topics List */}
+            <div className="flex-1 overflow-y-auto p-2 space-y-1.5 scrollbar-thin">
+              {topics.map((topic) => {
+                const isActive = topic.id === activeTopicId;
 
-                    {/* Manual Close Action */}
-                    {topic.active && (
-                      <button
-                        onClick={(e) => handleCloseTopic(topic.id, e)}
-                        disabled={closingId === topic.id}
-                        className="px-1.5 py-0.5 rounded border border-red-500/30 text-[8px] font-bold uppercase text-red-400 hover:bg-red-500/10 transition-all select-none"
-                      >
-                        {closingId === topic.id ? 'CLOSING...' : 'HALT'}
-                      </button>
-                    )}
+                return (
+                  <div
+                    key={topic.id}
+                    onClick={() => selectTopic(topic.id)}
+                    className={`w-full p-3 rounded-lg border text-left cursor-pointer transition-all duration-150 flex flex-col gap-1.5 ${
+                      isActive
+                        ? 'bg-command-accent/10 border-command-accent/40 shadow-[0_0_10px_rgba(193,95,60,0.15)]'
+                        : 'bg-black/30 border-white/5 hover:bg-black/50 hover:border-white/10'
+                    }`}
+                  >
+                    <div className="flex items-start justify-between gap-2">
+                      <span className="text-[11.5px] font-bold text-command-warm-white/90 leading-tight line-clamp-2">
+                        {topic.title}
+                      </span>
+
+                      {/* Live active beacon */}
+                      {topic.active ? (
+                        <span className="flex-shrink-0 w-2 h-2 rounded-full bg-command-accent shadow-[0_0_6px_rgba(193,95,60,0.8)] animate-pulse" />
+                      ) : (
+                        <span className="flex-shrink-0 w-2 h-2 rounded-full bg-zinc-600" />
+                      )}
+                    </div>
+
+                    {/* Topic footer details */}
+                    <div className="flex items-center justify-between mt-1 pt-1.5 border-t border-white/5 text-[9px] text-command-warm-white/35">
+                      <span className="font-mono">
+                        {topic.participants.length} CHAIR{topic.participants.length === 1 ? '' : 'S'}
+                      </span>
+
+                      {/* Manual Close Action */}
+                      {topic.active && (
+                        <button
+                          onClick={(e) => handleCloseTopic(topic.id, e)}
+                          disabled={closingId === topic.id}
+                          className="px-1.5 py-0.5 rounded border border-red-500/30 text-[8px] font-bold uppercase text-red-400 hover:bg-red-500/10 transition-all select-none"
+                        >
+                          {closingId === topic.id ? 'CLOSING...' : 'HALT'}
+                        </button>
+                      )}
+                    </div>
                   </div>
-                </div>
-              );
-            })
-          )}
-        </div>
-      </aside>
+                );
+              })}
+            </div>
+          </aside>
+          <ResizeHandle
+            axis="x"
+            title="Resize debate history"
+            onResize={(delta) => setTopicRailWidth((width) => width + delta)}
+          />
+        </>
+      )}
 
       {/* CENTER MAIN STAGE WORKSPACE */}
       <main className="flex-1 flex flex-col min-h-0 bg-black/10 overflow-y-auto p-4 space-y-4 scrollbar-thin">
@@ -177,7 +192,12 @@ export const ConversationTheater = memo(() => {
             </div>
 
             {/* Stage: Seating seating table */}
-            <Stage roster={roster} activeSpeakerId={activeSpeakerId} />
+            <Stage roster={roster} activeSpeakerId={activeSpeakerId} height={stageHeight} />
+            <ResizeHandle
+              axis="y"
+              title="Resize round-table stage"
+              onResize={(delta) => setStageHeight((height) => height + delta)}
+            />
 
             {/* Consensus stop alert (if triggered) */}
             <StoppingCard criterion={activeCriterion} />
@@ -194,7 +214,19 @@ export const ConversationTheater = memo(() => {
           </>
         ) : (
           /* Empty/Standby State Theater Stage background */
-          <div className="flex-1 flex flex-col items-center justify-center p-8 text-center bg-black/15 border border-dashed border-white/5 rounded-xl min-h-[300px]">
+          <div
+            data-layout-panel="theater-standby"
+            className="relative flex-1 flex flex-col items-center justify-center p-8 text-center bg-black/15 border border-dashed border-white/5 rounded-xl min-h-[300px]"
+            style={{ minHeight: stageHeight }}
+          >
+            <div className="absolute top-3 left-3 right-3 flex items-center justify-between gap-3">
+              <span className="px-1.5 py-0.5 rounded bg-white/5 text-[9px] font-mono text-command-warm-white/45">
+                0 THREADS
+              </span>
+              <span className="text-[10px] text-command-warm-white/25 truncate">
+                No previous threads found. Convene a new panel to start.
+              </span>
+            </div>
             <div className="relative w-20 h-20 mb-4 flex items-center justify-center">
               <div className="absolute inset-0 rounded-full border border-white/5 bg-command-accent/5 animate-pulse" />
               <svg className="w-8 h-8 text-command-accent/40" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -209,11 +241,27 @@ export const ConversationTheater = memo(() => {
             </p>
           </div>
         )}
+        {!activeTopic && (
+          <ResizeHandle
+            axis="y"
+            title="Resize theater standby"
+            onResize={(delta) => setStageHeight((height) => height + delta)}
+          />
+        )}
 
         {/* Convene input panel dock at bottom */}
         <ConvenePanel roster={roster} onTopicCreated={(id) => selectTopic(id)} />
       </main>
-      <CommitteeDrawer topicId={activeTopicId} />
+      {showCommitteeDrawer && (
+        <>
+          <ResizeHandle
+            axis="x"
+            title="Resize committee drawer"
+            onResize={(delta) => setCommitteeWidth((width) => width - delta)}
+          />
+          <CommitteeDrawer topicId={activeTopicId} width={committeeWidth} />
+        </>
+      )}
       <TraceTimeline />
     </div>
   );

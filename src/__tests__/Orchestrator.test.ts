@@ -98,6 +98,58 @@ describe('MeshOrchestrator', () => {
         expect(isConnected).toBe(true);
     });
 
+    it('keeps upgraded WebSocket sockets alive beyond headersTimeout budget', async () => {
+        const shortTimeoutOrchestrator = new MeshOrchestrator(0, {
+            httpTimeouts: {
+                headersTimeout: 250,
+                requestTimeout: 1_000,
+                keepAliveTimeout: 100,
+            },
+        });
+        const shortTimeoutPort = await shortTimeoutOrchestrator.ready();
+        const ws = new WebSocket(`ws://127.0.0.1:${shortTimeoutPort}?nodeId=timeout-regression`);
+
+        try {
+            await new Promise<void>((resolve, reject) => {
+                let settled = false;
+                let survivalTimer: NodeJS.Timeout | null = null;
+                const openTimer = setTimeout(() => {
+                    if (settled) return;
+                    settled = true;
+                    reject(new Error('WebSocket did not open before timeout'));
+                }, 1_000);
+
+                const finish = (err?: Error) => {
+                    if (settled) return;
+                    settled = true;
+                    clearTimeout(openTimer);
+                    if (survivalTimer) clearTimeout(survivalTimer);
+                    if (err) reject(err);
+                    else resolve();
+                };
+
+                ws.on('open', () => {
+                    survivalTimer = setTimeout(() => {
+                        if (ws.readyState === WebSocket.OPEN) {
+                            finish();
+                            return;
+                        }
+                        finish(new Error(`WebSocket not open after headersTimeout, state=${ws.readyState}`));
+                    }, 750);
+                });
+                ws.on('close', (code, reason) => {
+                    finish(new Error(`WebSocket closed early: code=${code} reason=${reason.toString()}`));
+                });
+                ws.on('error', (err) => finish(err));
+            });
+        } finally {
+            if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) {
+                ws.close();
+            }
+            shortTimeoutOrchestrator.close();
+        }
+    });
+
     it('should emit task_routed and return a VerificationReceipt when injectTask is called', async () => {
         const taskRoutedSpy = vi.fn();
         orchestrator.on('task_routed', taskRoutedSpy);

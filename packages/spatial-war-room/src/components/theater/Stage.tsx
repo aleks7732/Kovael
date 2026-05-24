@@ -5,6 +5,7 @@ import { AgentAvatarFallback } from '../AgentAvatarFallback';
 export interface StageProps {
   roster: AgentRosterCard[];
   activeSpeakerId: string | null;
+  height?: number;
 }
 
 type StageStyle = CSSProperties & {
@@ -13,10 +14,11 @@ type StageStyle = CSSProperties & {
 
 export const areStagePropsEqual = (prev: StageProps, next: StageProps): boolean => {
   if (prev.activeSpeakerId !== next.activeSpeakerId) return false;
+  if (prev.height !== next.height) return false;
   return stageRosterSignature(prev.roster) === stageRosterSignature(next.roster);
 };
 
-export const Stage = memo(({ roster, activeSpeakerId }: StageProps) => {
+export const Stage = memo(({ roster, activeSpeakerId, height = 320 }: StageProps) => {
   const rosterSignature = stageRosterSignature(roster);
   const seats = useMemo(
     () => [...roster].sort((a, b) => a.id.localeCompare(b.id)).slice(0, 9),
@@ -25,7 +27,11 @@ export const Stage = memo(({ roster, activeSpeakerId }: StageProps) => {
   const totalSeats = seats.length;
 
   return (
-    <div className="relative w-full h-[320px] bg-black/25 backdrop-blur-md rounded-xl border border-white/5 overflow-hidden flex items-center justify-center select-none">
+    <div
+      data-layout-panel="round-table-stage"
+      className="relative w-full min-h-[240px] bg-black/25 backdrop-blur-md rounded-xl border border-white/5 overflow-hidden flex items-center justify-center select-none"
+      style={{ height }}
+    >
       {/* Grid tech background */}
       <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_center,rgba(193,95,60,0.04),transparent_60%)] pointer-events-none" />
       <div className="absolute inset-0 bg-[linear-gradient(rgba(255,255,255,0.01)_1px,transparent_1px),linear-gradient(90deg,rgba(255,255,255,0.01)_1px,transparent_1px)] bg-[size:16px_16px] pointer-events-none" />
