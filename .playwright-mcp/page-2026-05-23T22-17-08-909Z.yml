@@ -1,0 +1,209 @@
+- generic [ref=e2]:
+  - generic [ref=e3]:
+    - link "Skip to content" [ref=e4] [cursor=pointer]:
+      - /url: "#start-of-content"
+    - banner [ref=e6]:
+      - heading "Navigation Menu" [level=2] [ref=e7]
+      - generic [ref=e9]:
+        - button "Toggle navigation" [ref=e11] [cursor=pointer]
+        - link "Homepage" [ref=e17] [cursor=pointer]:
+          - /url: /
+          - img [ref=e18]
+        - generic [ref=e20]:
+          - link "Sign in" [ref=e21] [cursor=pointer]:
+            - /url: /login?return_to=https%3A%2F%2Fgithub.com%2Faleks7732%2FKovael%2Factions%2Fruns%2F26344953354%2Fjob%2F77553207502
+          - button "Appearance settings" [ref=e24] [cursor=pointer]:
+            - img
+  - main [ref=e28]:
+    - generic [ref=e29]:
+      - generic [ref=e30]:
+        - generic [ref=e31]:
+          - generic [ref=e33]:
+            - img [ref=e34]
+            - link "aleks7732" [ref=e37] [cursor=pointer]:
+              - /url: /aleks7732
+            - generic [ref=e38]: /
+            - strong [ref=e39]:
+              - link "Kovael" [ref=e40] [cursor=pointer]:
+                - /url: /aleks7732/Kovael
+            - generic [ref=e41]: Public
+          - generic [ref=e42]:
+            - list:
+              - listitem [ref=e43]:
+                - link "You must be signed in to change notification settings" [ref=e44] [cursor=pointer]:
+                  - /url: /login?return_to=%2Faleks7732%2FKovael
+                  - img [ref=e45]
+                  - text: Notifications
+              - listitem [ref=e47]:
+                - link "Fork 0" [ref=e48] [cursor=pointer]:
+                  - /url: /login?return_to=%2Faleks7732%2FKovael
+                  - img [ref=e49]
+                  - text: Fork
+                  - generic "0" [ref=e51]
+              - listitem [ref=e52]:
+                - link "You must be signed in to star a repository" [ref=e54] [cursor=pointer]:
+                  - /url: /login?return_to=%2Faleks7732%2FKovael
+                  - img [ref=e55]
+                  - text: Star
+                  - generic "0 users starred this repository" [ref=e57]: "0"
+        - navigation "Repository" [ref=e58]:
+          - list [ref=e59]:
+            - listitem [ref=e60]:
+              - link "Code" [ref=e61] [cursor=pointer]:
+                - /url: /aleks7732/Kovael
+                - img [ref=e62]
+                - generic [ref=e64]: Code
+            - listitem [ref=e65]:
+              - link "Issues 1" [ref=e66] [cursor=pointer]:
+                - /url: /aleks7732/Kovael/issues
+                - img [ref=e67]
+                - generic [ref=e70]: Issues
+                - generic "1" [ref=e71]
+            - listitem [ref=e72]:
+              - link "Pull requests 1" [ref=e73] [cursor=pointer]:
+                - /url: /aleks7732/Kovael/pulls
+                - img [ref=e74]
+                - generic [ref=e76]: Pull requests
+                - generic "1" [ref=e77]
+            - listitem [ref=e78]:
+              - link "Actions" [ref=e79] [cursor=pointer]:
+                - /url: /aleks7732/Kovael/actions
+                - img [ref=e80]
+                - generic [ref=e82]: Actions
+            - listitem [ref=e83]:
+              - link "Projects" [ref=e84] [cursor=pointer]:
+                - /url: /aleks7732/Kovael/projects
+                - img [ref=e85]
+                - generic [ref=e87]: Projects
+            - listitem [ref=e88]:
+              - link "Security and quality" [ref=e89] [cursor=pointer]:
+                - /url: /aleks7732/Kovael/security
+                - img [ref=e90]
+                - generic [ref=e92]: Security and quality
+            - listitem [ref=e93]:
+              - link "Insights" [ref=e94] [cursor=pointer]:
+                - /url: /aleks7732/Kovael/pulse
+                - img [ref=e95]
+                - generic [ref=e97]: Insights
+      - generic [ref=e102]:
+        - generic [ref=e105]:
+          - link "CI" [ref=e108] [cursor=pointer]:
+            - /url: /aleks7732/Kovael/actions/workflows/ci.yml
+            - img [ref=e109]
+            - generic [ref=e111]: CI
+          - generic [ref=e112]:
+            - generic [ref=e113]:
+              - img "failed:" [ref=e117]
+              - 'heading "test: fill coverage gaps for 9 previously-untested modules #159" [level=1] [ref=e119]':
+                - generic [ref=e120]: "test: fill coverage gaps for 9 previously-untested modules #159"
+            - link "Sign in to view logs" [ref=e123] [cursor=pointer]:
+              - /url: /login?return_to=https%3A%2F%2Fgithub.com%2Faleks7732%2FKovael%2Factions%2Fruns%2F26344953354%2Fjob%2F77553207502
+        - generic [ref=e124]:
+          - navigation "Workflow run" [ref=e130]:
+            - list [ref=e131]:
+              - listitem [ref=e132]:
+                - link "Summary" [ref=e133] [cursor=pointer]:
+                  - /url: /aleks7732/Kovael/actions/runs/26344953354
+                  - generic:
+                    - img
+                  - generic [ref=e135]: Summary
+              - generic [ref=e136]:
+                - heading "All jobs" [level=4] [ref=e137]
+                - button "Filter by job status" [ref=e138] [cursor=pointer]:
+                  - img [ref=e139]
+              - listitem [ref=e141]
+              - listitem [ref=e142]:
+                - list [ref=e143]:
+                  - listitem [ref=e144]:
+                    - generic "Loading" [ref=e145]:
+                      - generic [ref=e149]:
+                        - img [ref=e150]
+                        - generic [ref=e153]: Loading
+              - listitem [ref=e154]
+              - listitem [ref=e155]:
+                - heading "Run details" [level=3] [ref=e157]
+                - list "Run details" [ref=e158]:
+                  - listitem [ref=e159]:
+                    - link "Usage" [ref=e160] [cursor=pointer]:
+                      - /url: /aleks7732/Kovael/actions/runs/26344953354/usage
+                      - generic:
+                        - img
+                      - generic [ref=e162]: Usage
+                  - listitem [ref=e163]:
+                    - link "Workflow file" [ref=e164] [cursor=pointer]:
+                      - /url: /aleks7732/Kovael/actions/runs/26344953354/workflow
+                      - generic:
+                        - img
+                      - generic [ref=e166]: Workflow file
+          - region "Check run summary" [ref=e168]:
+            - generic [ref=e169]:
+              - region "Annotations" [ref=e171]:
+                - generic [ref=e175]:
+                  - button "Open job annotations" [ref=e177] [cursor=pointer]:
+                    - img [ref=e180]
+                  - generic [ref=e182]:
+                    - heading "Annotations" [level=2] [ref=e183]
+                    - generic [ref=e184]: 1 error
+              - generic [ref=e186]:
+                - generic [ref=e188]:
+                  - link "Vitest · orchestrator unit tests" [ref=e191] [cursor=pointer]:
+                    - /url: "#logs"
+                    - generic [ref=e192]: Vitest · orchestrator unit tests
+                  - generic [ref=e193]: failed May 23, 20261 minute ago in 38s
+                - generic [ref=e195]:
+                  - generic [ref=e196]:
+                    - group:
+                      - generic "Set up job":
+                        - generic:
+                          - img
+                          - generic:
+                            - generic: Set up job
+                  - generic [ref=e197]:
+                    - group:
+                      - generic "Run actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd":
+                        - generic:
+                          - img
+                          - generic:
+                            - generic: Run actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+                  - generic [ref=e198]:
+                    - group:
+                      - generic "Run actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e":
+                        - generic:
+                          - img
+                          - generic:
+                            - generic: Run actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e
+                  - generic [ref=e199]:
+                    - group:
+                      - generic "Install":
+                        - generic:
+                          - img
+                          - generic:
+                            - generic: Install
+                  - generic [ref=e200]:
+                    - group:
+                      - generic "Run tests":
+                        - generic:
+                          - img
+                          - generic:
+                            - generic: Run tests
+                  - generic [ref=e201]:
+                    - group:
+                      - generic "Post Run actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e":
+                        - generic:
+                          - img
+                          - generic:
+                            - generic: Post Run actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e
+                  - generic [ref=e202]:
+                    - group:
+                      - generic "Post Run actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd":
+                        - generic:
+                          - img
+                          - generic:
+                            - generic: Post Run actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+                  - generic [ref=e203]:
+                    - group:
+                      - generic "Complete job":
+                        - generic:
+                          - img
+                          - generic:
+                            - generic: Complete job

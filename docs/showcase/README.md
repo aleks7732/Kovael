@@ -1,18 +1,25 @@
 # Kovael Sovereign Showcase & Threat Model
 
-Welcome to the Kovael Operator Showcase. This document proves the security, reliability, and public impressiveness of Kovael's multi-agent sovereign debate mesh.
+Welcome to the Kovael Operator Showcase. This document summarizes the current
+security, reliability, and demo surfaces of Kovael's multi-agent mesh.
 
 ---
 
 ## 1. Core Architectural Layout
 
-Kovael separates local-first, low-overhead agent collaboration from spatial cockpit presentation. The core interfaces communicate via high-performance WebSocket streams and strict HTTP Bearer-authenticated REST endpoints.
+Kovael separates local-first, low-overhead agent collaboration from spatial
+cockpit presentation. The core interfaces communicate through WebSocket
+streams and HTTP APIs; bearer authentication is opt-in through
+`KOVAEL_API_TOKEN`.
 
 ```mermaid
 graph TD
     subgraph Host ["Orchestrator Host (Port 8080)"]
         MO["MeshOrchestrator (HTTP/WS Upgrade)"] --> ATG["ApiTokenGate (Bearer Auth)"]
-        MO --> RL["RateLimiter (OWASP Flood Guard)"]
+        MO --> HAR["HttpApiRouter (REST + probes)"]
+        MO --> WSB["WebSocketBus (Upgrade + fanout)"]
+        HAR --> RL["RateLimiter (API admission)"]
+        WSB --> RL
         MO --> CB["ConversationBus (Debates & Consensus)"]
         MO --> MB["MevBridge (Triad Cycle Loop)"]
         MB --> T["Tracing (OTel GenAI SemConv)"]
@@ -34,8 +41,8 @@ graph TD
         OTLP["OTLP HTTP Collector (opt-in endpoint)"]
     end
 
-    MO -- "WS (traceparent/tracestate)" --> Store
-    Store -- "HTTP (API Token Bearer)" --> MO
+    WSB -- "WS mesh events" --> Store
+    Store -- "HTTP API" --> HAR
     CUIB -- "REST JSON (Aspect workflows)" --> Comfy
     T -- "OTLP HTTP Spans" --> OTLP
 ```
@@ -44,16 +51,17 @@ graph TD
 
 ## 2. Threat Model (STRIDE Framework)
 
-Kovael is designed defensively to operate in untrusted environments. Below is our threat analysis and mitigation ledger:
+Kovael is designed defensively for local and private-mesh environments.
+Below is the current threat analysis and mitigation ledger:
 
 | Threat Category | Potential Attack Vector | Kovael Defensive Mitigation |
 |:---|:---|:---|
-| **Spoofing Identity** | Malicious network nodes spoofing agent identity tags or connection handshakes. | **A2A Handshake & WS Bearer Auth**: WebSocket connections require Bearer token validation at the HTTP Upgrade level. Cryptographic keys are rotated via `MevHandshake` and signed with ES256. |
-| **Tampering** | Intercepting HTTP/WS communications or tampering with generated blueprints and traces. | **ZTNP Receipts**: Every finished execution cycle generates a Zero Trust Node Protocol (ZTNP) receipt that embeds the cryptographic task hash and OTel trace context, persisted strictly in a SQLite ledger. |
-| **Repudiation** | An agent denies taking an action, executing a tool, or contributing a debate turn. | **Immutable SQLite Ledger**: All message exchanges, dispatches, claims, releases, and verifications are permanently recorded in the STRICT SQLite database. |
-| **Information Disclosure** | Leakage of API keys, bear tokens, or raw proprietary prompt datasets in telemetry logs. | **Secrets Redaction**: Automatic filters scrub headers, prompts, and payloads from output traces. The `validate-pr.mjs` pre-commit script screens changed files for high-confidence secret signatures. |
-| **Denial of Service** | WS upgrade floods, telemetry overload, or VRAM saturation from concurrent model requests. | **OWASP Flood Guard & VRAM Governor**: Upgrade storms are rate-limited. Local inferences are serialized via static promise-chain mutexes. Telemetry pauses during cockpit idle, and dispatches failover off-GPU when utilization exceeds 90%. |
-| **Elevation of Privilege** | Prompt injection attacks or malformed payloads executing shell commands on the host machine. | **No-Shell Invariant**: The ComfyUI Asset Studio utilizes strict JSON-only REST payloads. Executions inside `WorkspaceToolRunner` are checked against a resolved realpath-guard, fully blocking traversal escapes. |
+| **Spoofing Identity** | Malicious clients spoofing agent identity tags or WebSocket handshakes. | **Opt-in Bearer Auth + Session Binding**: `ApiTokenGate` protects `/api/v1/*`, `/metrics`, and WS upgrades when `KOVAEL_API_TOKEN` is set. Chair mutations require the current `sessionId`, and telemetry broadcasts overwrite client-supplied `type` and `nodeId`. |
+| **Tampering** | Intercepting HTTP/WS communications or tampering with cycle evidence. | **Receipts + Append-Only CycleLog**: `MevBridge` verification receipts carry the task hash, phase trail, and routing evidence. `CycleLog` stores append-only cycle events and can seal a cycle with a Merkle-root receipt. |
+| **Repudiation** | An agent denies taking an action, executing a phase, or contributing a debate turn. | **Structured Event History**: Chair events, cycle events, conversation history, and verification receipts are written through SQLite-backed services where available and replayed through the orchestrator state surfaces. |
+| **Information Disclosure** | Leakage of API keys, bearer tokens, raw prompts, or oversized telemetry. | **Token Scrubbing + Bounded Payloads**: WS query tokens are removed before downstream handling, Comfy metadata logs prompt hashes instead of raw prompt text, trace payloads are sanitized and bounded, and `validate-pr.mjs` scans changed files for high-confidence secrets. |
+| **Denial of Service** | WS upgrade floods, slow-drip bodies, oversized payloads, or VRAM saturation. | **Admission Limits**: HTTP timeouts, API rate limits, WS upgrade rate limits, WS `maxPayload`, JSON body limits, and VRAM-gated routing keep abusive or overloaded paths bounded. |
+| **Elevation of Privilege** | Prompt injection attacks or malformed payloads attempting host command execution. | **Narrow Runtime Surfaces**: ComfyUI requests are strict JSON workflows with sanitized mixer values, workspace paths are constrained by `WorkspaceManager`, and the orchestrator does not expose a general shell execution API. |
 
 ---
 
@@ -74,13 +82,17 @@ Kovael provides a high-fidelity cockpit demonstration fixture that simulates mul
    Navigate to `http://localhost:5173/?demo=true` in your browser. Toggle keyboard shortcuts using `?` or `Esc` to access the lazy ShortcutSheet command palette.
 
 ### B. Production Launch
-To boot Kovael with live hardware sensing, rate limits, and actual LLM connectors:
+To boot Kovael with live hardware sensing and chair routing:
 
-1. **Verify VRAM telemetries and API keys**:
-   Ensure `GOOGLE_API_KEY` or `OPENAI_API_KEY` is loaded on your environment path if local GPU overhead must be bypassed.
-2. **Boot the Sovereign Mesh**:
+1. **Build the orchestrator**:
    ```bash
-   npm run start
+   npm run build
+   ```
+2. **Boot the mesh**:
+   ```bash
+   npm start
    ```
 3. **Inspect Active Spans**:
-   Access the OTEL Trace inspector directly via the `TraceBreadcrumb` component or leverage standard OTLP HTTP collectors.
+   Access the OTel trace inspector through the `TraceBreadcrumb` /
+   `TraceTimeline` cockpit components, or set `OTEL_EXPORTER_OTLP_ENDPOINT`
+   to export spans to an OTLP HTTP collector.

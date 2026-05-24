@@ -64,14 +64,13 @@ export class MevHandshake extends EventEmitter {
     }
 
     /**
-     * Simulates a synchronous validation handshake.
-     * In a full implementation, this would await a validation event back from the mesh.
+     * @deprecated Stub — always returns `true`. Does NOT perform real validation.
+     * Currently only triggers {@link broadcastBlueprint}. When real synchronous
+     * validation is implemented, this should await a WS response event with a
+     * timeout and return the actual validation result.
      */
     public async validateSynchronous(blueprint: Blueprint): Promise<boolean> {
         this.broadcastBlueprint(blueprint);
-        
-        // Synchronous validation logic would go here
-        // For the current requirement, we ensure the handshake triggers the broadcast
         return true;
     }
 }

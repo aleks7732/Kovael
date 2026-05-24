@@ -1,6 +1,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { EventEmitter } from 'node:events';
+import { Logger, rootLogger } from './Logger.js';
 
 export interface WorkflowFrontMatter {
     version: number;
@@ -44,6 +45,7 @@ const FRONT_MATTER_RE = /^---\s*\n([\s\S]*?)\n---\s*\n([\s\S]*)$/;
  * lists, anchors) is intentionally rejected — keep the contract tight.
  */
 export class WorkflowLoader extends EventEmitter {
+    private readonly log: Logger = rootLogger;
     private current: WorkflowDocument | null = null;
     private lastError: string | null = null;
     private watching: boolean = false;
@@ -64,7 +66,7 @@ export class WorkflowLoader extends EventEmitter {
                 fs.watchFile(this.sourcePath, { interval: 1000 }, this.fileWatchListener);
                 this.watching = true;
             } catch (err) {
-                console.warn(`[WorkflowLoader] fs.watchFile failed (${(err as Error).message}); hot reload disabled.`);
+                this.log.warn('watch_file_failed', { error: (err as Error).message });
             }
         }
     }
@@ -79,7 +81,7 @@ export class WorkflowLoader extends EventEmitter {
                     this.fileWatchListener = null;
                 }
             } catch (err) {
-                console.warn(`[WorkflowLoader] fs.unwatchFile failed (${(err as Error).message}).`);
+                this.log.warn('unwatch_file_failed', { error: (err as Error).message });
             }
             this.watching = false;
         }
@@ -114,7 +116,7 @@ export class WorkflowLoader extends EventEmitter {
         } catch (err) {
             const msg = (err as Error).message;
             this.lastError = msg;
-            console.warn(`[WorkflowLoader] reload failed: ${msg}; keeping last known good.`);
+            this.log.warn('reload_failed', { error: msg, kept_known_good: this.current !== null });
             this.emit('workflow_error', { error: msg, keptKnownGood: this.current !== null });
         }
     }

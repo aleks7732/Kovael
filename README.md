@@ -1,151 +1,145 @@
 # Kovael
 
-> The Sovereign Agentic Mesh — a single command core for orchestrating
-> cloud and local agents in real time.
+> Sovereign Agentic Mesh: a Node 22 + TypeScript command core for
+> coordinating local and cloud agent runtimes in real time.
 
 [![CI](https://github.com/aleks7732/Kovael/actions/workflows/ci.yml/badge.svg)](https://github.com/aleks7732/Kovael/actions/workflows/ci.yml)
 [![PII guard](https://github.com/aleks7732/Kovael/actions/workflows/pii-guard.yml/badge.svg)](https://github.com/aleks7732/Kovael/actions/workflows/pii-guard.yml)
 [![TruffleHog](https://github.com/aleks7732/Kovael/actions/workflows/secrets-scan.yml/badge.svg)](https://github.com/aleks7732/Kovael/actions/workflows/secrets-scan.yml)
 
-Kovael is a Node 22 + TypeScript orchestrator that gives a heterogeneous
-fleet of agents — Anthropic Claude Code, Google Gemini (Antigravity IDE
-and AGCLI), OpenAI Codex CLI, Google ADK, JetBrains Cowork, and a local
-Hermes-hosted persona — one place to sit, speak, and coordinate. A
-React 19 cockpit watches every cycle live.
+Kovael is a single-port orchestrator for a heterogeneous fleet of agent
+"chairs": Claude Code, Gemini/Antigravity, Codex, ADK, JetBrains
+Cowork, and a local Hermes-hosted persona. It exposes HTTP, WebSocket,
+and SSE surfaces, persists orchestration state in SQLite, and ships with
+a React cockpit for live mesh visibility.
 
-```
- ┌─ Cockpit (Vite, :5173) ──────────────┐
- │  Canvas (xyflow)   Theater (round-table) │
- └──────────┬──────────────────┬─────────┘
-            │ WS frames @100ms │ HTTP /api/v1/*
- ┌──────────┴──────────────────┴────────────────────┐
- │            Mesh Orchestrator (:8080)             │
- │                                                  │
- │   ChairRegistry   ConversationBus   MevBridge    │
- │   PersonaLoader   WorkflowLoader    Triad        │
- │   HardwareMonitor RetryQueue        Reconciler   │
- │   HookRunner      RateLimitTracker  Workspaces   │
- │   CycleLog  BudgetTracker  RoutingPolicy         │
- │   EpisodicMemory  AgUiEventStream                │
- │                                                  │
- │          SQLite (event-sourced CycleLog)          │
- └──────────┬───────────────────────────────────────┘
-            │ Chair Beacon (HTTP claim/heartbeat)
- ┌──────────┴────────────────────────────────────────┐
- │  9 chairs · 9 runtimes · one protocol             │
- │  Claude Code · Antigravity IDE · AGCLI · ADK ·    │
- │  Codex · OpenClaw · Cowork · Gemini CLI · Hermes  │
- └───────────────────────────────────────────────────┘
+```text
+ ┌─ Spatial War Room cockpit (Vite, :5173) ──────────┐
+ │ Canvas, roster, mission console, theater, traces  │
+ └──────────────┬───────────────────────┬────────────┘
+                │ WebSocket frames      │ HTTP /api/v1/*
+ ┌──────────────┴───────────────────────┴────────────┐
+ │ MeshOrchestrator (:8080)                           │
+ │                                                    │
+ │ ChairRegistry       ConversationBus   MevBridge    │
+ │ HttpApiRouter       WebSocketBus      MevHandshake │
+ │ WorkflowLoader      PersonaLoader     CycleLog     │
+ │ BudgetTracker       RoutingPolicy     RetryQueue   │
+ │ Reconciler          HardwareMonitor   Tracing      │
+ │ ComfyUiBridge       SelfHealer        Learning     │
+ │                                                    │
+ │ SQLite: chairs, conversation history, cycle ledger │
+ └──────────────┬─────────────────────────────────────┘
+                │ Chair Beacon claim / heartbeat
+ ┌──────────────┴─────────────────────────────────────┐
+ │ 9 canonical chairs, 9 persona files, one protocol  │
+ └────────────────────────────────────────────────────┘
 ```
 
-## What it does
+## Current Capabilities
 
-- **Chair Beacon Protocol** — any agent runtime claims a chair over HTTP,
-  emits a heartbeat every ~7.5s, and the cockpit shows live presence
-  (online / stale / offline). One protocol, one helper script, nine
-  recipes — see [`docs/CHAIRS.md`](./docs/CHAIRS.md).
-- **Conversation Theater** — open a topic, pick up to nine chairs,
-  watch them debate token-by-token. `@mentions` route the next speaker,
-  and an adaptive-stability stopping criterion calls consensus when the
-  rolling-confidence delta falls below ε for K consecutive rounds
-  (arXiv 2510.12697).
-- **Triad routing with a hardware gate** — every task runs through
-  architect → operator → verifier. Heavy architecture is dispatched
-  to a local model only when verified VRAM headroom is above
-  `routing.vram_floor_mb` (default 8 GiB), otherwise it falls back to a
-  cloud chair. See [`WORKFLOW.md`](./WORKFLOW.md).
-- **Symphony §7 claim-once semantics** — `TaskClaimMachine` guarantees
-  exactly-once dispatch per task hash; concurrent injections of the
-  same goal are refused with a structured receipt, not silently
-  duplicated.
-- **100 ms pressure-valve cockpit** — 50-200 Hz WS telemetry is
-  coalesced into one render tick. The canvas holds 60 FPS at 1,000
-  active heartbeats; the Theater's streaming deltas use the same
-  coalescing path.
-- **Hot reload everywhere** — `WORKFLOW.md` and `personas/*.md` reload
-  on file change without restarting the orchestrator. Agents pick up
-  voice and routing changes on the next dispatch.
+- **Chair Beacon Protocol** - agents claim, heartbeat, release, and
+  reply over `/api/v1/chairs/*`; presence is surfaced to the cockpit in
+  near real time. See [docs/CHAIRS.md](./docs/CHAIRS.md).
+- **Conversation Theater** - topics, threaded history, `@mention`
+  routing, streaming deltas, committee votes, and verifier-backed
+  stopping signals.
+- **Triad execution** - every injected goal moves through architect,
+  operator, and verifier phases, with exactly-once task claiming and
+  structured verification receipts.
+- **Routing controls** - VRAM gating, retry queue, reconciliation,
+  circuit breakers, rate-limit tracking, and Thompson-sampling routing
+  policy are wired into the composition root.
+- **Trace and telemetry surfaces** - OpenTelemetry GenAI spans are kept
+  in a bounded in-memory ring buffer and can be exported over OTLP when
+  `OTEL_EXPORTER_OTLP_ENDPOINT` is set.
+- **ComfyUI bridge** - portrait/render requests can be routed to ComfyUI
+  when enabled, with deterministic SVG fallback behavior for local
+  development and tests.
+- **Hot-loaded configuration** - workflow and persona documents are
+  loaded from `WORKFLOW.md` and `personas/*.md`; inter-agent banter
+  prompts live in [config/banter-dialogues.json](./config/banter-dialogues.json).
+- **Operational hygiene** - JSON logging, health probes, Prometheus
+  metrics, bearer-token gates, CORS preflight, body-size limits, and
+  WebSocket auth/rate limiting are covered by tests.
 
-## Run it locally
+## Run Locally
 
-Requires Node 22+ and ports 8080 (orchestrator) + 5173 (cockpit).
+Requires Node 22+.
 
 ```bash
-# 1. Install
 npm install
-cd packages/spatial-war-room && npm install && cd -
-
-# 2. Build the orchestrator
 npm run build
-
-# 3. Start the orchestrator (WS + HTTP on :8080)
-npm start                # alias for `node dist/boot-mesh.js`
-
-# 4. In a second shell, start the cockpit (Vite on :5173)
-cd packages/spatial-war-room && npm run dev
+npm start
 ```
 
-Then claim a chair from anywhere — a terminal, an IDE startup hook, a
-sandbox boot script:
+The orchestrator listens on port `8080` by default when started through
+`dist/boot-mesh.js`.
+
+Start the cockpit in a second shell:
+
+```bash
+npm run showcase
+# or
+npm run dev --workspace=packages/spatial-war-room
+```
+
+The cockpit development server listens on Vite's default port, normally
+`5173`.
+
+Claim a chair from another shell:
 
 ```bash
 node scripts/kovael-chair.mjs \
   --id nyx-claude-code \
-  --provider "Anthropic Claude Code" \
+  --provider "Anthropic · Claude Code CLI" \
   --capabilities filesystem,git,bash,agents
 ```
 
-The cockpit roster lights up the matching chair within 100 ms.
+## API Surfaces
 
-## Run it as a container
+Probe endpoints are intentionally ungated so Kubernetes can call them:
 
-The orchestrator ships as a distroless multi-stage Docker image — Node
-22 LTS in the builder, `gcr.io/distroless/nodejs22-debian12:nonroot`
-in the runtime. No shell, no package manager, runs as uid 65532.
+| Method | Path | Purpose |
+|---|---|---|
+| `GET` | `/livez` | Liveness probe |
+| `GET` | `/readyz` | Readiness probe |
+| `GET` | `/metrics` | Prometheus metrics; token-gated when `KOVAEL_API_TOKEN` is set |
 
-```bash
-# Build
-docker build -t kovael:latest .
+Primary HTTP API:
 
-# Run (orchestrator only — cockpit is built separately)
-docker run --rm -p 8080:8080 --init kovael:latest
-```
+| Method | Path | Purpose |
+|---|---|---|
+| `GET` | `/api/v1/state` | Mesh state snapshot |
+| `GET` | `/api/v1/chairs` or `/api/v1/chairs/snapshot` | Chair roster snapshot |
+| `POST` | `/api/v1/chairs/claim` | Claim or refresh a runtime chair |
+| `POST` | `/api/v1/chairs/heartbeat` | Heartbeat an existing chair session |
+| `POST` | `/api/v1/chairs/release` | Release a chair session |
+| `POST` | `/api/v1/chairs/reply` | Deliver an async chair reply |
+| `POST` | `/api/v1/conversations` | Create a conversation topic |
+| `POST` | `/api/v1/conversations/:id/message` | Post a user message and trigger convene |
+| `POST` | `/api/v1/conversations/:id/committee` | Run committee voting for a topic |
+| `POST` | `/api/v1/conversations/:id/close` | Close a topic |
+| `GET` | `/api/v1/conversations/:id/history` | Read topic history |
+| `GET` | `/api/v1/traces` | List bounded cycle traces |
+| `GET` | `/api/v1/traces/:cycleId` | Read one cycle trace |
+| `POST` | `/api/v1/traces/reroute` | Broadcast a trace reroute request |
+| `POST` | `/api/v1/comfy/render` or `/api/v1/comfy/mix` | Render a portrait or LoRA mix |
+| `POST` | `/api/v1/comfy/stream-url` | Build a ComfyUI stream descriptor |
 
-The image carries `dist/`, production-pruned `node_modules/`,
-`personas/`, and `WORKFLOW.md`. Cockpit assets (`packages/spatial-war-room/`)
-are excluded by `.dockerignore` and built separately for static hosting.
+Additional realtime surfaces:
 
-`scripts/lint-dockerfile.mjs` is a daemon-free sanity check that asserts
-the multi-stage / distroless / non-root / `npm ci` / prune invariants on
-every commit — run it locally before touching the Dockerfile.
+- WebSocket upgrade on the orchestrator port for mesh events and
+  telemetry.
+- `GET /mev/handshake` SSE for blueprint validation events.
 
-### Kubernetes
+## The Nine Chairs
 
-Production-shaped manifests live under [`deploy/k8s/`](./deploy/k8s/):
-
-- `deployment.yaml` — single replica by default, distroless image,
-  `runAsNonRoot: true`, `readOnlyRootFilesystem: true`, ALL capabilities
-  dropped, `seccompProfile: RuntimeDefault`, startup + liveness +
-  readiness probes wired to `/livez` and `/readyz`.
-- `service.yaml` — `ClusterIP` on 8080. Front with an authenticating
-  ingress (TLS + token gate via `KOVAEL_API_TOKEN`) to expose outside
-  the cluster.
-- `hpa.yaml` — `HorizontalPodAutoscaler` 1→5 replicas on CPU 70% +
-  memory 80%, with `scaleDown.stabilizationWindowSeconds: 300` to
-  prevent thrashing.
-
-`scripts/lint-k8s-manifests.mjs` is the daemon-free counterpart — it
-asserts probes point at the live endpoints, no `:latest` image tag,
-`runAsNonRoot`, cap-drop, HPA target matches the Deployment, and the
-Prometheus scrape annotations are present.
-
-## The nine chairs
-
-Provider strings match the canonical `AgentCards` (`src/AgentCards.ts`)
-— copy them verbatim into `--provider` when claiming a chair.
+Provider strings match [src/AgentCards.ts](./src/AgentCards.ts). Use
+them verbatim when claiming a chair.
 
 | Chair | Provider | Tier | VRAM |
-|---|---|---|---|
+|---|---|---:|---|
 | `shaev` | VantagePoint Local · Hermes 3 | 3 | 24 GB |
 | `nyx-antigravity` | Google · Gemini 3 Pro (Antigravity IDE) | 1 | 32 GB |
 | `nyx-claude-code` | Anthropic · Claude Code CLI | 1 | cloud |
@@ -156,184 +150,133 @@ Provider strings match the canonical `AgentCards` (`src/AgentCards.ts`)
 | `nyx-openclaw` | OpenAI · Codex (elevated sandbox) | 2 | 16 GB |
 | `nyx-cw` | JetBrains · Junie / Cowork plugin | 2 | cloud |
 
-Every chair has a persona card under [`personas/`](./personas) (voice,
-expertise, disposition) and a 512² portrait under
-`packages/spatial-war-room/public/agents/`.
+Each chair has a persona document under [personas/](./personas) and
+portraits under [packages/spatial-war-room/public/agents/](./packages/spatial-war-room/public/agents/).
 
-## Architecture
+## Architecture Notes
 
-- **Orchestrator** (`src/MeshOrchestrator.ts`) — single-port HTTP +
-  WebSocket bus. Endpoints: `/api/v1/state`, `/api/v1/chairs/*`,
-  `/api/v1/conversations/*`.
-- **MevBridge** (`src/MevBridge.ts`) — Triad pipeline + hardware-gated
-  dispatch. Loadable persona system prompts via `PersonaLoader`.
-- **ConversationBus** (`src/services/ConversationBus.ts`) — multi-agent
-  topic threads with `@mention` routing, streaming deltas in AG-UI
-  style, hybrid verifier-score + adaptive-stability stopping
-  (`verifier_confidence ≥ τ` AND stability, with ε-K fallback).
-- **ChairRegistry** (`src/services/ChairRegistry.ts`) — claim /
-  heartbeat / release lifecycle with 15s healthy / 30s offline TTLs.
-- **ModelProvider** (`src/services/ModelProvider.ts`) — two
-  implementations: `StubMarkovProvider` (deterministic, no network,
-  used in the cockpit demo) and `ChairBridgeProvider` (POSTs to a
-  chair's `inboxUrl`, suspends until reply at
-  `/api/v1/chairs/reply` — lets a real Claude Code / Codex /
-  Antigravity chair answer back through the same protocol). The
-  ChairBridge POST is hardened with a per-attempt
-  `dispatchTimeoutMs` (default 10s), full-jitter exponential
-  backoff, and retry-on-transient (429/502/503/504); non-retryable
-  4xx surface immediately. Override per provider via the
-  `DispatchPolicy` constructor argument.
-- **Symphony services** — `TaskClaimMachine`, `RetryQueue`,
-  `Reconciler`, `WorkspaceManager`, `HookRunner`, `RateLimitTracker`,
-  `WorkflowLoader`, `PersonaLoader`, `HardwareMonitor`,
-  `SemanticIngestor`.
-- **Frontier services** (2026 iteration):
-  - **CycleLog** (`src/services/CycleLog.ts`) — append-only event-sourced
-    ledger. Every Triad phase transition, claim, dispatch, and reply is
-    an immutable event keyed by `(cycle_id, seq)`. Sealed cycles get a
-    Merkle-rooted receipt signed with ed25519. Supports replay-on-boot
-    for durable execution without a Temporal/Restate dependency.
-  - **BudgetTracker** (`src/services/BudgetTracker.ts`) — per-cycle
-    token / USD / wall-clock governor. Emits 402-style structured
-    receipts when a cycle exceeds its budget. Configured via the
-    `budget:` block in `WORKFLOW.md`.
-  - **RoutingPolicy** (`src/services/RoutingPolicy.ts`) — Thompson-sampling
-    bandit over `(taskClass, chairId)` using verifier pass/fail as reward.
-    Static VRAM floor stays as a hard constraint; bandit picks among
-    feasible chairs. Falls back to static routing on cold start.
-  - **EpisodicMemory** (`src/services/EpisodicMemory.ts`) — FTS5-backed
-    cross-cycle knowledge store. Completed cycles are indexed; personas
-    can recall relevant past cycles via free-text search.
-  - **AG-UI Event Stream** (`src/services/AgUiEventStream.ts`) — maps
-    internal bus events to the AG-UI protocol vocabulary (`run.started`,
-    `message.delta`, `step.finished`, `run.finished`) so third-party
-    cockpits can attach to the WS bus.
-- **Cockpit** (`packages/spatial-war-room/`) — React 19 + Vite 8 +
-  Tailwind v4 (Oxide) + xyflow 12 + Zustand 5. Two tabs (canvas,
-  theater), one pressure valve.
+- [src/MeshOrchestrator.ts](./src/MeshOrchestrator.ts) is the
+  composition root. It wires the HTTP router, WebSocket bus, chair
+  registry, workflow/persona loaders, tracing, cycle ledger, routing,
+  retry, reconciliation, and hardware monitors.
+- [src/services/HttpApiRouter.ts](./src/services/HttpApiRouter.ts)
+  owns HTTP routing, CORS preflight, JSON body parsing, body limits, and
+  JSON responses.
+- [src/services/WebSocketBus.ts](./src/services/WebSocketBus.ts) owns
+  upgrade auth, message-size limits, rate limiting, and event broadcast.
+- [src/MevBridge.ts](./src/MevBridge.ts) owns the triad pipeline and is
+  wired through post-construction setters by the composition root.
+- [src/services/ConversationBus.ts](./src/services/ConversationBus.ts)
+  owns topics, history, convene loops, and committee delegation through
+  [src/services/CommitteeVoting.ts](./src/services/CommitteeVoting.ts).
+- [src/services/Tracing.ts](./src/services/Tracing.ts) wraps the OTel
+  SDK, while [TraceRingBuffer](./src/services/TraceRingBuffer.ts) and
+  [TraceSanitizers](./src/services/TraceSanitizers.ts) keep trace
+  storage bounded and sanitized.
+- [packages/spatial-war-room/](./packages/spatial-war-room/) is the
+  React 19 cockpit: Vite 8, Tailwind 4, xyflow 12, Zustand 5, and
+  lucide-react.
 
-## Observability
+## Container And Kubernetes
 
-Cloud-native probe + scrape endpoints on the orchestrator port. Probes
-stay ungated, while `/metrics` follows the API token gate when
-`KOVAEL_API_TOKEN` is set.
-
-| Path | Returns | Use |
-|---|---|---|
-| `GET /livez` | `200 {status:"ok", uptime_s:N}` | Liveness probe |
-| `GET /readyz` | `200` once wiring is done **and** at least one chair is online, else `503` | Readiness probe |
-| `GET /metrics` | Prometheus text format (`401` when token gate is enabled and token is missing/invalid) | Scrape target |
-
-Exposed metrics: `kovael_uptime_seconds`, `kovael_chairs_active`,
-`kovael_topics_active`, `kovael_process_resident_memory_bytes`,
-`kovael_process_heap_used_bytes`, `kovael_process_heap_total_bytes`.
-
-### Log shipping
-
-Logs are NDJSON to stdout by default. Set `KOVAEL_LOG_FILE` to
-also tee every line into a rotating file — convenient when a sidecar
-log collector (Vector, Grafana Alloy, Fluent Bit) is tailing the
-container filesystem. Rotation defaults to 50 MiB per file, 5 files
-retained.
-
-Inside the K8s manifests, mount a writable `emptyDir` (or a PVC) at
-the log directory — the default Deployment runs with
-`readOnlyRootFilesystem: true`, so the log path must live on a
-writable volume.
-
-## Status
-
-**Shipped on `main`:**
-
-- 9 chairs wired with per-runtime recipes
-- ChairRegistry + ConversationBus + ModelProvider duo
-- Theater UI (sidebar / stage / convene / messages / stopping card)
-- Per-agent identity badges + 9 hero portraits + 9 thumbnails
-- 9 persona cards (YAML front-matter + lore body)
-- Triad routing with hardware gate, retry queue, reconciler, hooks
-- 153 tests across 22 files (orchestrator + cockpit)
-- Three-Layer PII Defense (pre-commit + workflow + TruffleHog)
-- Single-port WS+HTTP orchestrator with 16 KiB body cap on POSTs
-
-**In flight (`antigravity/phoenix`, deep brief on PR #18):**
-
-- Committee primitive — proponent / critic / judge roles, 422 on
-  homogeneous-provider committees
-- A2A v1.2 adapter — JWS-signed Agent Card at
-  `/.well-known/agent.json`, JWKS endpoint, `sendSubscribe` bridge
-- OTel GenAI spans — `cycle.run` root + `gen_ai.*` phase spans,
-  `traceparent` propagated through every cross-bus frame, in-memory
-  ring buffer + OTLP exporter, TraceView in the cockpit
-
-See [`docs/briefs/2026-05-ag-nyx-phoenix-deep.md`](./docs/briefs/2026-05-ag-nyx-phoenix-deep.md)
-for the Day 5-7 deep dive.
-
-## End-to-end validation
-
-`scripts/validate-all-chairs.mjs` is a real-network validation that
-boots the orchestrator on an ephemeral port, claims all 9 canonical
-chairs over HTTP with live fake-inbox servers, dispatches to each via
-`ChairBridgeProvider`, drives a small bus convene, and runs a Triad
-task — then prints a per-agent pass/fail table. Exits non-zero on any
-miss.
+Build and run the orchestrator image:
 
 ```bash
-npm run build
-node scripts/validate-all-chairs.mjs
+docker build -t kovael:latest .
+docker run --rm -p 8080:8080 --init kovael:latest
 ```
 
-Captures the truth that a unit test can't: every chair really claims,
-really receives a POST on its inbox URL, and really routes a reply
-through `/api/v1/chairs/reply`.
+The Dockerfile builds TypeScript in a Node 22 builder stage, prunes
+development dependencies, and runs on a pinned distroless Node 22
+runtime as the `nonroot` user. The cockpit is excluded from the
+orchestrator image by `.dockerignore` and should be built/static-hosted
+separately.
 
-## Tests
+Kubernetes manifests live under [deploy/k8s/](./deploy/k8s/):
+
+- `deployment.yaml` - two replicas by default, rolling update, non-root
+  user, read-only root filesystem, dropped Linux capabilities, and
+  `/livez`/`/readyz` probes.
+- `service.yaml` - `ClusterIP` service on port `8080`.
+- `hpa.yaml` - horizontal autoscaling for the orchestrator deployment.
+- `pdb.yaml` - disruption budget for rolling maintenance.
+
+Daemon-free checks are available for the image and manifests:
 
 ```bash
-npx vitest run                    # full suite (153 cases)
-npx tsc --noEmit                  # orchestrator typecheck
-cd packages/spatial-war-room && npm run typecheck         # cockpit
-cd packages/spatial-war-room && npm run typecheck:tests   # test fixtures
-cd packages/spatial-war-room && npm run build             # Vite build
+node scripts/lint-dockerfile.mjs
+node scripts/lint-k8s-manifests.mjs
 ```
 
-The CI workflow (`.github/workflows/ci.yml`) runs all of the above on
-every PR.
+## Verification
 
-## Security posture
+Fast local gates:
 
-Kovael runs with a **localhost trust posture**. Chair endpoints,
-conversation endpoints, and the WebSocket bus assume same-host access;
-exposing them publicly requires an authenticating reverse proxy.
+```bash
+npx tsc --noEmit
+npm test
+npm run typecheck --workspace=packages/spatial-war-room
+npm run typecheck:tests --workspace=packages/spatial-war-room
+npm run build --workspace=packages/spatial-war-room
+```
 
-The HTTP server ships with hardened slow-drip timeouts —
-`headersTimeout: 12s`, `requestTimeout: 30s` — versus Node's 60s/300s
-defaults. Override per deployment via
-`new MeshOrchestrator(port, { httpTimeouts: { ... } })`.
+Full PR gate:
 
-Set `KOVAEL_API_TOKEN=<secret>` to require `Authorization: Bearer
-<secret>` on every `/api/v1/*` request and `/metrics` (constant-time
-compare, 401 on miss). Unset by default — behavior is unchanged unless
-you opt in.
-Generate a token with `node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"`.
+```bash
+node scripts/validate-pr.mjs
+```
 
-PII discipline is enforced by three coordinated layers — pre-commit
-hooks on the contributor's machine, a `pii-guard.yml` workflow on every
-push, and `TruffleHog --only-verified` on every push and weekly cron.
-See [`SECURITY.md`](./SECURITY.md) for the full Three-Layer Defense
-and reporting instructions.
+`validate-pr.mjs` runs the root build, root Vitest suite, cockpit
+typechecks, cockpit build, and a changed-file high-confidence secret
+scan. Set `KOVAEL_VALIDATE_ALL_CHAIRS=true` to include the live chair
+validation pass:
+
+```bash
+KOVAEL_VALIDATE_ALL_CHAIRS=true node scripts/validate-pr.mjs
+```
+
+The repository currently has 49 Vitest files across the orchestrator and
+cockpit, with more than 400 individual `it(...)` cases.
+
+## Security Posture
+
+Kovael defaults to a localhost-oriented trust posture. Do not expose the
+orchestrator directly to the public internet. Put it behind an
+authenticating reverse proxy and set `KOVAEL_API_TOKEN` for bearer-token
+protection on `/api/v1/*`, `/metrics`, and authenticated WebSocket
+upgrades.
+
+HTTP hardening currently includes:
+
+- `headersTimeout: 12s`
+- `requestTimeout: 30s`
+- `keepAliveTimeout: 10s`
+- `OPTIONS` preflight before auth/rate limiting
+- default JSON body limit of 16 KiB, with route-specific overrides
+- structured `400`, `413`, `429`, and `401` responses
+
+PII and secret hygiene are enforced through pre-commit configuration,
+the PII Guard workflow, TruffleHog workflow, and the changed-file secret
+scan inside `scripts/validate-pr.mjs`. See [SECURITY.md](./SECURITY.md)
+for reporting and setup details.
 
 ## Documentation
 
-- [`WORKFLOW.md`](./WORKFLOW.md) — Triad contract, ANX manifest, routing
-  config, hardware floor, sharding policy, retry policy
-- [`docs/CHAIRS.md`](./docs/CHAIRS.md) — Chair Beacon Protocol spec +
-  per-chair integration recipes for all nine runtimes
-- [`docs/briefs/`](./docs/briefs/) — multi-day execution briefs (PHOENIX
-  feature expansion, mid-week checkpoint, Day 5-7 deep dive)
-- [`SECURITY.md`](./SECURITY.md) — security policy + PII-Guard setup
-- [`CONTRIBUTING.md`](./CONTRIBUTING.md) — contribution guidelines
-- [`CODE_OF_CONDUCT.md`](./CODE_OF_CONDUCT.md) — community standards
+- [WORKFLOW.md](./WORKFLOW.md) - triad contract, routing config, budget,
+  retry, and workflow policy.
+- [docs/CHAIRS.md](./docs/CHAIRS.md) - Chair Beacon Protocol and
+  per-runtime claim recipes.
+- [docs/architecture/](./docs/architecture/) - architecture maps and
+  feature-gap analysis.
+- [docs/perf/](./docs/perf/) - performance baseline and SLO notes.
+- [docs/runbooks/](./docs/runbooks/) - operational verification
+  runbooks.
+- [SECURITY.md](./SECURITY.md) - security policy and PII guard setup.
+- [CONTRIBUTING.md](./CONTRIBUTING.md) - contribution guidelines.
+
+Historical execution briefs remain under [docs/briefs/](./docs/briefs/)
+and [docs/prs/](./docs/prs/). They are kept as project history, not as
+the current implementation status.
 
 ## License
 
