@@ -5,9 +5,14 @@ dist
 packages/*/dist
 build
 coverage
+package-lock.json
+packages/*/package-lock.json
+tsconfig.tsbuildinfo
 
 # VCS and local agent/tool state
 .git
+.github/ISSUE_TEMPLATE
+.github/PULL_REQUEST_TEMPLATE.md
 .claude
 .notes
 .kovael
@@ -19,3 +24,20 @@ storage
 *.sqlite
 *.sqlite3
 *.log
+
+# Archival and planning docs add large document-only communities that obscure
+# code ownership in Graphify. Keep current architecture/runbook docs visible.
+CODE_OF_CONDUCT.md
+CONTRIBUTING.md
+DEEPRESEARCH-PROMPT.md
+Kovael-Security-Audit.md
+NYXCODE-MISSION.md
+PII-Audit-Report.md
+SECURITY.md
+deepmaxreturn.md
+docs/briefs
+docs/perf
+docs/prs
+docs/showcase
+docs/superpowers
+packages/spatial-war-room/public/agents/README.md
