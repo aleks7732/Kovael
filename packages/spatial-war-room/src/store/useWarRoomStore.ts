@@ -107,6 +107,7 @@ export interface AgentRosterCard {
     presence: 'live' | 'stale' | 'absent';
     host?: string;
     note?: string;
+    inboxUrl?: string;
   };
 }
 
@@ -128,6 +129,7 @@ export interface ChairEventPayload {
     status: 'online' | 'stale' | 'offline';
     host?: string;
     note?: string;
+    inboxUrl?: string;
   };
 }
 
@@ -644,6 +646,7 @@ export const useWarRoomStore = create<WarRoomState>((set, get) => ({
             presence,
             host: evt.chair?.host ?? card.chair?.host,
             note: evt.chair?.note ?? card.chair?.note,
+            inboxUrl: evt.chair?.inboxUrl ?? card.chair?.inboxUrl,
           },
         };
       });
@@ -676,6 +679,7 @@ export const useWarRoomStore = create<WarRoomState>((set, get) => ({
             presence: chair.status === 'stale' ? 'stale' as const : 'live' as const,
             host: chair.host,
             note: chair.note,
+            inboxUrl: chair.inboxUrl,
           },
         };
       });

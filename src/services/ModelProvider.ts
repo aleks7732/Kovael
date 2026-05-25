@@ -1,5 +1,6 @@
 import { ChairRegistry } from './ChairRegistry.js';
 import crypto from 'node:crypto';
+import { secureChairDispatchBody } from './ChairDispatchSecurity.js';
 
 export interface ChatMessage {
     role: 'system' | 'user' | 'assistant';
@@ -159,6 +160,11 @@ export const DEFAULT_DISPATCH_POLICY: DispatchPolicy = {
 
 const RETRYABLE_STATUS: ReadonlySet<number> = new Set([429, 502, 503, 504]);
 
+function replyTimeoutMs(): number {
+    const parsed = Number(process.env.KOVAEL_CHAIR_REPLY_TIMEOUT_MS);
+    return Number.isFinite(parsed) ? Math.max(5_000, Math.min(600_000, Math.floor(parsed))) : 30_000;
+}
+
 export class ChairBridgeProvider implements ModelProvider {
     private static pendingReplies = new Map<string, (reply: string) => void>();
     private readonly policy: DispatchPolicy;
@@ -199,6 +205,7 @@ export class ChairBridgeProvider implements ModelProvider {
         body: string,
         parentSignal: AbortSignal | undefined,
         requestId: string,
+        headers: Record<string, string> = {},
     ): Promise<void> {
         let lastErr: Error = new Error('chair bridge dispatch: no attempts ran');
         for (let attempt = 0; attempt < this.policy.maxAttempts; attempt += 1) {
@@ -217,8 +224,8 @@ export class ChairBridgeProvider implements ModelProvider {
                 response = await fetch(url, {
                     method: 'POST',
                     headers: {
-                        'content-type': 'application/json',
                         'x-kovael-request-id': requestId,
+                        ...headers,
                     },
                     body,
                     signal: ctrl.signal,
@@ -288,8 +295,8 @@ export class ChairBridgeProvider implements ModelProvider {
         const replyReceived = new Promise<string>((resolve, reject) => {
             replyTimer = setTimeout(() => {
                 ChairBridgeProvider.pendingReplies.delete(key);
-                reject(new Error(`Chair Bridge timeout: Agent "${agentId}" did not reply in 30 seconds.`));
-            }, 30000);
+                reject(new Error(`Chair Bridge timeout: Agent "${agentId}" did not reply in ${Math.round(replyTimeoutMs() / 1000)} seconds.`));
+            }, replyTimeoutMs());
 
             ChairBridgeProvider.pendingReplies.set(key, (content: string) => {
                 if (replyTimer) clearTimeout(replyTimer);
@@ -300,16 +307,18 @@ export class ChairBridgeProvider implements ModelProvider {
         // Make async POST to external agent inboxUrl
         try {
             const replyUrl = `http://localhost:${this.orchestratorPort}/api/v1/chairs/reply`;
+            const requestId = crypto.randomUUID();
             const payload = {
                 system: opts.system,
                 messages: opts.messages,
                 topicId,
                 agentId,
                 replyUrl,
-                requestId: crypto.randomUUID(),
+                requestId,
             };
+            const secured = secureChairDispatchBody(payload, requestId);
 
-            await this.postWithRetry(claim.inboxUrl, JSON.stringify(payload), opts.signal, payload.requestId);
+            await this.postWithRetry(claim.inboxUrl, secured.body, opts.signal, requestId, secured.headers);
         } catch (err: any) {
             if (replyTimer) clearTimeout(replyTimer);
             ChairBridgeProvider.pendingReplies.delete(key);

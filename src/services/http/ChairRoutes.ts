@@ -1,5 +1,6 @@
 import * as http from 'node:http';
 import type { OrchestratorContext } from '../OrchestratorContext.js';
+import { ChairDispatchSecurityError, openChairDispatchBody } from '../ChairDispatchSecurity.js';
 import { ChairBridgeProvider } from '../ModelProvider.js';
 import type { RouteDeps } from './HttpApiSupport.js';
 import { createRequestUrl } from './HttpApiSupport.js';
@@ -23,7 +24,7 @@ export async function handleChairRequest(
         return;
     }
 
-    const body = await deps.readJsonBody(req, res);
+    let body = await deps.readJsonBody(req, res, action === 'reply' ? 256 * 1024 : undefined);
     if (body === null) return;
 
     if (action === 'claim') {
@@ -84,6 +85,16 @@ export async function handleChairRequest(
     }
 
     if (action === 'reply') {
+        try {
+            body = openChairDispatchBody(body);
+        } catch (err) {
+            if (err instanceof ChairDispatchSecurityError) {
+                deps.writeJson(res, err.status, { error: err.code });
+                return;
+            }
+            deps.writeJson(res, 401, { error: 'invalid_chair_dispatch_security' });
+            return;
+        }
         const topicId = typeof body.topicId === 'string' ? body.topicId.trim() : '';
         const agentId = typeof body.agentId === 'string' ? body.agentId.trim() : '';
         const content = typeof body.content === 'string' ? body.content : '';

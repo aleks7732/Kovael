@@ -1,4 +1,5 @@
 import { memo, useState } from 'react';
+import { Check } from 'lucide-react';
 import type { AgentRosterCard } from '../../store/useWarRoomStore';
 
 interface ConvenePanelProps {
@@ -13,8 +14,8 @@ export const ConvenePanel = memo(({ roster, onTopicCreated }: ConvenePanelProps)
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // Only live Chair Beacon claims are eligible. Static roster status can be
-  // "online" even when no agent process has claimed the chair.
+  // Live Chair Beacon claims are eligible for selection. The backend decides
+  // whether each selected chair has a dispatch inbox or is presence-only.
   const availableChairs = roster.filter((r) => r.status !== 'offline' && r.chair?.presence === 'live');
 
   // Toggle selection of a participant
@@ -29,11 +30,8 @@ export const ConvenePanel = memo(({ roster, onTopicCreated }: ConvenePanelProps)
   // Submit REST call to initiate round-table conversation
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!title.trim()) {
-      setError('Please provide a topic title.');
-      return;
-    }
-    if (!goal.trim()) {
+    const trimmedGoal = goal.trim();
+    if (!trimmedGoal) {
       setError('Please provide an instruction/goal to convene on.');
       return;
     }
@@ -52,9 +50,9 @@ export const ConvenePanel = memo(({ roster, onTopicCreated }: ConvenePanelProps)
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
-          title: title.trim(),
+          title: title.trim() || deriveTopicTitle(trimmedGoal),
           participants: selectedIds,
-          goal: goal.trim(),
+          goal: trimmedGoal,
         }),
       });
 
@@ -94,14 +92,14 @@ export const ConvenePanel = memo(({ roster, onTopicCreated }: ConvenePanelProps)
           <div className="space-y-3">
             <div>
               <label htmlFor="topic-title" className="block text-[9.5px] font-bold text-command-warm-white/55 tracking-wide uppercase mb-1">
-                TOPIC TITLE
+                TOPIC TITLE <span className="text-command-warm-white/30">(OPTIONAL)</span>
               </label>
               <input
                 id="topic-title"
                 type="text"
                 value={title}
                 onChange={(e) => setTitle(e.target.value)}
-                placeholder="e.g. Design 100k-node retry strategy"
+                placeholder="Auto-filled from instruction if empty"
                 className="w-full bg-black/40 border border-white/10 rounded px-3 py-1.5 text-[12px] text-command-warm-white focus:outline-none focus:border-command-accent transition-all placeholder-white/20"
                 disabled={loading}
               />
@@ -143,6 +141,7 @@ export const ConvenePanel = memo(({ roster, onTopicCreated }: ConvenePanelProps)
                     <button
                       key={agent.id}
                       type="button"
+                      aria-pressed={isSelected}
                       onClick={() => toggleSelection(agent.id)}
                       disabled={loading}
                       style={{ 
@@ -172,6 +171,14 @@ export const ConvenePanel = memo(({ roster, onTopicCreated }: ConvenePanelProps)
                         <span className={`absolute bottom-0 right-0 w-1.5 h-1.5 rounded-full ${
                           isLiveChair ? 'bg-emerald-500 shadow-[0_0_4px_rgba(16,185,129,0.7)]' : 'bg-zinc-500'
                         }`} />
+                        {isSelected ? (
+                          <span
+                            aria-hidden="true"
+                            className="absolute -top-0.5 -right-0.5 flex h-3 w-3 items-center justify-center rounded-full bg-command-accent text-black shadow-[0_0_6px_rgba(193,95,60,0.55)]"
+                          >
+                            <Check size={9} strokeWidth={3} />
+                          </span>
+                        ) : null}
                       </div>
                       
                       <div className="flex flex-col min-w-0 leading-tight">
@@ -225,4 +232,10 @@ function extractTopicId(responseBody: unknown): string | null {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
+}
+
+function deriveTopicTitle(goal: string): string {
+  const compact = goal.replace(/\s+/g, ' ').trim();
+  if (compact.length <= 72) return compact || 'Untitled convene';
+  return `${compact.slice(0, 69).trimEnd()}...`;
 }
