@@ -5,6 +5,7 @@ import { PersonaLoader } from '../services/PersonaLoader.js';
 import { ConversationBus } from '../services/ConversationBus.js';
 import { ChairBridgeProvider } from '../services/ModelProvider.js';
 import { openOrchestratorDb } from '../services/OrchestratorDb.js';
+import { createChairReplyProof } from '../services/ChairDispatchSecurity.js';
 
 describe('ConversationBus', () => {
     let db: DatabaseSync;
@@ -163,7 +164,7 @@ describe('ConversationBus', () => {
         const assistantNames = bus.getHistory(topic.id)
             .filter((message) => message.role === 'assistant')
             .map((message) => message.name)
-            .filter((name): name is string => typeof name === 'string');
+            .filter((name): name is string => typeof name === 'string' && participants.includes(name));
 
         expect(Array.from(new Set(assistantNames)).sort()).toEqual([...participants].sort());
     }, 10000);
@@ -218,6 +219,140 @@ describe('ConversationBus', () => {
         const agentReply = history.find((h) => h.name === 'nyx-openclaw');
         expect(agentReply).toBeDefined();
         expect(agentReply!.content).toBe(replyText);
+    });
+
+    it('dispatches lean system prompts without persona lore preamble', async () => {
+        chairs.claim({
+            agentId: 'nyx-openclaw',
+            provider: 'vitest',
+            inboxUrl: 'http://localhost:9999/inbox',
+        });
+
+        const topic = bus.createTopic('Lean Prompt Dispatch', ['nyx-openclaw']);
+        const originalFetch = global.fetch;
+        let postBody: { system: string; topicId: string; agentId: string } | null = null;
+
+        global.fetch = (async (_url: string | URL | Request, init?: RequestInit) => {
+            postBody = JSON.parse(String(init?.body ?? '{}')) as typeof postBody;
+            queueMicrotask(() => {
+                if (postBody) {
+                    ChairBridgeProvider.submitReply(postBody.topicId, postBody.agentId, 'ack');
+                }
+            });
+            return new Response('', { status: 200 });
+        }) as typeof fetch;
+
+        try {
+            await bus.convene(topic.id, 'Answer without boilerplate.');
+        } finally {
+            global.fetch = originalFetch;
+        }
+
+        expect(postBody).not.toBeNull();
+        expect(postBody!.system.length).toBeLessThanOrEqual(180);
+        expect(postBody!.system).not.toMatch(/Lore\/Background|Voice Register|Catchphrases|Dispositions|Expertise|forbidden/i);
+        expect(bus.getHistory(topic.id)[0].content).toBe('Answer without boilerplate.');
+    });
+
+    it('does not fake smart replies for claimed chairs without dispatch inboxes', async () => {
+        chairs.claim({
+            agentId: 'nyx-presence-only',
+            provider: 'vitest',
+        });
+
+        const topic = bus.createTopic('Presence Only Dispatch', ['nyx-presence-only']);
+        const busEvents: any[] = [];
+        bus.on('bus_event', (event) => busEvents.push(event));
+
+        await bus.convene(topic.id, 'Answer through the real chair pipe.');
+
+        const history = bus.getHistory(topic.id);
+        const assistant = history.find((message) => message.role === 'assistant');
+        const unavailable = busEvents.find((event) => event.type === 'chair_dispatch_unavailable');
+
+        expect(assistant?.name).toBe('nyx-presence-only');
+        expect(assistant?.content).toContain('no dispatch inbox');
+        expect(history.at(-1)?.name).toBe('convener');
+        expect(history.at(-1)?.content).toContain('RESULT:');
+        expect(history.at(-1)?.role).toBe('system');
+        expect(history.at(-1)?.content).toContain('Presence-only chairs: nyx-presence-only');
+        expect(unavailable).toMatchObject({
+            agentId: 'nyx-presence-only',
+            reason: 'missing_inbox_url',
+        });
+    });
+
+    it('records runtime error replies as failed turns, not successful assistant messages', async () => {
+        chairs.claim({
+            agentId: 'shaev',
+            provider: 'vitest',
+            inboxUrl: 'http://localhost:9999/inbox',
+        });
+
+        const topic = bus.createTopic('Runtime Failure Dispatch', ['shaev']);
+        const busEvents: any[] = [];
+        const originalFetch = global.fetch;
+        let dispatch: Record<string, string> | null = null;
+        bus.on('bus_event', (event) => busEvents.push(event));
+
+        global.fetch = (async (_url: string | URL | Request, init?: RequestInit) => {
+            dispatch = JSON.parse(String(init?.body ?? '{}')) as Record<string, string>;
+            queueMicrotask(() => {
+                if (dispatch) {
+                    ChairBridgeProvider.submitReplyForRequest({
+                        requestId: dispatch.requestId,
+                        agentId: dispatch.agentId,
+                        topicId: dispatch.topicId,
+                        claimSessionId: dispatch.claimSessionId,
+                        replyProof: createChairReplyProof({
+                            requestId: dispatch.requestId,
+                            claimSessionId: dispatch.claimSessionId,
+                            replyProofSecret: dispatch.replyProofSecret,
+                        }),
+                        content: 'Runtime error from shaev: adapter crashed',
+                        status: 'failed',
+                        error: 'adapter crashed',
+                    });
+                }
+            });
+            return new Response('', { status: 200 });
+        }) as typeof fetch;
+
+        try {
+            await bus.convene(topic.id, 'Fail honestly.');
+        } finally {
+            global.fetch = originalFetch;
+        }
+
+        expect(busEvents.some((event) => event.type === 'chair_dispatch_success')).toBe(false);
+        expect(busEvents).toContainEqual(expect.objectContaining({
+            type: 'chair_dispatch_failure',
+            agentId: 'shaev',
+            topicId: topic.id,
+        }));
+        expect(bus.getHistory(topic.id).some((message) => message.name === 'shaev' && message.role === 'assistant')).toBe(false);
+        expect(bus.getHistory(topic.id).at(-1)?.content).toContain('Failed turns: shaev');
+    });
+
+    it('persists a final convener result after every convene run', async () => {
+        const participants = ['nyx-codex', 'nyx-openclaw'];
+        for (const agentId of participants) {
+            chairs.claim({
+                agentId,
+                provider: 'vitest',
+            });
+        }
+        const topic = bus.createTopic('Final Result Contract', participants);
+
+        await bus.convene(topic.id, 'Return a visible result.');
+
+        const history = bus.getHistory(topic.id);
+        const result = history.at(-1);
+
+        expect(result?.name).toBe('convener');
+        expect(result?.role).toBe('system');
+        expect(result?.content).toContain('RESULT: Convener completed "Final Result Contract".');
+        expect(result?.content).toContain('Selected chairs: nyx-codex, nyx-openclaw.');
     });
 
     it('emits committee lifecycle events with quorum verdict and trace lanes', () => {

@@ -25,6 +25,11 @@ measured values.
 - [ ] `kind` v0.22+ on PATH (`kind version`)
 - [ ] Repo built locally so the `kovael:local` image exists, OR a tagged
       image already loaded into the kind node.
+- [ ] Supervised local runtimes are left disabled for the default manifests.
+      Enabling them requires a specialized single-replica operator setup with
+      runtime binaries, a writable local hub volume, and Kubernetes Secrets for
+      `KOVAEL_API_TOKEN`, `KOVAEL_CHAIR_DISPATCH_SECRET`, and any hub secret
+      material.
 
 ## One-shot
 
@@ -125,6 +130,17 @@ what the startup probe (30 × 5s = 150s budget) is for.
 ```bash
 kind delete cluster --name kovael-test
 ```
+
+## Local Runtime Caveat
+
+The default deployment runs two orchestrator replicas with a read-only root
+filesystem. Do not set `KOVAEL_AGENT_RUNTIMES_ENABLED=true` on this default
+manifest. Each pod would supervise its own local adapters and own local
+`agent-hub.sqlite` files; those hubs are edge logs, not distributed
+replication state. If a private operator deployment needs app-managed local
+runtimes, use one replica, mount a writable local hub path, inject secrets, and
+document why `nyx-openclaw` is explicitly enabled if the elevated runtime is
+included.
 
 ## Outcomes
 

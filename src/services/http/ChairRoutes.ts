@@ -1,5 +1,6 @@
 import * as http from 'node:http';
 import type { OrchestratorContext } from '../OrchestratorContext.js';
+import { ChairDispatchSecurityError, openChairDispatchBody } from '../ChairDispatchSecurity.js';
 import { ChairBridgeProvider } from '../ModelProvider.js';
 import type { RouteDeps } from './HttpApiSupport.js';
 import { createRequestUrl } from './HttpApiSupport.js';
@@ -23,7 +24,7 @@ export async function handleChairRequest(
         return;
     }
 
-    const body = await deps.readJsonBody(req, res);
+    let body = await deps.readJsonBody(req, res, action === 'reply' ? 256 * 1024 : undefined);
     if (body === null) return;
 
     if (action === 'claim') {
@@ -84,15 +85,46 @@ export async function handleChairRequest(
     }
 
     if (action === 'reply') {
-        const topicId = typeof body.topicId === 'string' ? body.topicId.trim() : '';
-        const agentId = typeof body.agentId === 'string' ? body.agentId.trim() : '';
-        const content = typeof body.content === 'string' ? body.content : '';
-        if (!topicId || !agentId) {
-            deps.writeJson(res, 400, { error: 'missing_required_fields', need: ['topicId', 'agentId'] });
+        try {
+            body = openChairDispatchBody(body);
+        } catch (err) {
+            if (err instanceof ChairDispatchSecurityError) {
+                deps.writeJson(res, err.status, { error: err.code });
+                return;
+            }
+            deps.writeJson(res, 401, { error: 'invalid_chair_dispatch_security' });
             return;
         }
-        const success = ChairBridgeProvider.submitReply(topicId, agentId, content);
-        deps.writeJson(res, 200, { success });
+        const topicId = typeof body.topicId === 'string' ? body.topicId.trim() : '';
+        const agentId = typeof body.agentId === 'string' ? body.agentId.trim() : '';
+        const requestId = typeof body.requestId === 'string' ? body.requestId.trim() : '';
+        const claimSessionId = typeof body.claimSessionId === 'string' ? body.claimSessionId.trim() : '';
+        const replyProof = typeof body.replyProof === 'string' ? body.replyProof.trim() : '';
+        const content = typeof body.content === 'string' ? body.content : '';
+        const status = body.status === 'failed' ? 'failed' : 'succeeded';
+        const error = typeof body.error === 'string' ? body.error : undefined;
+        if (!requestId || !agentId || !claimSessionId || !replyProof) {
+            deps.writeJson(res, 400, {
+                error: 'missing_required_fields',
+                need: ['requestId', 'agentId', 'claimSessionId', 'replyProof'],
+            });
+            return;
+        }
+        const result = ChairBridgeProvider.submitReplyForRequest({
+            requestId,
+            agentId,
+            topicId: topicId || undefined,
+            claimSessionId,
+            replyProof,
+            content,
+            status,
+            error,
+        }, context.chairs.get(agentId)?.sessionId);
+        if (!result.ok) {
+            deps.writeJson(res, result.status, { error: result.code });
+            return;
+        }
+        deps.writeJson(res, 200, { success: true, receipt: result.receipt });
         return;
     }
 

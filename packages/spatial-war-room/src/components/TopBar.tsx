@@ -1,6 +1,6 @@
 import { memo, useEffect, useState, useMemo } from 'react';
 import { MissionConsole } from './MissionConsole';
-import { useWarRoomStore, type TokenTotals } from '../store/useWarRoomStore.js';
+import { useWarRoomStore, type AgentHubHealth, type AgentRuntimeSnapshot, type ResourceModeSnapshot, type TokenTotals } from '../store/useWarRoomStore.js';
 
 interface TopBarProps {
   meshStatus: 'live' | 'syncing' | 'offline';
@@ -9,6 +9,9 @@ interface TopBarProps {
   activeAgents: number;
   nodeCount: number;
   tokenTotals: TokenTotals;
+  agentRuntimes?: AgentRuntimeSnapshot | null;
+  resourceMode?: ResourceModeSnapshot | null;
+  hubHealthByAgent?: Record<string, AgentHubHealth>;
   onInjectMission: (goal: string) => void;
 }
 
@@ -43,7 +46,18 @@ const Stat = memo(({ label, value, hint, accent = false }: { label: string; valu
 ));
 Stat.displayName = 'TopBar.Stat';
 
-export const TopBar = memo(({ meshStatus, connectedClients = 0, receiptsIssued, activeAgents, nodeCount, tokenTotals, onInjectMission }: TopBarProps) => {
+export const TopBar = memo(({
+  meshStatus,
+  connectedClients = 0,
+  receiptsIssued,
+  activeAgents,
+  nodeCount,
+  tokenTotals,
+  agentRuntimes = null,
+  resourceMode = null,
+  hubHealthByAgent = {},
+  onInjectMission,
+}: TopBarProps) => {
   const [now, setNow] = useState(() => new Date());
   const activeTab = useWarRoomStore((s) => s.activeTab);
   const setActiveTab = useWarRoomStore((s) => s.setActiveTab);
@@ -62,6 +76,15 @@ export const TopBar = memo(({ meshStatus, connectedClients = 0, receiptsIssued, 
     const retry = claimStats.RetryQueued ?? 0;
     return running + retry + retryPendingCount;
   }, [claimStats, retryPendingCount]);
+
+  const runtimeStat = agentRuntimes ? `${agentRuntimes.running}/${agentRuntimes.configured}` : '—';
+  const resourceModeStat = resourceMode?.mode.toUpperCase() ?? 'ACTIVE';
+  const hubStat = useMemo(() => {
+    const hubs = Object.values(hubHealthByAgent);
+    if (hubs.length === 0) return '—';
+    const unhealthy = hubs.filter((hub) => hub.status !== 'ok' && hub.status !== 'unknown').length;
+    return unhealthy === 0 ? `${hubs.length} OK` : `${unhealthy}/${hubs.length}`;
+  }, [hubHealthByAgent]);
 
   useEffect(() => {
     const id = setInterval(() => setNow(new Date()), 1000);
@@ -129,6 +152,9 @@ export const TopBar = memo(({ meshStatus, connectedClients = 0, receiptsIssued, 
         <div className="h-7 w-px bg-white/10" />
         <Stat label="Trace Health" value={`${traceHealth}%`} hint="OTel Trace execution health (based on hook success rate)" accent={traceHealth < 100} />
         <Stat label="Queue Pressure" value={queuePressure} hint="Mesh dispatch queue pressure (active dispatches + retries)" accent={queuePressure > 0} />
+        <Stat label="Runtimes" value={runtimeStat} hint="App-managed agent runtimes running / configured" accent={Boolean(agentRuntimes && agentRuntimes.running < agentRuntimes.configured)} />
+        <Stat label="Mode" value={resourceModeStat} hint="Orchestrator resource mode" accent={resourceMode?.mode === 'idle'} />
+        <Stat label="Hubs" value={hubStat} hint="Per-agent hub health summary" accent={hubStat.includes('/')} />
         <div className="h-7 w-px bg-white/10" />
         <Stat label="UTC"     value={time}             hint="Server time, ISO-8601" />
       </div>

@@ -1,27 +1,41 @@
 #!/usr/bin/env node
 /**
- * No-vaporware validation: claim all 9 chairs over real HTTP, convene
- * conversations across the full roster, dispatch a Triad task, and
- * assert every chair received traffic. Prints a structured report.
+ * No-vaporware validation: boot the orchestrator, spawn one real
+ * kovael-agent-inbox adapter per canonical chair, dispatch through the
+ * ChairBridgeProvider path, and assert every adapter hub recorded the
+ * accepted -> running -> succeeded lifecycle.
  *
  * Requires: `npm run build` first (this script imports from dist/).
- * Exits 0 on full pass, 1 if any chair didn't receive a dispatch.
  *
  *   node scripts/validate-all-chairs.mjs
  */
 
-import * as http from 'node:http';
+import { spawn } from 'node:child_process';
+import { existsSync, mkdtempSync, rmSync } from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
+import process from 'node:process';
+import { DatabaseSync } from 'node:sqlite';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { AgentCards } from '../dist/AgentCards.js';
 import { MeshOrchestrator } from '../dist/MeshOrchestrator.js';
 import { ChairBridgeProvider } from '../dist/services/ModelProvider.js';
 
+const ROOT = path.resolve(import.meta.dirname, '..');
+const SCRIPT_PATH = path.join(ROOT, 'scripts', 'kovael-agent-inbox.mjs');
 const AGENT_IDS = Object.keys(AgentCards);
+const STRICT_LIVE = process.env.KOVAEL_REQUIRE_LIVE_CHAIRS === 'true';
+const DISPATCH_SECRET = validDispatchSecret(process.env.KOVAEL_CHAIR_DISPATCH_SECRET)
+    ? process.env.KOVAEL_CHAIR_DISPATCH_SECRET.trim()
+    : 'validate-all-chairs-secret-0123456789abcdef';
+
+process.env.KOVAEL_DB_PATH = ':memory:';
+process.env.KOVAEL_CHAIR_DISPATCH_SECRET = DISPATCH_SECRET;
 
 async function postJson(url, body, extraHeaders = {}) {
     const res = await fetch(url, {
         method: 'POST',
-        headers: { 'content-type': 'application/json', ...extraHeaders },
+        headers: authHeaders({ 'content-type': 'application/json', ...extraHeaders }),
         body: JSON.stringify(body),
     });
     const txt = await res.text();
@@ -31,48 +45,13 @@ async function postJson(url, body, extraHeaders = {}) {
 }
 
 async function getJson(url) {
-    const res = await fetch(url);
+    const res = await fetch(url, { headers: authHeaders() });
     return { status: res.status, body: await res.json() };
 }
 
-// One tiny HTTP server per agent. When the orchestrator POSTs a
-// dispatch to its inbox, the server records the hit and then posts
-// the agent's name back to /api/v1/chairs/reply. Real network, real
-// JSON, no mocks.
-function startFakeInbox(agentId, orchestratorPort, hits) {
-    return new Promise((resolve) => {
-        const server = http.createServer((req, res) => {
-            let raw = '';
-            req.on('data', (c) => (raw += c));
-            req.on('end', async () => {
-                const payload = raw ? JSON.parse(raw) : {};
-                hits.push({ agentId, topicId: payload.topicId, ts: Date.now() });
-                res.writeHead(200, { 'content-type': 'application/json' });
-                res.end('{"ack":true}');
-
-                // Reply back via the orchestrator's chair-reply webhook.
-                if (payload.topicId) {
-                    try {
-                        await postJson(
-                            `http://127.0.0.1:${orchestratorPort}/api/v1/chairs/reply`,
-                            {
-                                topicId: payload.topicId,
-                                agentId,
-                                content: `[${agentId}] dispatch acknowledged`,
-                            },
-                        );
-                    } catch {
-                        // Reply failure is reported elsewhere via the missing-reply timeout.
-                    }
-                }
-            });
-        });
-        server.listen(0, '127.0.0.1', () => {
-            const addr = server.address();
-            const inboxUrl = `http://127.0.0.1:${addr.port}/inbox`;
-            resolve({ server, inboxUrl });
-        });
-    });
+function authHeaders(headers = {}) {
+    const token = process.env.KOVAEL_API_TOKEN;
+    return token ? { ...headers, authorization: `Bearer ${token}` } : headers;
 }
 
 function report(title, rows) {
@@ -83,76 +62,200 @@ function report(title, rows) {
     }
 }
 
+function spawnAdapter(agentId, orchestratorPort, hubRoot) {
+    const card = AgentCards[agentId];
+    const hubPath = path.join(hubRoot, safePathSegment(agentId), 'agent-hub.sqlite');
+    const args = [
+        SCRIPT_PATH,
+        '--id', agentId,
+        '--provider', card.provider,
+        '--runtime', 'fake-deterministic',
+        '--host', `http://127.0.0.1:${orchestratorPort}`,
+        '--cwd', ROOT,
+        '--hub-path', hubPath,
+        '--capabilities', card.mcp_capabilities.join(','),
+        '--trust', String(card.trust_tier),
+        '--note', 'validate-all-chairs',
+    ];
+    if (process.env.KOVAEL_API_TOKEN) args.push('--with-token');
+
+    const stderr = [];
+    const child = spawn(process.execPath, args, {
+        cwd: ROOT,
+        env: {
+            ...process.env,
+            KOVAEL_CHAIR_DISPATCH_SECRET: DISPATCH_SECRET,
+            ...(process.env.KOVAEL_API_TOKEN ? { KOVAEL_TOKEN: process.env.KOVAEL_API_TOKEN } : {}),
+        },
+        stdio: ['ignore', 'ignore', 'pipe'],
+        windowsHide: true,
+    });
+    child.stderr?.on('data', (chunk) => {
+        stderr.push(chunk.toString('utf8'));
+    });
+    return { agentId, child, hubPath, stderr };
+}
+
+async function stopAdapter(adapter) {
+    if (adapter.child.exitCode !== null || adapter.child.killed) return;
+    adapter.child.kill('SIGTERM');
+    await Promise.race([
+        new Promise((resolve) => adapter.child.once('exit', resolve)),
+        sleep(2500).then(() => {
+            if (adapter.child.exitCode === null && !adapter.child.killed) {
+                adapter.child.kill('SIGKILL');
+            }
+        }),
+    ]);
+}
+
+async function waitForClaims(orchestratorPort, expectedIds, timeoutMs = 15_000) {
+    const deadline = Date.now() + timeoutMs;
+    let last = null;
+    while (Date.now() < deadline) {
+        const snapshot = await getJson(`http://127.0.0.1:${orchestratorPort}/api/v1/chairs`);
+        last = snapshot.body;
+        const byId = new Map((snapshot.body.chairs || []).map((chair) => [chair.agentId, chair]));
+        const ready = expectedIds.every((agentId) => {
+            const chair = byId.get(agentId);
+            return chair && chair.status === 'online' && typeof chair.inboxUrl === 'string' && chair.inboxUrl.length > 0;
+        });
+        if (ready) return snapshot.body.chairs;
+        await sleep(100);
+    }
+    throw new Error(`timed out waiting for adapter claims: ${JSON.stringify(last)}`);
+}
+
+async function waitForHubDispatch(hubPath, topicId, timeoutMs = 7000) {
+    const deadline = Date.now() + timeoutMs;
+    let last = null;
+    while (Date.now() < deadline) {
+        if (existsSync(hubPath)) {
+            const db = new DatabaseSync(hubPath);
+            try {
+                last = db.prepare(`
+                    SELECT request_id, topic_id, agent_id, status, received_at, started_at,
+                           completed_at, payload_json, reply_content, error
+                    FROM agent_dispatches
+                    WHERE topic_id = ?
+                    ORDER BY received_at DESC
+                    LIMIT 1
+                `).get(topicId);
+                if (last?.status === 'succeeded') return last;
+            } finally {
+                db.close();
+            }
+        }
+        await sleep(50);
+    }
+    throw new Error(`hub dispatch for topic ${topicId} did not succeed; last=${JSON.stringify(last)}`);
+}
+
+function readHubRows(hubPath) {
+    if (!existsSync(hubPath)) return [];
+    const db = new DatabaseSync(hubPath);
+    try {
+        return db.prepare(`
+            SELECT request_id, topic_id, agent_id, status, received_at, started_at,
+                   completed_at, payload_json, reply_content, error
+            FROM agent_dispatches
+            ORDER BY received_at ASC
+        `).all();
+    } finally {
+        db.close();
+    }
+}
+
+function validateHubLifecycle(agentId, row, topicId, streamedText) {
+    const errors = [];
+    if (!row) errors.push('missing hub row');
+    if (row?.status !== 'succeeded') errors.push(`status=${row?.status}`);
+    if (!Number.isFinite(row?.received_at)) errors.push('missing received_at');
+    if (!Number.isFinite(row?.started_at)) errors.push('missing started_at');
+    if (!Number.isFinite(row?.completed_at)) errors.push('missing completed_at');
+    if (row?.started_at < row?.received_at) errors.push('started_at before received_at');
+    if (row?.completed_at < row?.started_at) errors.push('completed_at before started_at');
+    let payload = {};
+    try { payload = JSON.parse(row?.payload_json || '{}'); } catch { errors.push('payload_json invalid'); }
+    if (payload.agentId !== agentId) errors.push(`payload agent=${payload.agentId}`);
+    if (payload.topicId !== topicId) errors.push(`payload topic=${payload.topicId}`);
+    if (payload.requestId !== row?.request_id) errors.push('payload/request row mismatch');
+    const expectedNeedle = `FAKE_RUNTIME_REPLY agent=${agentId} request=${row?.request_id} topic=${topicId}`;
+    if (!String(row?.reply_content || '').includes(expectedNeedle)) errors.push('reply missing deterministic proof');
+    if (row?.reply_content !== streamedText) errors.push('streamed reply differs from hub reply');
+    return errors;
+}
+
+function validateDispatchReceipt(agentId, row, claim, receipt) {
+    const errors = [];
+    if (!receipt) errors.push('missing provider receipt');
+    if (receipt?.status !== 'succeeded') errors.push(`receipt status=${receipt?.status}`);
+    if (receipt?.proofVerified !== true) errors.push('reply proof not verified');
+    if (receipt?.agentId !== agentId) errors.push(`receipt agent=${receipt?.agentId}`);
+    if (receipt?.topicId !== row?.topic_id) errors.push(`receipt topic=${receipt?.topicId}`);
+    if (receipt?.requestId !== row?.request_id) errors.push('receipt/request row mismatch');
+    if (receipt?.claimSessionId !== claim?.sessionId) errors.push('receipt/session claim mismatch');
+    return errors;
+}
+
 let exitCode = 0;
 let orchestrator = null;
-const inboxServers = [];
+let hubRoot = null;
+const adapters = [];
 
 try {
-    // 1. Boot orchestrator on an ephemeral port — no global side effects.
     orchestrator = new MeshOrchestrator(0);
     const orchestratorPort = await orchestrator.ready();
+    const host = `http://127.0.0.1:${orchestratorPort}`;
     process.stdout.write(`[validate] orchestrator listening on :${orchestratorPort}\n`);
+    process.stdout.write('[validate] encrypted chair dispatch enabled with validation-local secret\n');
+    if (STRICT_LIVE) process.stdout.write('[validate] strict live-chair mode enabled\n');
 
-    // 2. Start 9 fake inboxes.
-    const hits = [];
-    const inboxByAgent = {};
+    hubRoot = mkdtempSync(path.join(os.tmpdir(), 'kovael-validate-agents-'));
     for (const agentId of AGENT_IDS) {
-        const { server, inboxUrl } = await startFakeInbox(agentId, orchestratorPort, hits);
-        inboxServers.push(server);
-        inboxByAgent[agentId] = inboxUrl;
+        adapters.push(spawnAdapter(agentId, orchestratorPort, hubRoot));
     }
-    process.stdout.write(`[validate] ${AGENT_IDS.length} fake inboxes listening\n`);
+    process.stdout.write(`[validate] spawned ${adapters.length} fake-deterministic inbox adapters\n`);
 
-    // 3. Each agent claims its chair via real HTTP POST.
-    const claimRows = [['agent', 'provider', 'status', 'sessionId']];
-    const sessions = {};
+    const claims = await waitForClaims(orchestratorPort, AGENT_IDS);
+    const claimByAgent = new Map(claims.map((claim) => [claim.agentId, claim]));
+    const claimRows = [['agent', 'provider', 'status', 'sessionId', 'inbox']];
     for (const agentId of AGENT_IDS) {
         const card = AgentCards[agentId];
-        const { status, body } = await postJson(
-            `http://127.0.0.1:${orchestratorPort}/api/v1/chairs/claim`,
-            {
-                agentId,
-                provider: card.provider,
-                capabilities: card.mcp_capabilities,
-                trustTier: card.trust_tier,
-                inboxUrl: inboxByAgent[agentId],
-                note: 'validate-all-chairs',
-            },
-        );
-        if (status !== 200 || !body.sessionId) {
-            claimRows.push([agentId, card.provider, `FAIL ${status}`, JSON.stringify(body)]);
+        const claim = claimByAgent.get(agentId);
+        if (!claim) {
+            claimRows.push([agentId, card.provider, 'MISS', '-', '-']);
             exitCode = 1;
-        } else {
-            sessions[agentId] = body.sessionId;
-            claimRows.push([agentId, card.provider, 'CLAIMED', body.sessionId.slice(0, 8)]);
+            continue;
         }
+        claimRows.push([
+            agentId,
+            card.provider,
+            claim.status,
+            String(claim.sessionId || '').slice(0, 8),
+            claim.inboxUrl ? new URL(claim.inboxUrl).port : '-',
+        ]);
     }
-    report('Chair claims', claimRows);
+    report('Adapter chair claims', claimRows);
 
-    // 4. Snapshot — every claimed chair must be online.
-    const snap = await getJson(`http://127.0.0.1:${orchestratorPort}/api/v1/chairs`);
-    const online = (snap.body.chairs || []).filter((c) => c.status === 'online');
-    process.stdout.write(`\n[validate] snapshot: ${online.length}/${AGENT_IDS.length} chairs online\n`);
-    if (online.length !== AGENT_IDS.length) {
-        process.stdout.write('  FAIL — expected all 9 chairs online after claim\n');
-        exitCode = 1;
-    }
+    const busEvents = [];
+    orchestrator.conversationBus.on('bus_event', (event) => busEvents.push(event));
 
-    // 5. Direct per-agent dispatch via ChairBridgeProvider — the gold
-    //    standard for "every chair can take work." Bypasses the bus's
-    //    adaptive-stability stopping criterion (which can end a convene
-    //    after 2-3 turns by design) and proves each inbox is reachable.
-    const chairsRegistry = orchestrator.chairs;
-    const directRows = [['agent', 'dispatch status', 'reply preview']];
+    const directRows = [['agent', 'dispatch status', 'requestId', 'hub lifecycle', 'reply preview']];
+    const directByAgent = new Map();
     for (const agentId of AGENT_IDS) {
-        const topicId = `validate-direct-${agentId}`;
-        // Open a topic shell so the reply webhook has somewhere to land.
         const { body: topic } = await postJson(
-            `http://127.0.0.1:${orchestratorPort}/api/v1/conversations`,
+            `${host}/api/v1/conversations`,
             { title: `Direct dispatch · ${agentId}`, participants: [agentId] },
         );
-        const provider = new ChairBridgeProvider(agentId, chairsRegistry, orchestratorPort, {
-            dispatchTimeoutMs: 5000,
+        if (!topic?.id) {
+            directRows.push([agentId, 'FAIL create-topic', '-', '-', JSON.stringify(topic)]);
+            exitCode = 1;
+            continue;
+        }
+
+        const provider = new ChairBridgeProvider(agentId, orchestrator.chairs, orchestratorPort, {
+            dispatchTimeoutMs: 7000,
             maxAttempts: 2,
             baseBackoffMs: 50,
         });
@@ -167,59 +270,95 @@ try {
                 if (chunk.delta) out.push(chunk.delta);
             }
             const text = out.join('');
-            directRows.push([agentId, 'DISPATCHED', text.slice(0, 40)]);
+            const adapter = adapters.find((candidate) => candidate.agentId === agentId);
+            const hubRow = await waitForHubDispatch(adapter.hubPath, topic.id);
+            const errors = [
+                ...validateHubLifecycle(agentId, hubRow, topic.id, text),
+                ...validateDispatchReceipt(agentId, hubRow, claimByAgent.get(agentId), provider.getLastReceipt()),
+            ];
+            directByAgent.set(agentId, hubRow);
+            if (errors.length > 0) {
+                directRows.push([agentId, 'FAIL hub', hubRow?.request_id ?? '-', errors.join('; '), text.slice(0, 48)]);
+                exitCode = 1;
+            } else {
+                directRows.push([agentId, 'DISPATCHED', hubRow.request_id.slice(0, 8), 'accepted→running→succeeded', text.slice(0, 48)]);
+            }
         } catch (err) {
-            directRows.push([agentId, `FAIL ${err && err.message ? err.message : err}`, '—']);
+            directRows.push([agentId, `FAIL ${err && err.message ? err.message : err}`, '-', '-', '-']);
             exitCode = 1;
         }
     }
-    report('Direct dispatch via ChairBridgeProvider', directRows);
+    report('Direct dispatch via real inbox adapters', directRows);
 
-    // 6. Bus integration: convene a small topic to prove the bus picks
-    //    each chair's claim and routes through the same path. Stops are
-    //    expected ("adaptive_stability_reached") — what matters is that
-    //    the speakers we DO see correspond to claimed chairs.
     const busTopicAgents = AGENT_IDS.slice(0, 3);
     const { body: busTopic } = await postJson(
-        `http://127.0.0.1:${orchestratorPort}/api/v1/conversations`,
+        `${host}/api/v1/conversations`,
         { title: 'Bus integration', participants: busTopicAgents },
     );
     await orchestrator.conversationBus.convene(busTopic.id, 'integration test');
     process.stdout.write(`[validate] bus convene finished on ${busTopic.id}\n`);
 
-    // 7. Inject a Triad task — proves the architect/operator/verifier
-    //    pipeline still routes through the claimed roster.
+    const liveFallbackEvents = busEvents.filter((event) => [
+        'chair_dispatch_unavailable',
+        'chair_dispatch_rerouted',
+        'chair_dispatch_failure',
+    ].includes(event.type));
+    if (STRICT_LIVE && liveFallbackEvents.length > 0) {
+        process.stdout.write(`[validate] FAIL strict live mode saw fallback/failure events: ${JSON.stringify(liveFallbackEvents)}\n`);
+        exitCode = 1;
+    }
+
     const receipt = await orchestrator.injectTask('Validate dispatch path');
     process.stdout.write(
-        `[validate] triad receipt: status=${receipt.status} architect=${receipt.architectId} operator=${receipt.operatorId} verifier=${receipt.verifierId}\n`,
+        `[validate] triad receipt: status=${receipt.status} architect=${receipt.architectId} operator=${receipt.operatorId} verifier=${receipt.verifierId} (synthetic Triad path; adapter receipts verified above)\n`,
     );
     if (!receipt || !receipt.taskHash) {
         process.stdout.write('  FAIL — injectTask did not return a receipt\n');
         exitCode = 1;
     }
 
-    // 8. Per-agent dispatch counts.
-    const dispatchRows = [['agent', 'dispatch hits', 'topics seen']];
-    for (const agentId of AGENT_IDS) {
-        const agentHits = hits.filter((h) => h.agentId === agentId);
-        const topics = new Set(agentHits.map((h) => h.topicId).filter(Boolean));
-        const status = agentHits.length >= 1 ? 'OK' : 'MISS';
-        if (agentHits.length === 0) exitCode = 1;
-        dispatchRows.push([agentId, `${agentHits.length} (${status})`, [...topics].join(',') || '—']);
+    const dispatchRows = [['agent', 'hub dispatches', 'succeeded', 'topics seen']];
+    for (const adapter of adapters) {
+        const rows = readHubRows(adapter.hubPath);
+        const succeeded = rows.filter((row) => row.status === 'succeeded');
+        if (succeeded.length === 0) exitCode = 1;
+        dispatchRows.push([
+            adapter.agentId,
+            String(rows.length),
+            String(succeeded.length),
+            [...new Set(rows.map((row) => row.topic_id))].join(',') || '-',
+        ]);
     }
-    report('Dispatch reception', dispatchRows);
+    report('Adapter hub dispatch reception', dispatchRows);
 
-    // 9. Final verdict.
+    for (const adapter of adapters) {
+        if (adapter.child.exitCode !== null && adapter.child.exitCode !== 0) {
+            process.stdout.write(`[validate] adapter ${adapter.agentId} exited early with code=${adapter.child.exitCode}\n`);
+            process.stdout.write(adapter.stderr.join('').slice(-2000));
+            exitCode = 1;
+        }
+    }
+
     process.stdout.write(
-        `\n[validate] result: ${exitCode === 0 ? 'PASS — every chair dispatched and replied' : 'FAIL — see rows above'}\n`,
+        `\n[validate] result: ${exitCode === 0 ? 'PASS — every adapter claimed, decrypted, dispatched, replied, and persisted hub success' : 'FAIL — see rows above'}\n`,
     );
 } catch (err) {
     process.stderr.write(`[validate] threw: ${err && err.stack ? err.stack : err}\n`);
     exitCode = 1;
 } finally {
-    for (const s of inboxServers) s.close();
+    await Promise.all(adapters.map((adapter) => stopAdapter(adapter)));
     if (orchestrator) orchestrator.close();
-    // Give async cleanups a beat so the process exits cleanly.
+    if (hubRoot && path.resolve(hubRoot).startsWith(path.resolve(os.tmpdir()))) {
+        rmSync(hubRoot, { recursive: true, force: true });
+    }
     await sleep(50);
     process.exit(exitCode);
+}
+
+function validDispatchSecret(value) {
+    return typeof value === 'string' && value.trim().length >= 32;
+}
+
+function safePathSegment(value) {
+    return value.replace(/[^a-zA-Z0-9._-]/g, '_');
 }

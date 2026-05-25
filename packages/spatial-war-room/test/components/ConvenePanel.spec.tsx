@@ -2,7 +2,7 @@
 import { describe, it, expect, afterEach, vi, beforeEach } from 'vitest';
 import { render, cleanup, screen, fireEvent, waitFor } from '@testing-library/react';
 import { ConvenePanel } from '../../src/components/theater/ConvenePanel';
-import type { AgentRosterCard } from '../../src/store/useWarRoomStore';
+import type { AgentHubHealth, AgentRosterCard, AgentRuntimeSnapshot } from '../../src/store/useWarRoomStore';
 
 function card(id: string, overrides: Partial<AgentRosterCard> = {}): AgentRosterCard {
     return {
@@ -20,7 +20,14 @@ function liveChair(sessionId: string): NonNullable<AgentRosterCard['chair']> {
         claimedAt: Date.now() - 1_000,
         lastBeaconAt: Date.now() - 500,
         presence: 'live',
+        inboxUrl: `http://localhost:9999/${sessionId}/inbox`,
     };
+}
+
+function presenceOnlyChair(sessionId: string): NonNullable<AgentRosterCard['chair']> {
+    const { inboxUrl: _inboxUrl, ...chair } = liveChair(sessionId);
+    void _inboxUrl;
+    return chair;
 }
 
 const ROSTER: AgentRosterCard[] = [
@@ -67,16 +74,22 @@ describe('ConvenePanel', () => {
         expect(chairButtons.length).toBe(2);
     });
 
-    it('shows an error and does not POST if the form is submitted with no title', async () => {
+    it('derives the topic title from the goal if title is empty', async () => {
+        fetchMock.mockResolvedValueOnce({
+            ok: true,
+            json: () => Promise.resolve({ id: 'topic-derived-title' }),
+            text: () => Promise.resolve(''),
+        });
         render(<ConvenePanel roster={ROSTER} />);
-        const submit = screen.getByRole('button', { name: /DISPATCH CONVENER/i });
-        fireEvent.click(submit);
-        // Match the error text specifically (not the TOPIC TITLE label, which
-        // also contains "topic title" case-insensitively).
-        await waitFor(() =>
-            expect(screen.getByText(/error: please provide a topic title/i)).toBeTruthy(),
-        );
-        expect(fetchMock).not.toHaveBeenCalled();
+        fireEvent.change(screen.getByLabelText(/CONVENE INSTRUCTION/i), { target: { value: 'Converge on the lightest working dispatch path.' } });
+        fireEvent.click(screen.getByRole('button', { name: /shaev/i }));
+        fireEvent.click(screen.getByRole('button', { name: /DISPATCH CONVENER/i }));
+
+        await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+        const [, init] = fetchMock.mock.calls[0];
+        const body = JSON.parse(init.body);
+        expect(body.title).toBe('Converge on the lightest working dispatch path.');
+        expect(body.goal).toBe('Converge on the lightest working dispatch path.');
     });
 
     it('shows an error if no participants are selected even with title + goal filled', async () => {
@@ -161,8 +174,10 @@ describe('ConvenePanel', () => {
         const target = chairButtons[0];
         fireEvent.click(target);
         expect(screen.getByText(/\(1 SELECTED\)/)).toBeTruthy();
+        expect(target.getAttribute('aria-pressed')).toBe('true');
         fireEvent.click(target);
         expect(screen.getByText(/\(0 SELECTED\)/)).toBeTruthy();
+        expect(target.getAttribute('aria-pressed')).toBe('false');
     });
 
     it('surfaces a server error message when the POST returns non-OK', async () => {
@@ -185,5 +200,101 @@ describe('ConvenePanel', () => {
         render(<ConvenePanel roster={[card('unclaimed-online'), card('offline-only', { status: 'offline' })]} />);
         const submit = screen.getByRole('button', { name: /DISPATCH CONVENER/i });
         expect((submit as HTMLButtonElement).disabled).toBe(true);
+    });
+
+    it('offers presence-only live chairs for transparent backend handling', async () => {
+        fetchMock.mockResolvedValueOnce({
+            ok: true,
+            json: () => Promise.resolve({ id: 'topic-presence-only' }),
+            text: () => Promise.resolve(''),
+        });
+        render(<ConvenePanel roster={[card('presence-only', { chair: presenceOnlyChair('presence-session') })]} />);
+
+        fireEvent.change(screen.getByLabelText(/TOPIC TITLE/i), { target: { value: 'presence check' } });
+        fireEvent.change(screen.getByLabelText(/CONVENE INSTRUCTION/i), { target: { value: 'reply if reachable' } });
+        fireEvent.click(screen.getByRole('button', { name: /presence-only/i }));
+        fireEvent.click(screen.getByRole('button', { name: /DISPATCH CONVENER/i }));
+
+        await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+        const [, init] = fetchMock.mock.calls[0];
+        const body = JSON.parse(init.body);
+        expect(body.participants).toEqual(['presence-only']);
+    });
+
+    it('keeps selected live chairs when they lose their dispatch inbox before submit', async () => {
+        fetchMock.mockResolvedValueOnce({
+            ok: true,
+            json: () => Promise.resolve({ id: 'topic-presence-fallback' }),
+            text: () => Promise.resolve(''),
+        });
+        const { rerender } = render(<ConvenePanel roster={ROSTER} />);
+
+        fireEvent.change(screen.getByLabelText(/TOPIC TITLE/i), { target: { value: 'stale selection' } });
+        fireEvent.change(screen.getByLabelText(/CONVENE INSTRUCTION/i), { target: { value: 'reply if reachable' } });
+        fireEvent.click(screen.getByRole('button', { name: /shaev/i }));
+        expect(screen.getByText(/\(1 SELECTED\)/)).toBeTruthy();
+
+        rerender(
+            <ConvenePanel
+                roster={[
+                    card('shaev', { name: 'Shaev', accent_hex: '#059669', chair: presenceOnlyChair('shaev-session') }),
+                    card('nyx-codex', { name: 'Nyx-Codex', accent_hex: '#7c3aed', chair: liveChair('codex-session') }),
+                ]}
+            />,
+        );
+
+        expect(screen.getByText(/\(1 SELECTED\)/)).toBeTruthy();
+        fireEvent.click(screen.getByRole('button', { name: /DISPATCH CONVENER/i }));
+
+        await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+        const [, init] = fetchMock.mock.calls[0];
+        const body = JSON.parse(init.body);
+        expect(body.participants).toEqual(['shaev']);
+    });
+
+    it('surfaces dispatch-readiness reasons without changing live-chair eligibility', () => {
+        const runtimes: AgentRuntimeSnapshot = {
+            enabled: true,
+            parkOnIdle: true,
+            configured: 1,
+            running: 0,
+            updatedAt: 1779262000000,
+            agents: {
+                shaev: {
+                    agentId: 'shaev',
+                    runtime: 'claude-shaev',
+                    running: false,
+                    pid: null,
+                    hubPath: 'I:\\Kovael\\.kovael\\agents\\shaev\\agent-hub.sqlite',
+                    status: 'stopped',
+                    managed: true,
+                },
+            },
+        };
+        const hubHealthByAgent: Record<string, AgentHubHealth> = {
+            shaev: {
+                agentId: 'shaev',
+                status: 'stale',
+                dispatches: 1,
+                accepted: 0,
+                running: 0,
+                succeeded: 1,
+                failed: 0,
+                memories: 0,
+                checkedAt: 1779262020000,
+            },
+        };
+
+        render(
+            <ConvenePanel
+                roster={[card('shaev', { name: 'Shaev', chair: liveChair('shaev-session') })]}
+                agentRuntimes={runtimes}
+                hubHealthByAgent={hubHealthByAgent}
+            />,
+        );
+
+        expect(screen.getByRole('button', { name: /Shaev/i })).toBeTruthy();
+        expect(screen.getByText(/managed runtime stopped/i)).toBeTruthy();
+        expect(screen.getByText(/hub stale/i)).toBeTruthy();
     });
 });

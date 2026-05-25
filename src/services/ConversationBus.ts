@@ -9,6 +9,7 @@ import {
     ModelProvider,
     StubMarkovProvider,
     ChairBridgeProvider,
+    ChairBridgeReplyFailure,
     TokenUsage,
 } from './ModelProvider.js';
 import {
@@ -17,6 +18,10 @@ import {
     CommitteeVote,
 } from './ConsensusEngine.js';
 import { conveneCommitteeVote } from './CommitteeVoting.js';
+
+function requireLiveChairs(): boolean {
+    return process.env.KOVAEL_REQUIRE_LIVE_CHAIRS === 'true';
+}
 
 export interface ActiveTopic {
     id: string;
@@ -51,10 +56,13 @@ export class ConversationBus extends EventEmitter {
     constructor(
         private db: DatabaseSync,
         private chairs: ChairRegistry,
-        private personas: PersonaLoader,
+        _personas: PersonaLoader,
         public orchestratorPort: number
     ) {
         super();
+        // Kept in the constructor for composition-root compatibility. Convene
+        // dispatch intentionally does not inject persona/lore preambles.
+        void _personas;
         // Schema is owned by Migrator (src/services/Migrator.ts) and applied
         // when the orchestrator db is opened. ConversationBus assumes the
         // required tables/views already exist.
@@ -241,13 +249,18 @@ export class ConversationBus extends EventEmitter {
         const participants = [...active.participants];
         if (participants.length === 0) return;
 
-        // Post the initial goal to start the debate
-        this.postMessage(topicId, 'user', 'user', `Convene goal: ${goal}`);
+        // Post exactly the operator goal. Avoid hidden prompt prefixes that
+        // bloat every chair context and leak into visible debate messages.
+        this.postMessage(topicId, 'user', 'user', goal);
 
         // Maintain an speaker execution queue
         const speakerQueue: string[] = [...participants];
         const firstPassTarget = new Set(participants);
         const respondedParticipants = new Set<string>();
+        const liveHandoffParticipants = new Set<string>();
+        const presenceOnlyParticipants = new Set<string>();
+        const localFallbackParticipants = new Set<string>();
+        const failedParticipants = new Set<string>();
 
         let turnCount = 0;
         const maxTurns = 6; // Hard cap to prevent unbounded convene loops.
@@ -260,32 +273,73 @@ export class ConversationBus extends EventEmitter {
         while (speakerQueue.length > 0 && turnCount < maxTurns && !controller.signal.aborted) {
             const currentSpeaker = speakerQueue.shift()!;
 
-            // Assemble local persona system prompt block
-            const persona = this.personas.getPersona(currentSpeaker);
-            let systemPrompt = `You are ${currentSpeaker}, an active agent process in the VantagePoint command core.`;
-            if (persona) {
-                systemPrompt = `You are ${persona.frontMatter.display_name}.
-Voice Register: ${persona.frontMatter.voice.register}
-Lore/Background: ${persona.lore}
-Pronouns: ${persona.frontMatter.voice.pronouns}
-Primary Catchphrases: ${persona.frontMatter.voice.catchphrases.join(', ')}
-Dispositions: ally with [${persona.frontMatter.disposition.ally_with.join(', ')}], spar with [${persona.frontMatter.disposition.spar_with.join(', ')}].
-Expertise: primary: [${persona.frontMatter.expertise.primary.join(', ')}], secondary: [${persona.frontMatter.expertise.secondary.join(', ')}].
-Discipline Invariants:
-- Do not use: ${persona.frontMatter.voice.forbidden.join(', ')}.
-- Act fully in character. Keep responses dry, tactical, and brief (under 80 words).`;
-            }
+            const systemPrompt = '';
 
             // Retrieve conversation slice up to the sliding sliding token budget
             const history = this.getHistory(topicId, 15);
 
             // Select Model Provider dynamically based on chair beacon online status & inboxUrl availability
             const claim = this.chairs.get(currentSpeaker);
+            if (claim && claim.status !== 'offline' && !claim.inboxUrl) {
+                const messageId = crypto.randomUUID();
+                const unavailableContent =
+                    `Chair ${currentSpeaker} is online for presence only; no dispatch inbox is registered, so no live agent handoff occurred.`;
+                const usage: TokenUsage = {
+                    input: Math.ceil(goal.length / 4),
+                    output: Math.ceil(unavailableContent.length / 4),
+                    total: Math.ceil((goal.length + unavailableContent.length) / 4),
+                    runtimeMs: 0,
+                    source: 'estimate',
+                };
+
+                this.emit('bus_event', {
+                    type: 'chair_dispatch_unavailable',
+                    agentId: currentSpeaker,
+                    topicId,
+                    reason: 'missing_inbox_url',
+                });
+                this.emit('bus_event', {
+                    type: 'conversation_message_delta',
+                    topicId,
+                    messageId,
+                    senderId: currentSpeaker,
+                    role: 'assistant',
+                    delta: unavailableContent,
+                    isEnd: false,
+                });
+                this.emit('bus_event', {
+                    type: 'conversation_message_delta',
+                    topicId,
+                    messageId,
+                    senderId: currentSpeaker,
+                    role: 'assistant',
+                    delta: '',
+                    isEnd: true,
+                    usage,
+                });
+                this.postMessage(topicId, currentSpeaker, 'assistant', unavailableContent);
+                respondedParticipants.add(currentSpeaker);
+                presenceOnlyParticipants.add(currentSpeaker);
+                turnCount++;
+                continue;
+            }
+
             let provider: ModelProvider;
             const liveDispatch = Boolean(claim && claim.inboxUrl && claim.status !== 'offline' && this.dispatchGate(currentSpeaker));
             if (liveDispatch) {
                 provider = new ChairBridgeProvider(currentSpeaker, this.chairs, this.orchestratorPort);
             } else {
+                if (requireLiveChairs()) {
+                    const reason = claim?.inboxUrl ? 'dispatch_gate_closed' : 'chair_not_dispatch_ready';
+                    failedParticipants.add(currentSpeaker);
+                    this.emit('bus_event', {
+                        type: 'chair_dispatch_failure',
+                        agentId: currentSpeaker,
+                        topicId,
+                        reason,
+                    });
+                    continue;
+                }
                 if (claim && claim.inboxUrl && claim.status !== 'offline') {
                     this.emit('bus_event', {
                         type: 'chair_dispatch_rerouted',
@@ -294,6 +348,7 @@ Discipline Invariants:
                         topicId,
                     });
                 }
+                localFallbackParticipants.add(currentSpeaker);
                 provider = new StubMarkovProvider(currentSpeaker);
             }
 
@@ -348,11 +403,21 @@ Discipline Invariants:
                 // Persist the completed turn into SQLite
                 this.postMessage(topicId, currentSpeaker, 'assistant', accumulatedContent);
                 if (liveDispatch) {
+                    const receipt = provider instanceof ChairBridgeProvider ? provider.getLastReceipt() : null;
+                    if (receipt) {
+                        this.emit('bus_event', {
+                            type: 'chair_dispatch_receipt',
+                            ...receipt,
+                        });
+                    }
                     this.emit('bus_event', {
                         type: 'chair_dispatch_success',
                         agentId: currentSpeaker,
                         topicId,
+                        requestId: receipt?.requestId,
+                        claimSessionId: receipt?.claimSessionId,
                     });
+                    liveHandoffParticipants.add(currentSpeaker);
                 }
                 respondedParticipants.add(currentSpeaker);
                 turnCount++;
@@ -446,11 +511,20 @@ Discipline Invariants:
 
             } catch (err: any) {
                 this.log.error('turn_execution_failed', { agent: currentSpeaker, error: err.message });
+                failedParticipants.add(currentSpeaker);
+                if (err instanceof ChairBridgeReplyFailure) {
+                    this.emit('bus_event', {
+                        type: 'chair_dispatch_receipt',
+                        ...err.receipt,
+                    });
+                }
                 this.emit('bus_event', {
                     type: 'chair_dispatch_failure',
                     agentId: currentSpeaker,
                     topicId,
                     reason: err.message,
+                    requestId: err instanceof ChairBridgeReplyFailure ? err.receipt.requestId : undefined,
+                    claimSessionId: err instanceof ChairBridgeReplyFailure ? err.receipt.claimSessionId : undefined,
                 });
                 // Break or proceed
                 break;
@@ -468,8 +542,76 @@ Discipline Invariants:
             });
         }
 
+        this.emitConvenerResult(topicId, active.title, participants, {
+            liveHandoffParticipants,
+            presenceOnlyParticipants,
+            localFallbackParticipants,
+            failedParticipants,
+            turnCount,
+        });
+
         // Close the active convene session
         this.closeTopic(topicId);
+    }
+
+    private emitConvenerResult(
+        topicId: string,
+        title: string,
+        participants: string[],
+        outcome: {
+            liveHandoffParticipants: Set<string>;
+            presenceOnlyParticipants: Set<string>;
+            localFallbackParticipants: Set<string>;
+            failedParticipants: Set<string>;
+            turnCount: number;
+        },
+    ): void {
+        const list = (items: Iterable<string>) => {
+            const values = Array.from(new Set(items));
+            return values.length > 0 ? values.join(', ') : 'none';
+        };
+
+        const content = [
+            `RESULT: Convener completed "${title}".`,
+            `Selected chairs: ${list(participants)}.`,
+            `Live handoffs: ${list(outcome.liveHandoffParticipants)}.`,
+            `Presence-only chairs: ${list(outcome.presenceOnlyParticipants)}.`,
+            `Local fallback turns: ${list(outcome.localFallbackParticipants)}.`,
+            `Failed turns: ${list(outcome.failedParticipants)}.`,
+            outcome.presenceOnlyParticipants.size === participants.length
+                ? 'No selected chair registered a dispatch inbox, so the run produced availability receipts instead of live agent answers.'
+                : `Completed turns: ${outcome.turnCount}.`,
+        ].join('\n');
+
+        const messageId = crypto.randomUUID();
+        const usage: TokenUsage = {
+            input: participants.length,
+            output: Math.ceil(content.length / 4),
+            total: participants.length + Math.ceil(content.length / 4),
+            runtimeMs: 0,
+            source: 'estimate',
+        };
+
+        this.emit('bus_event', {
+            type: 'conversation_message_delta',
+            topicId,
+            messageId,
+            senderId: 'convener',
+            role: 'system',
+            delta: content,
+            isEnd: false,
+        });
+        this.emit('bus_event', {
+            type: 'conversation_message_delta',
+            topicId,
+            messageId,
+            senderId: 'convener',
+            role: 'system',
+            delta: '',
+            isEnd: true,
+            usage,
+        });
+        this.postMessage(topicId, 'convener', 'system', content);
     }
 
     public conveneCommittee(

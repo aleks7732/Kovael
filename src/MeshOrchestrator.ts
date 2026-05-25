@@ -40,6 +40,7 @@ import { HttpApiRouter, HttpTimeouts, DEFAULT_HTTP_TIMEOUTS } from './services/H
 import { WebSocketBus } from './services/WebSocketBus.js';
 import { InterAgentChatManager } from './services/InterAgentChatManager.js';
 import { ResourceGovernor, ResourceModeChange } from './services/ResourceGovernor.js';
+import { AgentRuntimeSupervisor, AgentRuntimeSupervisorConfig } from './services/AgentRuntimeSupervisor.js';
 
 export { HttpTimeouts, DEFAULT_HTTP_TIMEOUTS };
 
@@ -60,6 +61,7 @@ export interface OrchestratorConfig {
     dbPath?: string;
     rateLimit?: Partial<RateLimiterConfig>;
     resourceMode?: Partial<OrchestratorResourceModeConfig>;
+    agentRuntimes?: Partial<AgentRuntimeSupervisorConfig>;
 }
 
 const DEFAULT_RESOURCE_MODE_CONFIG: Required<OrchestratorResourceModeConfig> = {
@@ -88,6 +90,7 @@ export class MeshOrchestrator extends EventEmitter implements OrchestratorContex
     public readonly log: Logger = rootLogger;
     public readonly maxWsMessageBytes: number = 5 * 1024 * 1024;
     public readonly resourceGovernor: ResourceGovernor;
+    public readonly agentRuntimeSupervisor: AgentRuntimeSupervisor;
 
     // Caches and state variables
     public agentCards: any[] = [];
@@ -102,6 +105,7 @@ export class MeshOrchestrator extends EventEmitter implements OrchestratorContex
     private readonly wsBus: WebSocketBus;
     private readonly apiRouter: HttpApiRouter;
     private readonly resourceModeConfig: Required<OrchestratorResourceModeConfig>;
+    private boundPort: number;
 
     public get wss() {
         return this.wsBus.wss;
@@ -131,6 +135,7 @@ export class MeshOrchestrator extends EventEmitter implements OrchestratorContex
 
     constructor(port: number, cfg: OrchestratorConfig = {}) {
         super();
+        this.boundPort = port;
         this.handshake = new MevHandshake();
         this.apiGate = new ApiTokenGate();
         this.rateLimiter = new RateLimiter(cfg.rateLimit ?? {});
@@ -200,6 +205,16 @@ export class MeshOrchestrator extends EventEmitter implements OrchestratorContex
             onEnterIdle: (event) => this.enterLightweightMode(event),
             onEnterActive: (event) => this.enterActiveMode(event),
         });
+        this.agentRuntimeSupervisor = cfg.agentRuntimes
+            ? new AgentRuntimeSupervisor({
+                cwd: process.cwd(),
+                logger: this.log,
+                ...cfg.agentRuntimes,
+            })
+            : AgentRuntimeSupervisor.fromEnvironment({
+                cwd: process.cwd(),
+                logger: this.log,
+            });
 
         this.health = new HealthEndpoints(
             () => ({
@@ -239,8 +254,10 @@ export class MeshOrchestrator extends EventEmitter implements OrchestratorContex
         this.server.listen(port, () => {
             const addr = this.server.address();
             const boundPort = addr && typeof addr === 'object' ? addr.port : port;
+            this.boundPort = boundPort;
             this.conversationBus.orchestratorPort = boundPort;
             this.log.info('orchestrator_listening', { port: boundPort, surfaces: ['ws', 'sse', '/api/v1/state', '/livez', '/readyz', '/metrics'] });
+            this.agentRuntimeSupervisor.start(boundPort, 'orchestrator_listening');
         });
 
         this.hardware.start();
@@ -678,6 +695,7 @@ export class MeshOrchestrator extends EventEmitter implements OrchestratorContex
 
     public close() {
         this.apiRouter.close();
+        this.agentRuntimeSupervisor.stop('orchestrator_close');
         this.resourceGovernor.stop();
         this.stopInterAgentChatLoop();
         this.personaLoader.stop();
@@ -736,6 +754,9 @@ export class MeshOrchestrator extends EventEmitter implements OrchestratorContex
             dropped_tasks: droppedTasks,
             dropped_traces: droppedTraces,
         });
+        if (this.agentRuntimeSupervisor.parkOnIdle()) {
+            this.agentRuntimeSupervisor.stop('resource_idle');
+        }
     }
 
     private enterActiveMode(event: ResourceModeChange): void {
@@ -743,6 +764,7 @@ export class MeshOrchestrator extends EventEmitter implements OrchestratorContex
         if (this.interAgentChatEnabled) {
             this.startInterAgentChatLoop();
         }
+        this.agentRuntimeSupervisor.start(this.boundPort, 'resource_active');
         this.log.info('resource_mode_active', { reason: event.reason });
         this.broadcast({
             type: 'resource_mode',

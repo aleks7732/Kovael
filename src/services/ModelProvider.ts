@@ -1,5 +1,9 @@
 import { ChairRegistry } from './ChairRegistry.js';
 import crypto from 'node:crypto';
+import {
+    secureChairDispatchBody,
+    verifyChairReplyProof,
+} from './ChairDispatchSecurity.js';
 
 export interface ChatMessage {
     role: 'system' | 'user' | 'assistant';
@@ -157,11 +161,70 @@ export const DEFAULT_DISPATCH_POLICY: DispatchPolicy = {
     baseBackoffMs: 250,
 };
 
+export type ChairReplyStatus = 'succeeded' | 'failed';
+
+export interface ChairReplySubmission {
+    requestId: string;
+    agentId: string;
+    claimSessionId: string;
+    replyProof: string;
+    topicId?: string;
+    content?: string;
+    status?: ChairReplyStatus;
+    error?: string;
+}
+
+export interface ChairDispatchReceipt {
+    requestId: string;
+    topicId: string;
+    agentId: string;
+    claimSessionId: string;
+    status: ChairReplyStatus;
+    receivedAt: number;
+    proofVerified: boolean;
+    error?: string;
+}
+
+export type ChairReplySubmitResult =
+    | { ok: true; receipt: ChairDispatchReceipt }
+    | { ok: false; status: number; code: string };
+
+export class ChairBridgeReplyFailure extends Error {
+    constructor(
+        message: string,
+        public readonly receipt: ChairDispatchReceipt,
+    ) {
+        super(message);
+    }
+}
+
+interface ResolvedChairReply {
+    content: string;
+    receipt: ChairDispatchReceipt;
+}
+
+interface PendingChairReply {
+    requestId: string;
+    topicId: string;
+    agentId: string;
+    claimSessionId: string;
+    replyProofSecret: string;
+    createdAt: number;
+    resolve: (reply: ResolvedChairReply) => void;
+    reject: (err: Error) => void;
+}
+
 const RETRYABLE_STATUS: ReadonlySet<number> = new Set([429, 502, 503, 504]);
 
+function replyTimeoutMs(): number {
+    const parsed = Number(process.env.KOVAEL_CHAIR_REPLY_TIMEOUT_MS);
+    return Number.isFinite(parsed) ? Math.max(5_000, Math.min(600_000, Math.floor(parsed))) : 30_000;
+}
+
 export class ChairBridgeProvider implements ModelProvider {
-    private static pendingReplies = new Map<string, (reply: string) => void>();
+    private static pendingReplies = new Map<string, PendingChairReply>();
     private readonly policy: DispatchPolicy;
+    private lastDispatchReceipt: ChairDispatchReceipt | null = null;
 
     constructor(
         public id: string,
@@ -176,14 +239,83 @@ export class ChairBridgeProvider implements ModelProvider {
      * Receive and route reply from HTTP webhook endpoint back to the suspended stream promise.
      */
     public static submitReply(topicId: string, agentId: string, content: string): boolean {
-        const key = `${topicId}:${agentId}`;
-        const resolver = this.pendingReplies.get(key);
-        if (resolver) {
-            resolver(content);
-            this.pendingReplies.delete(key);
-            return true;
+        const matches = Array.from(this.pendingReplies.entries())
+            .filter(([, pending]) => pending.topicId === topicId && pending.agentId === agentId);
+        if (matches.length !== 1) return false;
+
+        const [requestId, pending] = matches[0];
+        this.pendingReplies.delete(requestId);
+        pending.resolve({
+            content,
+            receipt: {
+                requestId,
+                topicId,
+                agentId,
+                claimSessionId: pending.claimSessionId,
+                status: 'succeeded',
+                receivedAt: Date.now(),
+                proofVerified: false,
+            },
+        });
+        return true;
+    }
+
+    public static submitReplyForRequest(
+        input: ChairReplySubmission,
+        activeClaimSessionId?: string,
+    ): ChairReplySubmitResult {
+        const pending = this.pendingReplies.get(input.requestId);
+        if (!pending) {
+            return { ok: false, status: 404, code: 'unknown_chair_dispatch_request' };
         }
-        return false;
+        if (pending.agentId !== input.agentId || (input.topicId !== undefined && pending.topicId !== input.topicId)) {
+            return { ok: false, status: 409, code: 'wrong_chair_dispatch_target' };
+        }
+        if (pending.claimSessionId !== input.claimSessionId) {
+            return { ok: false, status: 409, code: 'wrong_claim_session' };
+        }
+        if (activeClaimSessionId !== undefined && activeClaimSessionId !== pending.claimSessionId) {
+            return { ok: false, status: 409, code: 'stale_chair_claim_session' };
+        }
+        const proofVerified = verifyChairReplyProof({
+            requestId: input.requestId,
+            claimSessionId: input.claimSessionId,
+            replyProofSecret: pending.replyProofSecret,
+            replyProof: input.replyProof,
+        });
+        if (!proofVerified) {
+            return { ok: false, status: 401, code: 'invalid_reply_proof' };
+        }
+
+        const status = input.status ?? 'succeeded';
+        const error = typeof input.error === 'string' && input.error.trim().length > 0
+            ? input.error.trim()
+            : undefined;
+        const receipt: ChairDispatchReceipt = {
+            requestId: input.requestId,
+            topicId: pending.topicId,
+            agentId: pending.agentId,
+            claimSessionId: pending.claimSessionId,
+            status,
+            receivedAt: Date.now(),
+            proofVerified,
+            error,
+        };
+
+        this.pendingReplies.delete(input.requestId);
+        if (status === 'failed') {
+            pending.reject(new ChairBridgeReplyFailure(
+                error ?? input.content ?? `Chair Bridge runtime failure for agent "${pending.agentId}".`,
+                receipt,
+            ));
+        } else {
+            pending.resolve({ content: input.content ?? '', receipt });
+        }
+        return { ok: true, receipt };
+    }
+
+    public getLastReceipt(): ChairDispatchReceipt | null {
+        return this.lastDispatchReceipt ? { ...this.lastDispatchReceipt } : null;
     }
 
     /**
@@ -199,6 +331,7 @@ export class ChairBridgeProvider implements ModelProvider {
         body: string,
         parentSignal: AbortSignal | undefined,
         requestId: string,
+        headers: Record<string, string> = {},
     ): Promise<void> {
         let lastErr: Error = new Error('chair bridge dispatch: no attempts ran');
         for (let attempt = 0; attempt < this.policy.maxAttempts; attempt += 1) {
@@ -217,8 +350,8 @@ export class ChairBridgeProvider implements ModelProvider {
                 response = await fetch(url, {
                     method: 'POST',
                     headers: {
-                        'content-type': 'application/json',
                         'x-kovael-request-id': requestId,
+                        ...headers,
                     },
                     body,
                     signal: ctrl.signal,
@@ -279,21 +412,35 @@ export class ChairBridgeProvider implements ModelProvider {
             throw err;
         }
 
-        const key = `${topicId}:${agentId}`;
+        const requestId = crypto.randomUUID();
+        const claimSessionId = claim.sessionId;
+        const replyProofSecret = crypto.randomBytes(32).toString('hex');
 
         // Reply timeout captured here so the dispatch-failure path can
         // cancel it. Leaving it inside the Promise closure would leak a
         // ghost 30s timer per failed dispatch.
         let replyTimer: NodeJS.Timeout | undefined;
-        const replyReceived = new Promise<string>((resolve, reject) => {
+        const replyReceived = new Promise<ResolvedChairReply>((resolve, reject) => {
             replyTimer = setTimeout(() => {
-                ChairBridgeProvider.pendingReplies.delete(key);
-                reject(new Error(`Chair Bridge timeout: Agent "${agentId}" did not reply in 30 seconds.`));
-            }, 30000);
+                ChairBridgeProvider.pendingReplies.delete(requestId);
+                reject(new Error(`Chair Bridge timeout: Agent "${agentId}" did not reply in ${Math.round(replyTimeoutMs() / 1000)} seconds.`));
+            }, replyTimeoutMs());
 
-            ChairBridgeProvider.pendingReplies.set(key, (content: string) => {
-                if (replyTimer) clearTimeout(replyTimer);
-                resolve(content);
+            ChairBridgeProvider.pendingReplies.set(requestId, {
+                requestId,
+                topicId,
+                agentId,
+                claimSessionId,
+                replyProofSecret,
+                createdAt: Date.now(),
+                resolve: (reply) => {
+                    if (replyTimer) clearTimeout(replyTimer);
+                    resolve(reply);
+                },
+                reject: (err) => {
+                    if (replyTimer) clearTimeout(replyTimer);
+                    reject(err);
+                },
             });
         });
 
@@ -306,18 +453,23 @@ export class ChairBridgeProvider implements ModelProvider {
                 topicId,
                 agentId,
                 replyUrl,
-                requestId: crypto.randomUUID(),
+                requestId,
+                claimSessionId,
+                replyProofSecret,
             };
+            const secured = secureChairDispatchBody(payload, requestId);
 
-            await this.postWithRetry(claim.inboxUrl, JSON.stringify(payload), opts.signal, payload.requestId);
+            await this.postWithRetry(claim.inboxUrl, secured.body, opts.signal, requestId, secured.headers);
         } catch (err: any) {
             if (replyTimer) clearTimeout(replyTimer);
-            ChairBridgeProvider.pendingReplies.delete(key);
+            ChairBridgeProvider.pendingReplies.delete(requestId);
             throw new Error(`Chair Bridge dispatch failed for agent "${agentId}": ${err.message}`);
         }
 
         // Await the external agent to post back to /api/v1/chairs/reply
-        const replyContent = await replyReceived;
+        const reply = await replyReceived;
+        this.lastDispatchReceipt = reply.receipt;
+        const replyContent = reply.content;
 
         // Simulate streaming out the returned response
         const words = replyContent.split(' ');

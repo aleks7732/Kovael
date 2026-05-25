@@ -2,7 +2,7 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import { render, cleanup, screen, fireEvent } from '@testing-library/react';
 import { AgentRosterPanel } from '../../src/components/AgentRosterPanel';
-import type { AgentRosterCard, HardwareTelemetry } from '../../src/store/useWarRoomStore';
+import type { AgentHubHealth, AgentRosterCard, AgentRuntimeSnapshot, HardwareTelemetry } from '../../src/store/useWarRoomStore';
 
 afterEach(() => cleanup());
 
@@ -214,5 +214,97 @@ describe('AgentRosterPanel', () => {
         // 12000 / 1024 = 11.71875 → ".7 / 23 GB"
         // The component renders "11.7 / 23 GB"; match loosely on the number.
         expect(screen.getByText(/11\.7\s*\/\s*23\s*GB/i)).toBeTruthy();
+    });
+
+    it('shows managed runtime controls, state, pid, and hub health for a running agent', () => {
+        const onLifecycleAction = vi.fn();
+        const runtimes: AgentRuntimeSnapshot = {
+            enabled: true,
+            parkOnIdle: true,
+            configured: 1,
+            running: 1,
+            updatedAt: 1779262000000,
+            agents: {
+                shaev: {
+                    agentId: 'shaev',
+                    runtime: 'claude-shaev',
+                    running: true,
+                    pid: 4242,
+                    hubPath: 'I:\\Kovael\\.kovael\\agents\\shaev\\agent-hub.sqlite',
+                    status: 'running',
+                    managed: true,
+                },
+            },
+        };
+        const hubHealthByAgent: Record<string, AgentHubHealth> = {
+            shaev: {
+                agentId: 'shaev',
+                status: 'ok',
+                dispatches: 3,
+                running: 1,
+                succeeded: 2,
+                failed: 0,
+                memories: 4,
+                checkedAt: 1779262020000,
+            },
+        };
+
+        render(
+            <AgentRosterPanel
+                {...defaultProps}
+                roster={[card('shaev', { name: 'Shaev' })]}
+                hardware={null}
+                agentRuntimes={runtimes}
+                hubHealthByAgent={hubHealthByAgent}
+                pendingLifecycleActions={{}}
+                lifecycleErrors={{}}
+                onLifecycleAction={onLifecycleAction}
+            />,
+        );
+
+        expect(screen.getByText('RUNNING')).toBeTruthy();
+        expect(screen.getByText('PID 4242')).toBeTruthy();
+        expect(screen.getByText('HUB OK')).toBeTruthy();
+        expect(screen.getByTitle(/3 dispatches/i)).toBeTruthy();
+
+        const start = screen.getByRole('button', { name: /^Start Shaev$/i }) as HTMLButtonElement;
+        const stop = screen.getByRole('button', { name: /^Stop Shaev$/i }) as HTMLButtonElement;
+        const restart = screen.getByRole('button', { name: /^Restart Shaev$/i }) as HTMLButtonElement;
+        expect(start.disabled).toBe(true);
+        expect(stop.disabled).toBe(false);
+        expect(restart.disabled).toBe(false);
+
+        fireEvent.click(stop);
+        expect(onLifecycleAction).toHaveBeenCalledWith('shaev', 'stop');
+    });
+
+    it('surfaces lifecycle errors and disabled reasons without color-only state', () => {
+        const runtimes: AgentRuntimeSnapshot = {
+            enabled: false,
+            parkOnIdle: true,
+            configured: 0,
+            running: 0,
+            updatedAt: 1779262000000,
+            agents: {},
+        };
+
+        render(
+            <AgentRosterPanel
+                {...defaultProps}
+                roster={[card('nyx-codex', { name: 'Nyx-Codex' })]}
+                hardware={null}
+                agentRuntimes={runtimes}
+                hubHealthByAgent={{}}
+                pendingLifecycleActions={{}}
+                lifecycleErrors={{ 'nyx-codex': 'spawn failed' }}
+                onLifecycleAction={() => {}}
+            />,
+        );
+
+        expect(screen.getByText('UNMANAGED')).toBeTruthy();
+        expect(screen.getByText(/spawn failed/i)).toBeTruthy();
+        const start = screen.getByRole('button', { name: /^Start Nyx-Codex$/i }) as HTMLButtonElement;
+        expect(start.disabled).toBe(true);
+        expect(start.getAttribute('title')).toMatch(/lifecycle supervision is disabled/i);
     });
 });

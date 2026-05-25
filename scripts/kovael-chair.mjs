@@ -11,7 +11,7 @@
  *     --id nyx-codex \
  *     --provider "OpenAI Codex CLI" \
  *     --capabilities filesystem,git \
- *     [--trust 2] [--host http://localhost:8080] [--note "rapid mode"]
+ *     [--trust 2] [--host http://localhost:8080] [--note "rapid mode"] [--inbox-url http://127.0.0.1:9001/inbox]
  *
  * One-shot probe mode (claim+release immediately, no heartbeat loop):
  *   node scripts/kovael-chair.mjs --id nyx-codex --provider "Codex" --probe
@@ -53,6 +53,8 @@ function parseArgs(argv) {
         } else if (key === 'trust') {
             const n = Number.parseInt(next, 10);
             if (!Number.isNaN(n)) args.trust = n;
+        } else if (key === 'inbox-url') {
+            args.inboxUrl = next;
         } else {
             args[key] = next;
         }
@@ -73,7 +75,7 @@ function resolveBearerToken(args) {
 
 function usageAndExit(reason) {
     if (reason) console.error(`kovael-chair: ${reason}`);
-    console.error('Usage: node scripts/kovael-chair.mjs --id <agent-id> --provider "<human-readable>" [--capabilities a,b,c] [--trust 1|2|3] [--host http://localhost:8080] [--note "..."] [--probe] [--with-token | --token <value>]');
+    console.error('Usage: node scripts/kovael-chair.mjs --id <agent-id> --provider "<human-readable>" [--capabilities a,b,c] [--trust 1|2|3] [--host http://localhost:8080] [--note "..."] [--inbox-url http://127.0.0.1:9001/inbox] [--probe] [--with-token | --token <value>]');
     process.exit(2);
 }
 
@@ -110,6 +112,8 @@ async function main() {
     };
     if (args.trust !== undefined) claimBody.trustTier = args.trust;
     if (args.note) claimBody.note = args.note;
+    if (args.inboxUrl) claimBody.inboxUrl = args.inboxUrl;
+    if (args.inbox) claimBody.inboxUrl = args.inbox;
 
     let claim;
     try {

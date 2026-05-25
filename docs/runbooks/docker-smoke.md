@@ -25,6 +25,10 @@ present).
 - Free TCP port `8081` on the host (override with `KOVAEL_SMOKE_PORT=...`).
 - `curl` for the manual `/livez` probe (the scripted flow uses `fetch` from
   Node).
+- Supervised local runtimes remain disabled for this smoke. Do not set
+  `KOVAEL_AGENT_RUNTIMES_ENABLED=true` unless the image includes the adapter
+  script, the selected runtime CLIs, and a writable local volume for
+  `KOVAEL_AGENT_HUB_DIR`.
 
 ## One-shot scripted flow
 
@@ -128,3 +132,8 @@ referencing this runbook and the iteration that regressed it.
   `/api/v1/state`, which is the gated surface — `/livez` is the unauthenticated
   liveness probe and is what this runbook polls. The two disagreeing is fine
   and expected when `KOVAEL_API_TOKEN` is set.
+- **Local runtime adapters fail in Docker.** The production image is
+  orchestrator-first. App-managed adapters need runtime binaries, the adapter
+  script, `KOVAEL_API_TOKEN`/`KOVAEL_CHAIR_DISPATCH_SECRET` secret injection
+  when enabled, and a writable local hub mount. Per-agent hubs are local edge
+  logs, not distributed or shared container state.

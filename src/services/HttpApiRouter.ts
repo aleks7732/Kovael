@@ -7,6 +7,7 @@ import { handleComfyRequest } from './http/ComfyRoutes.js';
 import { handleTracesRequest } from './http/TraceRoutes.js';
 import { handleChairRequest } from './http/ChairRoutes.js';
 import { handleConversationRequest } from './http/ConversationRoutes.js';
+import { handleAgentRuntimeRequest } from './http/AgentRuntimeRoutes.js';
 
 export interface HttpTimeouts {
     headersTimeout: number;
@@ -96,6 +97,10 @@ export class HttpApiRouter {
                 handleChairRequest(this.context, req, res, ROUTE_DEPS);
                 return;
             }
+            if (url.startsWith('/api/v1/agent-runtimes')) {
+                handleAgentRuntimeRequest(this.context, req, res, ROUTE_DEPS);
+                return;
+            }
             if (url.startsWith('/api/v1/conversations')) {
                 handleConversationRequest(this.context, req, res, ROUTE_DEPS);
                 return;
@@ -168,6 +173,7 @@ export class HttpApiRouter {
     private noteInteractiveActivity(req: http.IncomingMessage, rawUrl: string): void {
         const pathname = rawUrl.split('?')[0] || '/';
         if (pathname.startsWith('/api/v1/chairs')) return;
+        if (pathname.startsWith('/api/v1/agent-runtimes')) return;
         this.context.resourceGovernor.noteActivity(`http:${req.method ?? 'GET'}:${pathname}`);
     }
 }

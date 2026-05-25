@@ -1,5 +1,6 @@
 import { memo, useEffect, useMemo, useState } from 'react';
-import { useWarRoomStore, type AgentRosterCard, type HardwareTelemetry, type InterAgentMessage, type RateLimitSnapshot } from '../store/useWarRoomStore';
+import { Play, RotateCw, Square } from 'lucide-react';
+import { useWarRoomStore, type AgentHubHealth, type AgentLifecycleAction, type AgentRosterCard, type AgentRuntimeEntry, type AgentRuntimeSnapshot, type HardwareTelemetry, type InterAgentMessage, type RateLimitSnapshot } from '../store/useWarRoomStore';
 import { AgentAvatarFallback } from './AgentAvatarFallback';
 import { AgentIdentityBadge } from './AgentIdentityBadge';
 
@@ -10,8 +11,13 @@ interface AgentRosterPanelProps {
   interAgentChatEnabled: boolean;
   interAgentChatMode: 'technical' | 'interests';
   interAgentMessages: InterAgentMessage[];
+  agentRuntimes?: AgentRuntimeSnapshot | null;
+  hubHealthByAgent?: Record<string, AgentHubHealth>;
+  pendingLifecycleActions?: Record<string, AgentLifecycleAction>;
+  lifecycleErrors?: Record<string, string | undefined>;
   onToggleInterAgentChat: (enabled: boolean) => void;
   onChangeInterAgentChatMode: (mode: 'technical' | 'interests') => void;
+  onLifecycleAction?: (agentId: string, action: AgentLifecycleAction) => void;
   width?: number;
 }
 
@@ -117,10 +123,158 @@ const ChairBeaconPill = memo(({ card }: { card: AgentRosterCard }) => {
 });
 ChairBeaconPill.displayName = 'AgentRosterPanel.ChairBeaconPill';
 
-const AgentCard = memo(({ card, rate, isSpeaking }: { card: AgentRosterCard; rate?: RateLimitSnapshot; isSpeaking?: boolean }) => {
+interface RuntimeView {
+  entry?: AgentRuntimeEntry;
+  label: string;
+  detail: string;
+  disabledReason: string | null;
+  tone: string;
+}
+
+const RUNTIME_TONE: Record<string, string> = {
+  RUNNING: 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30',
+  STOPPED: 'bg-white/[0.04] text-command-warm-white/50 border-white/10',
+  STARTING: 'bg-command-accent/15 text-command-accent border-command-accent/30',
+  STOPPING: 'bg-amber-500/15 text-amber-300 border-amber-500/30',
+  FAILED: 'bg-red-500/15 text-red-300 border-red-500/30',
+  UNMANAGED: 'bg-white/[0.04] text-command-warm-white/45 border-white/10',
+  UNKNOWN: 'bg-white/[0.04] text-command-warm-white/45 border-white/10',
+};
+
+function runtimeView(card: AgentRosterCard, snapshot?: AgentRuntimeSnapshot | null): RuntimeView {
+  if (!snapshot) {
+    return {
+      label: 'UNKNOWN',
+      detail: 'awaiting lifecycle snapshot',
+      disabledReason: 'Awaiting lifecycle snapshot',
+      tone: RUNTIME_TONE.UNKNOWN,
+    };
+  }
+  if (!snapshot.enabled) {
+    return {
+      label: 'UNMANAGED',
+      detail: 'lifecycle disabled',
+      disabledReason: 'Lifecycle supervision is disabled',
+      tone: RUNTIME_TONE.UNMANAGED,
+    };
+  }
+  const entry = snapshot.agents[card.id];
+  if (!entry) {
+    return {
+      label: 'UNMANAGED',
+      detail: 'no managed runtime configured',
+      disabledReason: 'No managed runtime configured for this agent',
+      tone: RUNTIME_TONE.UNMANAGED,
+    };
+  }
+  const label = entry.status.toUpperCase();
+  return {
+    entry,
+    label,
+    detail: entry.runtime,
+    disabledReason: null,
+    tone: RUNTIME_TONE[label] ?? RUNTIME_TONE.UNKNOWN,
+  };
+}
+
+function lifecycleDisabledReason(action: AgentLifecycleAction, view: RuntimeView, pending?: AgentLifecycleAction): string | null {
+  if (pending) return `${pending} already pending`;
+  if (view.disabledReason) return view.disabledReason;
+  if (!view.entry) return 'No managed runtime configured for this agent';
+  if (view.entry.status === 'starting' || view.entry.status === 'stopping') return `Runtime is ${view.entry.status}`;
+  if (action === 'start' && view.entry.running) return 'Runtime already running';
+  if (action === 'stop' && !view.entry.running) return 'Runtime is already stopped';
+  return null;
+}
+
+const HubHealthPill = memo(({ health }: { health?: AgentHubHealth }) => {
+  const status = (health?.status ?? 'unknown').toUpperCase();
+  const tone = health?.status === 'ok'
+    ? 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30'
+    : health?.status === 'stale'
+      ? 'bg-amber-500/15 text-amber-300 border-amber-500/30'
+      : health?.status === 'error'
+        ? 'bg-red-500/15 text-red-300 border-red-500/30'
+        : 'bg-white/[0.04] text-command-warm-white/45 border-white/10';
+  const dispatches = health?.dispatches ?? 0;
+  const title = health
+    ? `Hub ${status.toLowerCase()} · ${dispatches} dispatches · ${health.memories ?? 0} memories${health.error ? ` · ${health.error}` : ''}`
+    : 'Hub health unknown';
+  return (
+    <span
+      className={`t-mono text-[8px] font-semibold tracking-wider px-1.5 py-0.5 rounded border ${tone}`}
+      title={title}
+    >
+      HUB {status}
+    </span>
+  );
+});
+HubHealthPill.displayName = 'AgentRosterPanel.HubHealthPill';
+
+const LifecycleButton = memo(({
+  action,
+  label,
+  agentName,
+  pending,
+  disabledReason,
+  onClick,
+}: {
+  action: AgentLifecycleAction;
+  label: string;
+  agentName: string;
+  pending?: AgentLifecycleAction;
+  disabledReason: string | null;
+  onClick: () => void;
+}) => {
+  const Icon = action === 'start' ? Play : action === 'stop' ? Square : RotateCw;
+  const isPending = pending === action;
+  const disabled = Boolean(disabledReason);
+  return (
+    <button
+      type="button"
+      aria-label={`${label} ${agentName}`}
+      aria-busy={isPending}
+      disabled={disabled}
+      onClick={disabled ? undefined : onClick}
+      title={disabledReason ?? `${label} managed runtime for ${agentName}`}
+      className="inline-flex h-6 w-6 items-center justify-center rounded border border-white/10 bg-black/30 text-command-warm-white/65 transition-colors hover:border-command-accent/40 hover:text-command-accent disabled:cursor-not-allowed disabled:opacity-35 disabled:hover:border-white/10 disabled:hover:text-command-warm-white/65"
+    >
+      <Icon size={12} aria-hidden className={isPending ? 'animate-pulse' : ''} />
+    </button>
+  );
+});
+LifecycleButton.displayName = 'AgentRosterPanel.LifecycleButton';
+
+const AgentCard = memo(({
+  card,
+  rate,
+  isSpeaking,
+  agentRuntimes,
+  hubHealth,
+  pendingLifecycleAction,
+  lifecycleError,
+  onLifecycleAction,
+}: {
+  card: AgentRosterCard;
+  rate?: RateLimitSnapshot;
+  isSpeaking?: boolean;
+  agentRuntimes?: AgentRuntimeSnapshot | null;
+  hubHealth?: AgentHubHealth;
+  pendingLifecycleAction?: AgentLifecycleAction;
+  lifecycleError?: string;
+  onLifecycleAction?: (agentId: string, action: AgentLifecycleAction) => void;
+}) => {
   const status = STATUS_STYLE[card.status];
   const hasLiveBeacon = card.chair?.presence === 'live';
   const [imgError, setImgError] = useState(false);
+  const runtime = runtimeView(card, agentRuntimes);
+  const handlerUnavailable = onLifecycleAction ? null : 'Lifecycle action handler unavailable';
+  const startDisabled = handlerUnavailable ?? lifecycleDisabledReason('start', runtime, pendingLifecycleAction);
+  const stopDisabled = handlerUnavailable ?? lifecycleDisabledReason('stop', runtime, pendingLifecycleAction);
+  const restartDisabled = handlerUnavailable ??
+    (pendingLifecycleAction
+      ? `${pendingLifecycleAction} already pending`
+      : runtime.disabledReason ?? (runtime.entry?.status === 'starting' || runtime.entry?.status === 'stopping' ? `Runtime is ${runtime.entry.status}` : null));
 
   return (
   <div 
@@ -173,6 +327,20 @@ const AgentCard = memo(({ card, rate, isSpeaking }: { card: AgentRosterCard; rat
 
         <div data-roster-beacon-row className="mt-1 flex min-w-0 flex-wrap items-center gap-1.5">
           <ChairBeaconPill card={card} />
+          <span
+            role="status"
+            aria-live="polite"
+            className={`t-mono text-[8px] font-semibold tracking-wider px-1.5 py-0.5 rounded border ${runtime.tone}`}
+            title={runtime.detail}
+          >
+            {runtime.label}
+          </span>
+          {runtime.entry?.pid ? (
+            <span className="t-mono text-[8px] font-semibold tracking-wider px-1.5 py-0.5 rounded bg-white/[0.04] text-command-warm-white/45 border border-white/5">
+              PID {runtime.entry.pid}
+            </span>
+          ) : null}
+          <HubHealthPill health={hubHealth} />
           {rate && (
             <span
               className={`t-mono text-[8.5px] font-semibold tracking-wide px-1.5 py-0.5 rounded tabular-nums ${
@@ -188,6 +356,12 @@ const AgentCard = memo(({ card, rate, isSpeaking }: { card: AgentRosterCard; rat
             </span>
           )}
         </div>
+
+        {lifecycleError && (
+          <div role="status" className="mt-1 text-[9px] font-semibold text-red-300 leading-tight">
+            Lifecycle error: {lifecycleError}
+          </div>
+        )}
 
         <div className="flex items-center justify-between mt-1">
           <span className={`text-[10.5px] font-semibold ${status.text}`}>{status.label}</span>
@@ -218,6 +392,37 @@ const AgentCard = memo(({ card, rate, isSpeaking }: { card: AgentRosterCard; rat
       {card.trust_tier !== undefined && TRUST_LABEL[card.trust_tier] && (
         <span className="text-[8.5px] font-medium text-command-warm-white/50 tracking-wide">{TRUST_LABEL[card.trust_tier]}</span>
       )}
+    </div>
+    <div className="mt-2 flex items-center justify-between gap-2 border-t border-white/5 pt-2 pl-[48px]">
+      <span className="t-mono text-[8px] uppercase tracking-wider text-command-warm-white/40 truncate">
+        {runtime.detail}
+      </span>
+      <div className="flex items-center gap-1">
+        <LifecycleButton
+          action="start"
+          label="Start"
+          agentName={card.name}
+          pending={pendingLifecycleAction}
+          disabledReason={startDisabled}
+          onClick={() => onLifecycleAction?.(card.id, 'start')}
+        />
+        <LifecycleButton
+          action="stop"
+          label="Stop"
+          agentName={card.name}
+          pending={pendingLifecycleAction}
+          disabledReason={stopDisabled}
+          onClick={() => onLifecycleAction?.(card.id, 'stop')}
+        />
+        <LifecycleButton
+          action="restart"
+          label="Restart"
+          agentName={card.name}
+          pending={pendingLifecycleAction}
+          disabledReason={restartDisabled}
+          onClick={() => onLifecycleAction?.(card.id, 'restart')}
+        />
+      </div>
     </div>
   </div>
   );
@@ -295,8 +500,13 @@ export const AgentRosterPanel = memo(({
   interAgentChatEnabled,
   interAgentChatMode,
   interAgentMessages,
+  agentRuntimes = null,
+  hubHealthByAgent = {},
+  pendingLifecycleActions = {},
+  lifecycleErrors = {},
   onToggleInterAgentChat,
   onChangeInterAgentChatMode,
+  onLifecycleAction,
   width = 300,
 }: AgentRosterPanelProps) => {
   const activeTopicId = useWarRoomStore((s) => s.activeTopicId);
@@ -367,6 +577,11 @@ export const AgentRosterPanel = memo(({
             card={card} 
             rate={rateLimits[card.id]} 
             isSpeaking={activeSpeakerId === card.id} 
+            agentRuntimes={agentRuntimes}
+            hubHealth={hubHealthByAgent[card.id]}
+            pendingLifecycleAction={pendingLifecycleActions[card.id]}
+            lifecycleError={lifecycleErrors[card.id]}
+            onLifecycleAction={onLifecycleAction}
           />
         ))
       )}
