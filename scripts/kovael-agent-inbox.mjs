@@ -14,12 +14,14 @@ import os from 'node:os';
 import path from 'node:path';
 import process from 'node:process';
 import { spawn } from 'node:child_process';
+import { DatabaseSync } from 'node:sqlite';
 
 const SECURITY_VERSION = 'kovael-chair-v1';
 const ENCRYPTION_ALG = 'A256GCM';
 const MAX_CLOCK_SKEW_MS = 5 * 60_000;
 const MAX_INBOX_BYTES = 512 * 1024;
 const DEFAULT_RUNTIME_TIMEOUT_MS = 180_000;
+const HUB_SCHEMA_VERSION = '1';
 
 function parseArgs(argv) {
     const args = { capabilities: [] };
@@ -59,7 +61,7 @@ function parseArgs(argv) {
 
 function usageAndExit(reason) {
     if (reason) console.error(`kovael-agent-inbox: ${reason}`);
-    console.error('Usage: node scripts/kovael-agent-inbox.mjs --id <agent-id> --provider "<provider>" --runtime codex|codex-openclaw|claude-shaev [--host http://127.0.0.1:8080] [--port 0] [--cwd I:\\Kovael] [--model sonnet]');
+    console.error('Usage: node scripts/kovael-agent-inbox.mjs --id <agent-id> --provider "<provider>" --runtime codex|codex-openclaw|claude-shaev [--host http://127.0.0.1:8080] [--port 0] [--cwd I:\\Kovael] [--hub-path .kovael/agents/<id>/agent-hub.sqlite] [--model sonnet]');
     process.exit(2);
 }
 
@@ -226,8 +228,103 @@ async function postJson(hostOrUrl, pathOrBody, bodyOrToken, maybeToken) {
 function childEnv() {
     const env = { ...process.env };
     delete env.KOVAEL_CHAIR_DISPATCH_SECRET;
+    delete env.KOVAEL_API_TOKEN;
     delete env.KOVAEL_TOKEN;
     return env;
+}
+
+class AgentHub {
+    constructor(cfg) {
+        this.agentId = cfg.id;
+        this.dbPath = cfg.hubPath;
+        fs.mkdirSync(path.dirname(this.dbPath), { recursive: true });
+        this.db = new DatabaseSync(this.dbPath);
+        this.db.exec(`
+            PRAGMA journal_mode = WAL;
+            PRAGMA synchronous = NORMAL;
+            PRAGMA busy_timeout = 5000;
+            CREATE TABLE IF NOT EXISTS agent_hub_meta (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL,
+                updated_at INTEGER NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS agent_dispatches (
+                request_id TEXT PRIMARY KEY,
+                topic_id TEXT NOT NULL,
+                agent_id TEXT NOT NULL,
+                status TEXT NOT NULL CHECK(status IN ('accepted', 'running', 'succeeded', 'failed')),
+                received_at INTEGER NOT NULL,
+                started_at INTEGER,
+                completed_at INTEGER,
+                payload_json TEXT NOT NULL,
+                reply_content TEXT,
+                error TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_agent_dispatches_status
+                ON agent_dispatches(status, received_at);
+            CREATE TABLE IF NOT EXISTS agent_memory (
+                key TEXT PRIMARY KEY,
+                value_json TEXT NOT NULL,
+                updated_at INTEGER NOT NULL
+            );
+        `);
+        const now = Date.now();
+        const meta = this.db.prepare(`
+            INSERT INTO agent_hub_meta (key, value, updated_at)
+            VALUES (?, ?, ?)
+            ON CONFLICT(key) DO UPDATE SET
+                value = excluded.value,
+                updated_at = excluded.updated_at
+        `);
+        meta.run('schema_version', HUB_SCHEMA_VERSION, now);
+        meta.run('agent_id', this.agentId, now);
+    }
+
+    recordInbound(payload) {
+        if (payload.agentId !== this.agentId) {
+            throw new Error(`wrong agent hub: expected ${this.agentId}, got ${payload.agentId}`);
+        }
+        const result = this.db.prepare(`
+            INSERT OR IGNORE INTO agent_dispatches (
+                request_id, topic_id, agent_id, status, received_at, payload_json
+            ) VALUES (?, ?, ?, 'accepted', ?, ?)
+        `).run(
+            payload.requestId,
+            payload.topicId,
+            payload.agentId,
+            Date.now(),
+            JSON.stringify(payload),
+        );
+        return { duplicate: result.changes === 0 };
+    }
+
+    markRunning(requestId) {
+        this.db.prepare(`
+            UPDATE agent_dispatches
+            SET status = 'running', started_at = COALESCE(started_at, ?), error = NULL
+            WHERE request_id = ?
+        `).run(Date.now(), requestId);
+    }
+
+    markSucceeded(requestId, replyContent) {
+        this.db.prepare(`
+            UPDATE agent_dispatches
+            SET status = 'succeeded', completed_at = ?, reply_content = ?, error = NULL
+            WHERE request_id = ?
+        `).run(Date.now(), replyContent, requestId);
+    }
+
+    markFailed(requestId, error) {
+        this.db.prepare(`
+            UPDATE agent_dispatches
+            SET status = 'failed', completed_at = ?, error = ?
+            WHERE request_id = ?
+        `).run(Date.now(), String(error).slice(0, 4000), requestId);
+    }
+
+    close() {
+        this.db.close();
+    }
 }
 
 function spawnCapture(command, args, options) {
@@ -417,7 +514,7 @@ function writeJson(res, status, body) {
     res.end(JSON.stringify(body));
 }
 
-async function startInbox(cfg) {
+async function startInbox(cfg, hub) {
     const inFlight = new Set();
     const server = http.createServer(async (req, res) => {
         if (req.socket.remoteAddress !== '127.0.0.1' && req.socket.remoteAddress !== '::1' && req.socket.remoteAddress !== '::ffff:127.0.0.1') {
@@ -447,6 +544,12 @@ async function startInbox(cfg) {
         }
 
         const requestId = typeof payload.requestId === 'string' ? payload.requestId : crypto.randomUUID();
+        payload.requestId = requestId;
+        const recorded = hub.recordInbound(payload);
+        if (recorded.duplicate) {
+            writeJson(res, 202, { accepted: true, duplicate: true, requestId });
+            return;
+        }
         if (inFlight.has(requestId)) {
             writeJson(res, 202, { accepted: true, duplicate: true });
             return;
@@ -454,9 +557,14 @@ async function startInbox(cfg) {
         inFlight.add(requestId);
         writeJson(res, 202, { accepted: true, requestId });
 
+        hub.markRunning(requestId);
         runRuntime(payload, cfg)
-            .then((content) => sendReply(payload, cfg, content))
+            .then(async (content) => {
+                await sendReply(payload, cfg, content);
+                hub.markSucceeded(requestId, content);
+            })
             .catch(async (err) => {
+                hub.markFailed(requestId, err.message);
                 console.error(`kovael-agent-inbox: ${cfg.id} dispatch failed: ${err.message}`);
                 await sendReply(payload, cfg, `Runtime error from ${cfg.id}: ${err.message}`).catch((replyErr) => {
                     console.error(`kovael-agent-inbox: ${cfg.id} reply failed: ${replyErr.message}`);
@@ -497,9 +605,11 @@ async function main() {
         capabilities: args.capabilities,
         trust: args.trust,
         note: args.note,
+        hubPath: args['hub-path'] || path.join(args.cwd || process.cwd(), '.kovael', 'agents', args.id, 'agent-hub.sqlite'),
     };
     const token = bearerToken(args);
-    const server = await startInbox(cfg);
+    const hub = new AgentHub(cfg);
+    const server = await startInbox(cfg, hub);
     const address = server.address();
     if (!address || typeof address === 'string') throw new Error('failed to bind inbox');
     const inboxUrl = `http://127.0.0.1:${address.port}/inbox`;
@@ -522,6 +632,7 @@ async function main() {
 
     if (args.probe) {
         await postJson(cfg.host, '/api/v1/chairs/release', { agentId: cfg.id, sessionId }, token).catch(() => null);
+        hub.close();
         server.close();
         return;
     }
@@ -536,7 +647,10 @@ async function main() {
         } catch (err) {
             console.error(`kovael-agent-inbox: ${cfg.id} release failed (${reason}): ${err.message}`);
         } finally {
-            server.close(() => process.exit(0));
+            server.close(() => {
+                hub.close();
+                process.exit(0);
+            });
         }
     };
     process.on('SIGINT', () => release('SIGINT'));

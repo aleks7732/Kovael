@@ -37,6 +37,62 @@ to that inbox URL and the agent answers by posting `{ topicId, agentId,
 content }` to `/api/v1/chairs/reply`. Without an `inboxUrl`, Kovael records
 that the chair was presence-only instead of fabricating a live agent reply.
 
+## Durable local inboxes
+
+`scripts/kovael-agent-inbox.mjs` is the loopback-only runtime adapter for
+live chair handoff. It starts a local `/inbox`, claims the chair with that
+`inboxUrl`, runs the configured runtime for each dispatch, and returns the
+answer through `/api/v1/chairs/reply`.
+
+Each inbox adapter also opens a local SQLite hub file:
+
+```text
+.kovael/agents/<agent-id>/agent-hub.sqlite
+```
+
+The hub records inbound dispatches, runtime status, replies, errors,
+idempotency keys, and simple memory rows. It is a local edge log only:
+Kovael's orchestrator remains authoritative for chairs, topics,
+conversation history, and routing. Stopping the app releases chairs and
+stops the adapter process, but it does not delete the hub file.
+
+```bash
+node scripts/kovael-agent-inbox.mjs \
+  --id nyx-codex \
+  --provider "OpenAI · Codex CLI" \
+  --runtime codex \
+  --host http://127.0.0.1:8080 \
+  --hub-path .kovael/agents/nyx-codex/agent-hub.sqlite
+```
+
+Set `KOVAEL_CHAIR_DISPATCH_SECRET` to a 32+ character secret to require
+encrypted dispatch and reply envelopes. The adapter keeps that secret for
+the inbox/reply boundary and strips it before launching the underlying
+agent runtime.
+
+## App-managed lifecycle
+
+The orchestrator can supervise local inbox adapters directly. This is
+off by default:
+
+```bash
+KOVAEL_AGENT_RUNTIMES_ENABLED=true npm start
+```
+
+Default supervised agents are `shaev` and `nyx-codex`. `nyx-openclaw` is
+not started by the default local lifecycle profile. Useful overrides:
+
+| Variable | Default | Purpose |
+|---|---:|---|
+| `KOVAEL_AGENT_RUNTIMES_ENABLED` | `false` | Start local inbox adapters with the orchestrator |
+| `KOVAEL_AGENT_RUNTIME_IDS` | `shaev,nyx-codex` | Comma-separated supervised agent IDs |
+| `KOVAEL_AGENT_HUB_DIR` | `.kovael/agents` | Parent directory for per-agent hub files |
+| `KOVAEL_AGENT_RUNTIMES_PARK_ON_IDLE` | `true` | Stop adapters in idle mode and restart on active use |
+
+If `KOVAEL_API_TOKEN` gates the HTTP API, the supervisor passes it to the
+adapter as `KOVAEL_TOKEN` and uses `--with-token`; the adapter removes
+both token variables before spawning the underlying runtime.
+
 ## Quick-start — `kovael-chair` helper
 
 A zero-dependency Node wrapper is included at `scripts/kovael-chair.mjs`.

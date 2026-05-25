@@ -39,6 +39,7 @@ build/
 
 # Per-cycle workspaces (Symphony §9)
 .kovael/workspaces/
+.kovael/agents/
 .kovael/learning_matrix.json
 
 # Gemini Metadata

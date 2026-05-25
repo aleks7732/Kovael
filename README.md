@@ -57,6 +57,11 @@ a React cockpit for live mesh visibility.
   profile while UI/API/WS traffic or task work is present, then shifts to
   a lightweight idle profile that pauses hardware polling and trims
   replay buffers.
+- **Local agent lifecycle** - optional supervised inbox adapters start
+  with the orchestrator and stop on orchestrator shutdown or idle parking.
+  Each adapter owns a local SQLite hub file for durable per-agent inbox,
+  reply, idempotency, and memory rows; the orchestrator remains the
+  source of truth for chairs, topics, and routing.
 - **ComfyUI bridge** - portrait/render requests can be routed to ComfyUI
   when enabled, with deterministic SVG fallback behavior for local
   development and tests.
@@ -102,6 +107,24 @@ claimed without preventing idle trimming. Useful overrides:
 | `KOVAEL_RESOURCE_SWEEP_INTERVAL_MS` | `5000` | How often the idle guard checks for inactivity |
 | `KOVAEL_RESOURCE_IDLE_TASK_RETAIN` | `20` | Task replay entries retained after idle trimming |
 | `KOVAEL_RESOURCE_IDLE_TRACE_RETAIN` | `20` | Trace entries retained after idle trimming |
+
+Local agent runtime supervision is opt-in. When enabled, Kovael starts
+the local loopback inbox adapters for `shaev` and `nyx-codex` by default,
+passes each adapter a persistent `agent-hub.sqlite`, and releases the
+chairs cleanly when the orchestrator stops. `nyx-openclaw` is intentionally
+not part of the default supervised set.
+
+| Variable | Default | Purpose |
+|---|---:|---|
+| `KOVAEL_AGENT_RUNTIMES_ENABLED` | `false` | Start supervised local agent inbox adapters with the orchestrator |
+| `KOVAEL_AGENT_RUNTIME_IDS` | `shaev,nyx-codex` | Comma-separated supervised agent IDs; unknown IDs are ignored |
+| `KOVAEL_AGENT_HUB_DIR` | `.kovael/agents` | Directory for per-agent `agent-hub.sqlite` files |
+| `KOVAEL_AGENT_RUNTIMES_PARK_ON_IDLE` | `true` | Stop supervised adapters when resource mode enters idle; restart on active use |
+| `KOVAEL_CHAIR_DISPATCH_SECRET` | unset | Enables encrypted chair dispatch/reply envelopes; use at least 32 characters |
+
+Agent hub files are local edge logs, not distributed sources of truth.
+They can be backed up, pruned, or rebuilt without corrupting global
+orchestrator state. Do not put hub files on a network filesystem.
 
 Claim a chair from another shell:
 
@@ -191,6 +214,12 @@ portraits under [packages/spatial-war-room/public/agents/](./packages/spatial-wa
   storage bounded and sanitized.
 - [src/services/ResourceGovernor.ts](./src/services/ResourceGovernor.ts)
   owns active/idle resource transitions for the server.
+- [src/services/AgentRuntimeSupervisor.ts](./src/services/AgentRuntimeSupervisor.ts)
+  owns opt-in local inbox adapter lifecycles, including idle parking and
+  non-destructive stop/start behavior.
+- [src/services/AgentHubStore.ts](./src/services/AgentHubStore.ts)
+  owns the per-agent SQLite hub schema used for local dispatch durability,
+  idempotency, reply receipts, and memory rows.
 - [packages/spatial-war-room/](./packages/spatial-war-room/) is the
   React 19 cockpit: Vite 8, Tailwind 4, xyflow 12, Zustand 5, and
   lucide-react.

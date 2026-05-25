@@ -38,6 +38,7 @@ export function handleStateSnapshot(
         tokens: { ...context.tokenTotals },
         rateLimits: context.rateLimits?.allSnapshots() ?? [],
         resourceMode: context.resourceGovernor.snapshot(),
+        agentRuntimes: context.agentRuntimeSupervisor.snapshot(),
         chairs: {
             stats: context.chairs.stats(),
             roster: context.chairs.snapshot(),
