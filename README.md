@@ -120,18 +120,22 @@ elevated `codex-openclaw` runtime profile.
 |---|---:|---|
 | `KOVAEL_AGENT_RUNTIMES_ENABLED` | `false` | Start supervised local agent inbox adapters with the orchestrator |
 | `KOVAEL_AGENT_RUNTIME_IDS` | `shaev,nyx-codex` | Comma-separated supervised agent IDs; unknown IDs are ignored |
-| `KOVAEL_AGENT_HUB_DIR` | `.kovael/agents` | Directory for per-agent `agent-hub.sqlite` files |
+| `KOVAEL_AGENT_HUB_DIR` | OS app data | Directory for per-agent `agent-hub.sqlite` files; default is outside the workspace |
 | `KOVAEL_AGENT_RUNTIMES_PARK_ON_IDLE` | `true` | Stop supervised adapters when resource mode enters idle; restart on active use |
 | `KOVAEL_API_TOKEN` | unset | Bearer-token gate for `/api/v1/*`, `/metrics`, and authenticated WebSocket upgrades; forwarded to supervised adapters as `KOVAEL_TOKEN` |
 | `KOVAEL_CHAIR_DISPATCH_SECRET` | unset | Enables encrypted chair dispatch/reply envelopes; use at least 32 characters |
-| `KOVAEL_AGENT_HUB_SECRET` | unset | Reserved for hub-at-rest protection in deployments that enable hub sealing/encryption; keep it in secret storage |
+| `KOVAEL_AGENT_HUB_SECRET` | unset | Enables agent hub field encryption; required for app-managed runtimes and should be at least 32 characters |
+| `KOVAEL_AGENT_HUB_ENCRYPTION` | optional | Set to `required` for manual adapters that must refuse plaintext hub storage |
 
 Agent hub files are local edge logs, not distributed sources of truth.
 They can be backed up, pruned, or rebuilt without corrupting global
 orchestrator state. Do not put hub files on a network filesystem, shared
 replica volume, or cloud-synced directory. Do not build distributed
 replication around per-agent hubs; the orchestrator remains authoritative
-for chairs, topics, conversation history, and routing. See
+for chairs, topics, conversation history, and routing. Managed runtimes
+require hub encryption, and the default hub directory is outside the
+workspace. SQLite WAL sidecars (`-wal` and `-shm`) are runtime files and
+must stay on local disk with the main hub database. See
 [docs/runbooks/agent-hub-lifecycle.md](./docs/runbooks/agent-hub-lifecycle.md)
 for operator setup and validation.
 
@@ -252,9 +256,10 @@ Supervised local agent runtimes are disabled in container and Kubernetes
 defaults. Enable `KOVAEL_AGENT_RUNTIMES_ENABLED` there only after adding a
 writable local hub volume, the adapter/runtime binaries needed by the
 selected agents, and secret injection for `KOVAEL_API_TOKEN`,
-`KOVAEL_CHAIR_DISPATCH_SECRET`, and any hub secret material. The default
-Kubernetes deployment is two replicas; per-agent hubs are local edge logs,
-not distributed replication state.
+`KOVAEL_CHAIR_DISPATCH_SECRET`, and `KOVAEL_AGENT_HUB_SECRET`. Managed
+runtimes require hub encryption. The default Kubernetes deployment is two
+replicas; per-agent hubs are local edge logs, not distributed replication
+state.
 
 Kubernetes manifests live under [deploy/k8s/](./deploy/k8s/):
 
@@ -332,9 +337,9 @@ for reporting and setup details.
 
 Runtime secrets are operator-managed. Use `KOVAEL_API_TOKEN` for the HTTP
 and WebSocket gate, `KOVAEL_CHAIR_DISPATCH_SECRET` for encrypted chair
-dispatch/reply envelopes, and `KOVAEL_AGENT_HUB_SECRET` only for
-deployments that enable hub-at-rest protection. Never commit these values
-or bake them into the Docker image.
+dispatch/reply envelopes, and `KOVAEL_AGENT_HUB_SECRET` for active hub
+field encryption. Never commit these values or bake them into the Docker
+image.
 
 ## Documentation
 

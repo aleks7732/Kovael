@@ -21,6 +21,8 @@ const ENCRYPTION_ALG = 'A256GCM';
 const MAX_CLOCK_SKEW_MS = 5 * 60_000;
 const MAX_INBOX_BYTES = 512 * 1024;
 const DEFAULT_RUNTIME_TIMEOUT_MS = 180_000;
+const AGENT_HUB_SECRET_ENV = 'KOVAEL_AGENT_HUB_SECRET';
+const AGENT_HUB_ENCRYPTION_ENV = 'KOVAEL_AGENT_HUB_ENCRYPTION';
 
 function parseArgs(argv) {
     const args = { capabilities: [] };
@@ -36,6 +38,10 @@ function parseArgs(argv) {
         }
         if (key === 'with-token') {
             args.withToken = true;
+            continue;
+        }
+        if (key === 'require-hub-encryption') {
+            args.requireHubEncryption = true;
             continue;
         }
         if (!takesValue) continue;
@@ -75,6 +81,11 @@ function bearerToken(args) {
 function dispatchSecret() {
     const secret = process.env.KOVAEL_CHAIR_DISPATCH_SECRET?.trim();
     return secret && secret.length >= 32 ? secret : null;
+}
+
+function hubEncryptionRequired(args = {}) {
+    return args.requireHubEncryption ||
+        process.env[AGENT_HUB_ENCRYPTION_ENV]?.trim().toLowerCase() === 'required';
 }
 
 function keyFor(secret) {
@@ -233,14 +244,6 @@ async function postJson(hostOrUrl, pathOrBody, bodyOrToken, maybeToken) {
     return { status: res.status, body: parsed };
 }
 
-function childEnv() {
-    const env = { ...process.env };
-    delete env.KOVAEL_CHAIR_DISPATCH_SECRET;
-    delete env.KOVAEL_API_TOKEN;
-    delete env.KOVAEL_TOKEN;
-    return env;
-}
-
 class SharedAgentHub {
     constructor(store) {
         this.store = store;
@@ -254,8 +257,11 @@ class SharedAgentHub {
         this.store.markDispatchRunning(requestId);
     }
 
-    markSucceeded(requestId, replyContent) {
-        this.store.markDispatchSucceeded(requestId, replyContent);
+    markSucceeded(requestId, replyContent, payload) {
+        this.store.markDispatchSucceeded(requestId, replyContent, {
+            claimSessionId: payload?.claimSessionId,
+            replyProofSecret: payload?.replyProofSecret,
+        });
     }
 
     markFailed(requestId, error) {
@@ -268,36 +274,56 @@ class SharedAgentHub {
 }
 
 async function createAgentHub(cfg) {
+    const mod = await loadDistService(cfg, 'AgentHubStore.js', 'AgentHubStore');
+    if (typeof mod.AgentHubStore !== 'function') {
+        throw new Error('AgentHubStore build artifact does not export AgentHubStore');
+    }
+    return new SharedAgentHub(new mod.AgentHubStore({
+        agentId: cfg.id,
+        dbPath: cfg.hubPath,
+        encryptionRequired: cfg.requireHubEncryption,
+    }));
+}
+
+async function loadRuntimeSecurity(cfg) {
+    const mod = await loadDistService(cfg, 'RuntimeSecurity.js', 'RuntimeSecurity');
+    const required = ['buildAgentRuntimeEnv', 'redactSensitiveText', 'safeRuntimeFailureMessage'];
+    for (const name of required) {
+        if (typeof mod[name] !== 'function') {
+            throw new Error(`RuntimeSecurity build artifact does not export ${name}`);
+        }
+    }
+    return {
+        buildAgentRuntimeEnv: mod.buildAgentRuntimeEnv,
+        redactSensitiveText: mod.redactSensitiveText,
+        safeRuntimeFailureMessage: mod.safeRuntimeFailureMessage,
+    };
+}
+
+async function loadDistService(cfg, fileName, label) {
     const candidates = [
-        path.join(cfg.cwd, 'dist', 'services', 'AgentHubStore.js'),
-        path.join(process.cwd(), 'dist', 'services', 'AgentHubStore.js'),
+        path.join(cfg.cwd, 'dist', 'services', fileName),
+        path.join(process.cwd(), 'dist', 'services', fileName),
     ];
     const failures = [];
     for (const candidate of candidates) {
         if (!fs.existsSync(candidate)) continue;
         try {
-            const mod = await import(pathToFileURL(candidate).href);
-            if (typeof mod.AgentHubStore === 'function') {
-                return new SharedAgentHub(new mod.AgentHubStore({
-                    agentId: cfg.id,
-                    dbPath: cfg.hubPath,
-                }));
-            }
-            failures.push(`${candidate}: AgentHubStore export missing`);
+            return await import(pathToFileURL(candidate).href);
         } catch (err) {
             failures.push(`${candidate}: ${err instanceof Error ? err.message : String(err)}`);
         }
     }
     const searched = candidates.join(', ');
     const details = failures.length > 0 ? ` Details: ${failures.join('; ')}` : '';
-    throw new Error(`AgentHubStore build artifact is required before starting kovael-agent-inbox. Run npm run build first. Searched: ${searched}.${details}`);
+    throw new Error(`${label} build artifact is required before starting kovael-agent-inbox. Run npm run build first. Searched: ${searched}.${details}`);
 }
 
 function spawnCapture(command, args, options) {
     return new Promise((resolve, reject) => {
         const child = spawn(command, args, {
             cwd: options.cwd,
-            env: childEnv(),
+            env: options.env,
             shell: false,
             windowsHide: true,
         });
@@ -368,6 +394,7 @@ async function runCodex(payload, cfg, sandbox) {
     ];
     const result = await spawnCapture(invocation.command, args, {
         cwd: cfg.cwd,
+        env: cfg.runtimeSecurity.buildAgentRuntimeEnv(process.env),
         timeoutMs: cfg.timeoutMs,
     });
     let text = '';
@@ -421,6 +448,7 @@ async function runClaudeShaev(payload, cfg) {
     ];
     const result = await spawnCapture(command, args, {
         cwd: cfg.cwd,
+        env: cfg.runtimeSecurity.buildAgentRuntimeEnv(process.env),
         timeoutMs: cfg.timeoutMs,
     });
     const raw = result.stdout.trim() || result.stderr.trim();
@@ -456,6 +484,20 @@ async function runFakeDeterministic(payload, cfg) {
         .digest('hex')
         .slice(0, 16);
     return `FAKE_RUNTIME_REPLY agent=${cfg.id} request=${requestId} topic=${topicId} hash=${inputHash}`;
+}
+
+function safePathSegment(value) {
+    return value.replace(/[^a-zA-Z0-9._-]/g, '_');
+}
+
+function defaultAgentHubRoot() {
+    if (process.env.KOVAEL_AGENT_HUB_DIR) return process.env.KOVAEL_AGENT_HUB_DIR;
+    if (process.platform === 'win32') {
+        const localAppData = process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local');
+        return path.join(localAppData, 'Kovael', 'agents');
+    }
+    const dataHome = process.env.XDG_DATA_HOME || path.join(os.homedir(), '.local', 'share');
+    return path.join(dataHome, 'kovael', 'agents');
 }
 
 async function runRuntime(payload, cfg) {
@@ -561,19 +603,20 @@ async function startInbox(cfg, hub) {
         runRuntime(payload, cfg)
             .then(async (content) => {
                 await sendReply(payload, cfg, content);
-                hub.markSucceeded(requestId, content);
+                hub.markSucceeded(requestId, content, payload);
             })
             .catch(async (err) => {
-                hub.markFailed(requestId, err.message);
-                console.error(`kovael-agent-inbox: ${cfg.id} dispatch failed: ${err.message}`);
+                const safeError = cfg.runtimeSecurity.safeRuntimeFailureMessage(cfg.id, err);
+                hub.markFailed(requestId, safeError);
+                console.error(`kovael-agent-inbox: ${cfg.id} dispatch failed: ${safeError}`);
                 await sendReply(
                     payload,
                     cfg,
-                    `Runtime error from ${cfg.id}: ${err.message}`,
+                    safeError,
                     'failed',
-                    err.message,
+                    safeError,
                 ).catch((replyErr) => {
-                    console.error(`kovael-agent-inbox: ${cfg.id} reply failed: ${replyErr.message}`);
+                    console.error(`kovael-agent-inbox: ${cfg.id} reply failed: ${cfg.runtimeSecurity.redactSensitiveText(replyErr)}`);
                 });
             })
             .finally(() => {
@@ -611,8 +654,13 @@ async function main() {
         capabilities: args.capabilities,
         trust: args.trust,
         note: args.note,
-        hubPath: args['hub-path'] || path.join(args.cwd || process.cwd(), '.kovael', 'agents', args.id, 'agent-hub.sqlite'),
+        hubPath: args['hub-path'] || path.join(defaultAgentHubRoot(), safePathSegment(args.id), 'agent-hub.sqlite'),
+        requireHubEncryption: hubEncryptionRequired(args),
     };
+    if (cfg.requireHubEncryption && (!process.env[AGENT_HUB_SECRET_ENV] || process.env[AGENT_HUB_SECRET_ENV].trim().length < 32)) {
+        throw new Error(`${AGENT_HUB_SECRET_ENV} must be at least 32 characters when hub encryption is required`);
+    }
+    cfg.runtimeSecurity = await loadRuntimeSecurity(cfg);
     const token = bearerToken(args);
     const hub = await createAgentHub(cfg);
     const server = await startInbox(cfg, hub);

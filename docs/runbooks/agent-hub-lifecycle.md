@@ -13,7 +13,7 @@ It is disabled by default. When enabled, the orchestrator starts local
 with an `inboxUrl`, and each adapter writes a local SQLite hub:
 
 ```text
-.kovael/agents/<agent-id>/agent-hub.sqlite
+%LOCALAPPDATA%\Kovael\agents\<agent-id>\agent-hub.sqlite
 ```
 
 The hub is a local edge log. It records inbound dispatches, runtime state,
@@ -31,6 +31,8 @@ authoritative for global mesh state.
   `codex` for `nyx-codex`, `claude` for `shaev`, or explicit binary paths via
   the relevant runtime environment.
 - `KOVAEL_AGENT_HUB_DIR` points at local disk, not a network filesystem.
+- `KOVAEL_AGENT_HUB_SECRET` is set to a 32+ character value before
+  `KOVAEL_AGENT_RUNTIMES_ENABLED=true`; managed runtimes require hub encryption.
 
 Do not place hub files on SMB, NFS, cloud-synced folders, or shared volume
 replicas. SQLite WAL semantics and per-agent idempotency are local-process
@@ -63,11 +65,12 @@ posture for that session.
 | --- | --- | --- |
 | `KOVAEL_AGENT_RUNTIMES_ENABLED` | no | Set `true` to let the orchestrator start local inbox adapters. |
 | `KOVAEL_AGENT_RUNTIME_IDS` | no | Comma-separated allowlist of supervised agents. Unknown IDs are ignored. |
-| `KOVAEL_AGENT_HUB_DIR` | no | Local parent directory for per-agent `agent-hub.sqlite` files. Defaults to `.kovael/agents`. |
+| `KOVAEL_AGENT_HUB_DIR` | no | Local parent directory for per-agent `agent-hub.sqlite` files. Defaults to OS app data outside the workspace. |
 | `KOVAEL_AGENT_RUNTIMES_PARK_ON_IDLE` | no | When `true`, idle resource mode stops adapters and active mode restarts them. |
 | `KOVAEL_API_TOKEN` | recommended | Gates `/api/v1/*`, `/metrics`, and authenticated WebSocket upgrades. The supervisor forwards it to adapters as `KOVAEL_TOKEN`. |
 | `KOVAEL_CHAIR_DISPATCH_SECRET` | recommended for real prompts | 32+ character secret for encrypted chair dispatch and reply envelopes. Adapters strip it before launching underlying runtimes. |
-| `KOVAEL_AGENT_HUB_SECRET` | reserved / deployment-specific | Hub-at-rest secret material when a build enables hub sealing or encryption. Until that path is active, protect hub SQLite files with local filesystem permissions. |
+| `KOVAEL_AGENT_HUB_SECRET` | required for managed runtimes | Active field-encryption secret for hub payloads, replies, receipts, and memory. |
+| `KOVAEL_AGENT_HUB_ENCRYPTION` | no | Set to `required` for manual adapters that must reject plaintext hub storage. |
 
 Keep all three secrets out of source, container images, shell history, and PR
 descriptions. Use a local secret manager, CI secret, or Kubernetes Secret as
@@ -85,24 +88,27 @@ Expected:
 
 - `agentRuntimes.enabled` is `true`.
 - `agentRuntimes.running` matches the configured local adapters.
-- `agentRuntimes.agents[*].hubPath` points under the local hub directory.
+- `agentRuntimes.agents[*].hubPath` points under the local hub directory outside the workspace by default.
 - `/api/v1/chairs` shows the supervised chairs as claimed.
 
 Check local hub files:
 
 ```bash
-dir .kovael\agents
+dir "%LOCALAPPDATA%\Kovael\agents"
 ```
 
 Expected on Windows defaults:
 
 ```text
-.kovael\agents\shaev\agent-hub.sqlite
-.kovael\agents\nyx-codex\agent-hub.sqlite
+%LOCALAPPDATA%\Kovael\agents\shaev\agent-hub.sqlite
+%LOCALAPPDATA%\Kovael\agents\nyx-codex\agent-hub.sqlite
 ```
 
-WAL sidecar files may appear beside the hub. They are runtime data and remain
-gitignored.
+WAL sidecar files (`agent-hub.sqlite-wal` and `agent-hub.sqlite-shm`) may
+appear beside the hub. They are runtime data, remain gitignored, and must stay
+on the same local disk as the main hub file. For backups, checkpoint or use a
+SQLite-aware backup flow instead of blindly copying only the main file during
+writes.
 
 ## Stop
 
@@ -130,6 +136,7 @@ even while the cockpit and API are quiet:
 
 ```bash
 KOVAEL_AGENT_RUNTIMES_ENABLED=true \
+KOVAEL_AGENT_HUB_SECRET=change-me-to-a-32-character-secret \
 KOVAEL_AGENT_RUNTIMES_PARK_ON_IDLE=false \
 npm start
 ```
@@ -171,6 +178,7 @@ and any runtime CLIs, and mount a writable local hub directory:
 docker run --rm -p 8080:8080 \
   -e KOVAEL_AGENT_RUNTIMES_ENABLED=true \
   -e KOVAEL_AGENT_HUB_DIR=/data/agents \
+  -e KOVAEL_AGENT_HUB_SECRET="$KOVAEL_AGENT_HUB_SECRET" \
   -v kovael-agent-hubs:/data/agents \
   kovael:latest
 ```
@@ -181,7 +189,8 @@ own hub files, which is not distributed replication. If a specialized operator
 deployment needs local adapters, use one replica, an explicit writable volume
 for `KOVAEL_AGENT_HUB_DIR`, runtime binaries in the image, and Secrets for
 `KOVAEL_API_TOKEN`, `KOVAEL_CHAIR_DISPATCH_SECRET`, and any
-`KOVAEL_AGENT_HUB_SECRET` material.
+`KOVAEL_AGENT_HUB_SECRET` material. The hub volume must be local disk for that
+pod, not a network filesystem shared by replicas.
 
 ## Troubleshooting
 
@@ -189,7 +198,8 @@ for `KOVAEL_AGENT_HUB_DIR`, runtime binaries in the image, and Secrets for
   is set in the same environment that launches `npm start`.
 - A configured agent is missing: confirm the ID is supported by the local
   lifecycle profile. `nyx-openclaw` requires explicit elevated opt-in work.
-- Hubs do not appear: confirm `KOVAEL_AGENT_HUB_DIR` is writable local disk.
+- Hubs do not appear: confirm `KOVAEL_AGENT_HUB_DIR` is writable local disk and
+  `KOVAEL_AGENT_HUB_SECRET` is set for managed runtimes.
 - Chairs claim then disappear: check adapter stderr in orchestrator logs and
   confirm the runtime CLI can launch from the configured working directory.
 - Dispatch fails with security errors: set the same

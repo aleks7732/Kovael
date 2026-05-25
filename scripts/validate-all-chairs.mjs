@@ -18,6 +18,7 @@ import process from 'node:process';
 import { DatabaseSync } from 'node:sqlite';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { AgentCards } from '../dist/AgentCards.js';
+import { AgentHubStore } from '../dist/services/AgentHubStore.js';
 import { MeshOrchestrator } from '../dist/MeshOrchestrator.js';
 import { ChairBridgeProvider } from '../dist/services/ModelProvider.js';
 
@@ -135,13 +136,13 @@ async function waitForHubDispatch(hubPath, topicId, timeoutMs = 7000) {
             try {
                 last = db.prepare(`
                     SELECT request_id, topic_id, agent_id, status, received_at, started_at,
-                           completed_at, payload_json, reply_content, error
+                           completed_at, error
                     FROM agent_dispatches
                     WHERE topic_id = ?
                     ORDER BY received_at DESC
                     LIMIT 1
                 `).get(topicId);
-                if (last?.status === 'succeeded') return last;
+                if (last?.status === 'succeeded') return decodeHubRow(hubPath, last);
             } finally {
                 db.close();
             }
@@ -155,12 +156,13 @@ function readHubRows(hubPath) {
     if (!existsSync(hubPath)) return [];
     const db = new DatabaseSync(hubPath);
     try {
-        return db.prepare(`
+        const rows = db.prepare(`
             SELECT request_id, topic_id, agent_id, status, received_at, started_at,
-                   completed_at, payload_json, reply_content, error
+                   completed_at, error
             FROM agent_dispatches
             ORDER BY received_at ASC
         `).all();
+        return rows.map((row) => decodeHubRow(hubPath, row));
     } finally {
         db.close();
     }
@@ -175,8 +177,7 @@ function validateHubLifecycle(agentId, row, topicId, streamedText) {
     if (!Number.isFinite(row?.completed_at)) errors.push('missing completed_at');
     if (row?.started_at < row?.received_at) errors.push('started_at before received_at');
     if (row?.completed_at < row?.started_at) errors.push('completed_at before started_at');
-    let payload = {};
-    try { payload = JSON.parse(row?.payload_json || '{}'); } catch { errors.push('payload_json invalid'); }
+    const payload = row?.payload || {};
     if (payload.agentId !== agentId) errors.push(`payload agent=${payload.agentId}`);
     if (payload.topicId !== topicId) errors.push(`payload topic=${payload.topicId}`);
     if (payload.requestId !== row?.request_id) errors.push('payload/request row mismatch');
@@ -184,6 +185,21 @@ function validateHubLifecycle(agentId, row, topicId, streamedText) {
     if (!String(row?.reply_content || '').includes(expectedNeedle)) errors.push('reply missing deterministic proof');
     if (row?.reply_content !== streamedText) errors.push('streamed reply differs from hub reply');
     return errors;
+}
+
+function decodeHubRow(hubPath, row) {
+    const store = new AgentHubStore({ agentId: row.agent_id, dbPath: hubPath });
+    try {
+        const dispatch = store.getDispatch(row.request_id);
+        return {
+            ...row,
+            payload: dispatch?.payload ?? {},
+            reply_content: dispatch?.replyContent ?? null,
+            error: dispatch?.error ?? row.error,
+        };
+    } finally {
+        store.close();
+    }
 }
 
 function validateDispatchReceipt(agentId, row, claim, receipt) {

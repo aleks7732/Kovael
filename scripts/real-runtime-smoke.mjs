@@ -20,6 +20,7 @@ import process from 'node:process';
 import { DatabaseSync } from 'node:sqlite';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { AgentCards } from '../dist/AgentCards.js';
+import { AgentHubStore } from '../dist/services/AgentHubStore.js';
 import { MeshOrchestrator } from '../dist/MeshOrchestrator.js';
 import { ChairBridgeProvider } from '../dist/services/ModelProvider.js';
 
@@ -296,13 +297,13 @@ async function waitForHubDispatch(hubPath, topicId, timeoutMs = 10_000) {
             try {
                 last = db.prepare(`
                     SELECT request_id, topic_id, agent_id, status, received_at, started_at,
-                           completed_at, payload_json, reply_content, error
+                           completed_at, error
                     FROM agent_dispatches
                     WHERE topic_id = ?
                     ORDER BY received_at DESC
                     LIMIT 1
                 `).get(topicId);
-                if (last?.status === 'succeeded') return last;
+                if (last?.status === 'succeeded') return decodeHubRow(hubPath, last);
             } finally {
                 db.close();
             }
@@ -310,6 +311,21 @@ async function waitForHubDispatch(hubPath, topicId, timeoutMs = 10_000) {
         await sleep(100);
     }
     throw new Error(`hub dispatch for topic ${topicId} did not succeed; last=${JSON.stringify(last)}`);
+}
+
+function decodeHubRow(hubPath, row) {
+    const store = new AgentHubStore({ agentId: row.agent_id, dbPath: hubPath });
+    try {
+        const dispatch = store.getDispatch(row.request_id);
+        return {
+            ...row,
+            payload: dispatch?.payload ?? {},
+            reply_content: dispatch?.replyContent ?? null,
+            error: dispatch?.error ?? row.error,
+        };
+    } finally {
+        store.close();
+    }
 }
 
 function runtimeAvailable(runtime) {

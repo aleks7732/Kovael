@@ -4,16 +4,23 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { AgentHubStore } from '../services/AgentHubStore.js';
+import { chmodLocalPathBestEffort } from '../services/SqlitePathSecurity.js';
 
 describe('AgentHubStore', () => {
     const tempDirs: string[] = [];
     const originalHubSecret = process.env.KOVAEL_AGENT_HUB_SECRET;
+    const originalHubEncryption = process.env.KOVAEL_AGENT_HUB_ENCRYPTION;
 
     afterEach(() => {
         if (originalHubSecret === undefined) {
             delete process.env.KOVAEL_AGENT_HUB_SECRET;
         } else {
             process.env.KOVAEL_AGENT_HUB_SECRET = originalHubSecret;
+        }
+        if (originalHubEncryption === undefined) {
+            delete process.env.KOVAEL_AGENT_HUB_ENCRYPTION;
+        } else {
+            process.env.KOVAEL_AGENT_HUB_ENCRYPTION = originalHubEncryption;
         }
         for (const dir of tempDirs.splice(0)) {
             fs.rmSync(dir, { recursive: true, force: true });
@@ -69,6 +76,30 @@ describe('AgentHubStore', () => {
         expect(hub.recordInboundDispatch(payload).duplicate).toBe(true);
         expect(hub.stats().dispatches).toBe(1);
         hub.close();
+    });
+
+    it('requires a strong hub secret when encryption is required', () => {
+        const dbPath = tempDbPath();
+
+        expect(() => new AgentHubStore({
+            agentId: 'shaev',
+            dbPath,
+            encryptionRequired: true,
+        })).toThrow(/KOVAEL_AGENT_HUB_SECRET.*32 characters/i);
+
+        const hub = new AgentHubStore({
+            agentId: 'shaev',
+            dbPath,
+            encryptionRequired: true,
+            encryptionSecret: '0123456789abcdef0123456789abcdef',
+        });
+        hub.close();
+    });
+
+    it('treats chmod failures as best effort on local hub paths', () => {
+        expect(() => chmodLocalPathBestEffort('agent-hub.sqlite', 0o600, () => {
+            throw new Error('chmod not supported');
+        })).not.toThrow();
     });
 
     it('rejects dispatch payloads for a different agent hub', () => {
@@ -206,6 +237,32 @@ describe('AgentHubStore', () => {
         hub.close();
     });
 
+    it('does not persist reply proof secrets in dispatch payload rows', () => {
+        const dbPath = tempDbPath();
+        const hub = new AgentHubStore({ agentId: 'shaev', dbPath });
+
+        hub.recordInboundDispatch({
+            requestId: 'req-proof-secret',
+            topicId: 'topic-proof-secret',
+            agentId: 'shaev',
+            claimSessionId: 'claim-session',
+            replyProofSecret: 'do-not-store-this-proof-secret',
+            replyUrl: 'http://127.0.0.1:8080/api/v1/chairs/reply',
+        });
+
+        expect(hub.getDispatch('req-proof-secret')?.payload).not.toHaveProperty('replyProofSecret');
+        hub.close();
+
+        const rawDb = new DatabaseSync(dbPath);
+        try {
+            const row = rawDb.prepare('SELECT payload_json FROM agent_dispatches WHERE request_id = ?')
+                .get('req-proof-secret') as { payload_json: string };
+            expect(row.payload_json).not.toContain('do-not-store-this-proof-secret');
+        } finally {
+            rawDb.close();
+        }
+    });
+
     it('tracks runtime attempts and explicit replay timing', () => {
         const dbPath = tempDbPath();
         let now = 100;
@@ -229,6 +286,19 @@ describe('AgentHubStore', () => {
             replayAfter: 1_000,
         });
         hub.close();
+    });
+
+    it('uses WAL mode for file-backed hub databases', () => {
+        const dbPath = tempDbPath();
+        const hub = new AgentHubStore({ agentId: 'shaev', dbPath });
+        const mode = new DatabaseSync(dbPath, { readOnly: true });
+        try {
+            const row = mode.prepare('PRAGMA journal_mode').get() as { journal_mode: string };
+            expect(row.journal_mode.toLowerCase()).toBe('wal');
+        } finally {
+            mode.close();
+            hub.close();
+        }
     });
 
     it('records runtime success, reply outbox, and success receipt atomically', () => {
@@ -335,6 +405,38 @@ describe('AgentHubStore', () => {
         expect(hub.pruneOldReceipts(500)).toBeGreaterThan(0);
         expect(hub.listReceipts('req-prune-sent')).toHaveLength(0);
         hub.close();
+    });
+
+    it('redacts and encrypts runtime failure details before persistence', () => {
+        process.env.KOVAEL_AGENT_HUB_SECRET = '0123456789abcdef0123456789abcdef';
+        const dbPath = tempDbPath();
+        const hub = new AgentHubStore({ agentId: 'shaev', dbPath, now: () => 100 });
+
+        hub.recordInboundDispatch({
+            requestId: 'req-failed-redacted',
+            topicId: 'topic-failed-redacted',
+            agentId: 'shaev',
+            messages: [{ role: 'user', content: 'prompt should not be in failure' }],
+        });
+        hub.markDispatchFailed(
+            'req-failed-redacted',
+            'runtime stderr KOVAEL_SECRET_CANARY=super-secret-value bearer abcdefghijklmnopqrstuvwxyz0123456789abcdef',
+        );
+        expect(hub.getDispatch('req-failed-redacted')?.error).toContain('KOVAEL_SECRET_CANARY=[REDACTED]');
+        hub.close();
+
+        const rawDb = new DatabaseSync(dbPath);
+        try {
+            const row = rawDb.prepare('SELECT error FROM agent_dispatches WHERE request_id = ?')
+                .get('req-failed-redacted') as { error: string };
+            const receipt = rawDb.prepare('SELECT payload_body FROM agent_receipts WHERE request_id = ? ORDER BY created_at DESC LIMIT 1')
+                .get('req-failed-redacted') as { payload_body: string };
+            expect(row.error).not.toContain('super-secret-value');
+            expect(row.error).not.toContain('abcdefghijklmnopqrstuvwxyz0123456789abcdef');
+            expect(receipt.payload_body).not.toContain('super-secret-value');
+        } finally {
+            rawDb.close();
+        }
     });
 
     it('encrypts sensitive payload, reply, outbox, receipt, and memory values when a hub secret is configured', () => {

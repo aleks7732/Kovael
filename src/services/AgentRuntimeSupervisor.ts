@@ -5,6 +5,18 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { AgentCards } from '../AgentCards.js';
 import { Logger, rootLogger } from './Logger.js';
+import {
+    AGENT_HUB_SECRET_ENV,
+    buildAgentAdapterEnv,
+    isHubEncryptionRequired,
+    isValidAgentHubSecret,
+    redactSensitiveText,
+} from './RuntimeSecurity.js';
+import {
+    defaultAgentHubDir,
+    safePathSegment,
+    validateLocalSqlitePath,
+} from './SqlitePathSecurity.js';
 
 export interface AgentRuntimeSpec {
     agentId: string;
@@ -110,7 +122,12 @@ export interface AgentRuntimeControlResult {
     changed: boolean;
     statusCode: 200 | 202 | 404 | 409;
     agent: AgentRuntimeAgentStatus | null;
-    error?: 'agent_runtime_disabled' | 'unknown_agent_runtime' | 'agent_runtime_busy';
+    error?:
+        | 'agent_runtime_disabled'
+        | 'unknown_agent_runtime'
+        | 'agent_runtime_busy'
+        | 'agent_hub_encryption_required'
+        | 'unsafe_agent_hub_dir';
     busy?: {
         accepted: number;
         running: number;
@@ -161,6 +178,9 @@ export class AgentRuntimeSupervisor {
     private readonly env: NodeJS.ProcessEnv;
     private readonly log: Logger;
     private readonly spawn: AgentRuntimeSpawn;
+    private readonly hubEncryptionRequired: boolean;
+    private readonly startupBlocker: NonNullable<AgentRuntimeControlResult['error']> | null;
+    private readonly startupBlockerMessage: string | null;
     private readonly records: Map<string, RuntimeRecord> = new Map();
     private orchestratorPort: number | null = null;
 
@@ -168,14 +188,26 @@ export class AgentRuntimeSupervisor {
         this.enabled = config.enabled ?? false;
         this.parkOnIdleFlag = config.parkOnIdle ?? true;
         this.cwd = config.cwd ?? process.cwd();
-        this.hubDir = config.hubDir ?? path.join(this.cwd, '.kovael', 'agents');
+        this.env = config.env ?? process.env;
+        this.hubDir = config.hubDir ?? defaultAgentHubDir(this.env);
         this.nodeBin = config.nodeBin ?? process.execPath;
         this.scriptPath = config.scriptPath ?? path.join(this.cwd, 'scripts', 'kovael-agent-inbox.mjs');
         this.hostOverride = config.host;
         this.agents = (config.agents ?? defaultAgentRuntimeSpecs()).filter((agent) => agent.enabled !== false);
-        this.env = config.env ?? process.env;
         this.log = config.logger ?? rootLogger;
         this.spawn = config.spawn ?? ((command, args, options) => nodeSpawn(command, args, options));
+        this.hubEncryptionRequired = this.enabled || isHubEncryptionRequired(this.env);
+        const pathCheck = validateLocalSqlitePath(path.join(this.hubDir, 'probe.sqlite'));
+        if (!pathCheck.ok) {
+            this.startupBlocker = 'unsafe_agent_hub_dir';
+            this.startupBlockerMessage = pathCheck.reason ?? 'agent hub directory is unsafe';
+        } else if (this.hubEncryptionRequired && !isValidAgentHubSecret(this.env[AGENT_HUB_SECRET_ENV])) {
+            this.startupBlocker = 'agent_hub_encryption_required';
+            this.startupBlockerMessage = `${AGENT_HUB_SECRET_ENV} must be at least 32 characters for managed runtimes`;
+        } else {
+            this.startupBlocker = null;
+            this.startupBlockerMessage = null;
+        }
         for (const spec of this.agents) {
             const hubPath = this.hubPathFor(spec.agentId);
             this.records.set(spec.agentId, {
@@ -246,6 +278,7 @@ export class AgentRuntimeSupervisor {
         const record = this.records.get(agentId);
         if (!record) return this.controlError('start', 'unknown_agent_runtime', 404, null);
         if (!this.enabled) return this.controlError('start', 'agent_runtime_disabled', 409, record);
+        if (this.startupBlocker) return this.controlError('start', this.startupBlocker, 409, record);
 
         const port = orchestratorPort ?? this.orchestratorPort;
         if (port !== null && port !== undefined) this.orchestratorPort = port;
@@ -312,6 +345,7 @@ export class AgentRuntimeSupervisor {
         const record = this.records.get(agentId);
         if (!record) return this.controlError('restart', 'unknown_agent_runtime', 404, null);
         if (!this.enabled) return this.controlError('restart', 'agent_runtime_disabled', 409, record);
+        if (this.startupBlocker) return this.controlError('restart', this.startupBlocker, 409, record);
 
         const busy = this.busyWork(record);
         if (record.managed && !options.force && (busy.accepted > 0 || busy.running > 0)) {
@@ -365,6 +399,17 @@ export class AgentRuntimeSupervisor {
 
     private spawnRecord(record: RuntimeRecord, orchestratorPort: number, reason: string): boolean {
         if (!this.enabled || record.managed) return false;
+        if (this.startupBlocker) {
+            record.state = 'failed';
+            record.exitedAt = Date.now();
+            record.lastError = this.startupBlockerMessage;
+            this.log.warn('agent_runtime_start_blocked', {
+                agent_id: record.spec.agentId,
+                error: this.startupBlocker,
+                reason: this.startupBlockerMessage,
+            });
+            return false;
+        }
 
         const host = this.hostOverride ?? `http://127.0.0.1:${orchestratorPort}`;
         const generation = record.generation + 1;
@@ -402,7 +447,7 @@ export class AgentRuntimeSupervisor {
                 if (line) {
                     this.log.info('agent_runtime_stderr', {
                         agent_id: spec.agentId,
-                        line: line.slice(0, 500),
+                        line: redactSensitiveText(line).slice(0, 500),
                     });
                 }
             });
@@ -418,7 +463,7 @@ export class AgentRuntimeSupervisor {
             record.managed = null;
             record.state = 'failed';
             record.exitedAt = Date.now();
-            record.lastError = err instanceof Error ? err.message : String(err);
+            record.lastError = redactSensitiveText(err);
             this.log.warn('agent_runtime_spawn_failed', {
                 agent_id: spec.agentId,
                 error: record.lastError,
@@ -513,10 +558,10 @@ export class AgentRuntimeSupervisor {
         record.exitCode = null;
         record.exitSignal = null;
         record.state = 'failed';
-        record.lastError = err.message;
+        record.lastError = redactSensitiveText(err);
         this.log.warn('agent_runtime_spawn_failed', {
             agent_id: record.spec.agentId,
-            error: err.message,
+            error: record.lastError,
             generation,
         });
     }
@@ -602,6 +647,9 @@ export class AgentRuntimeSupervisor {
         if (spec.model) {
             args.push('--model', spec.model);
         }
+        if (this.hubEncryptionRequired) {
+            args.push('--require-hub-encryption');
+        }
         if (this.env.KOVAEL_API_TOKEN || this.env.KOVAEL_TOKEN) {
             args.push('--with-token');
         }
@@ -613,11 +661,7 @@ export class AgentRuntimeSupervisor {
     }
 
     private childEnv(): NodeJS.ProcessEnv {
-        const env = { ...this.env };
-        if (!env.KOVAEL_TOKEN && env.KOVAEL_API_TOKEN) {
-            env.KOVAEL_TOKEN = env.KOVAEL_API_TOKEN;
-        }
-        return env;
+        return buildAgentAdapterEnv(this.env, { requireHubEncryption: this.hubEncryptionRequired });
     }
 }
 
@@ -665,10 +709,6 @@ function readBoolean(value: string | undefined, fallback: boolean): boolean {
     return fallback;
 }
 
-function safePathSegment(value: string): string {
-    return value.replace(/[^a-zA-Z0-9._-]/g, '_');
-}
-
 function positiveTimeout(value: number | undefined): number {
     return typeof value === 'number' && Number.isFinite(value) && value > 0
         ? Math.floor(value)
@@ -686,6 +726,13 @@ function inspectHub(hubPath: string): AgentRuntimeHubSnapshot {
         failed: 0,
         memories: 0,
     };
+    const pathCheck = validateLocalSqlitePath(hubPath);
+    if (!pathCheck.ok) {
+        return {
+            ...empty,
+            error: pathCheck.reason ?? 'agent hub path is unsafe',
+        };
+    }
     if (!fs.existsSync(hubPath)) return empty;
 
     let db: DatabaseSync | null = null;

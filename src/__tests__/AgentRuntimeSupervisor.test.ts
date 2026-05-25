@@ -3,6 +3,7 @@ import { DatabaseSync } from 'node:sqlite';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import { PassThrough } from 'node:stream';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { AgentRuntimeSupervisor } from '../services/AgentRuntimeSupervisor.js';
 import { Logger } from '../services/Logger.js';
@@ -11,8 +12,8 @@ class FakeChild extends EventEmitter {
     public pid: number;
     public killedWith: NodeJS.Signals | undefined;
     public signals: NodeJS.Signals[] = [];
-    public stdout = null;
-    public stderr = null;
+    public stdout: NodeJS.ReadableStream | null = null;
+    public stderr: NodeJS.ReadableStream | null = null;
 
     constructor(
         pid = 4242,
@@ -38,6 +39,7 @@ class FakeChild extends EventEmitter {
 
 describe('AgentRuntimeSupervisor', () => {
     const tempDirs: string[] = [];
+    const hubSecret = '0123456789abcdef0123456789abcdef';
     const logger = new Logger({ service: 'agent-runtime-test', sink: () => undefined });
 
     afterEach(() => {
@@ -52,6 +54,13 @@ describe('AgentRuntimeSupervisor', () => {
         return dir;
     }
 
+    function secureEnv(extra: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
+        return {
+            KOVAEL_AGENT_HUB_SECRET: hubSecret,
+            ...extra,
+        };
+    }
+
     it('starts configured agent inboxes with persistent hub paths and stops them on app shutdown', () => {
         const hubDir = tempDir();
         const spawned: Array<{ command: string; args: string[]; child: FakeChild }> = [];
@@ -59,6 +68,7 @@ describe('AgentRuntimeSupervisor', () => {
             enabled: true,
             cwd: 'I:\\Kovael',
             hubDir,
+            env: secureEnv(),
             agents: [{
                 agentId: 'shaev',
                 provider: 'VantagePoint Local · Hermes 3',
@@ -100,7 +110,7 @@ describe('AgentRuntimeSupervisor', () => {
     it('does not spawn openclaw in the default local lifecycle profile', () => {
         const spawned: unknown[] = [];
         const supervisor = AgentRuntimeSupervisor.fromEnvironment({
-            env: { KOVAEL_AGENT_RUNTIMES_ENABLED: 'true' },
+            env: secureEnv({ KOVAEL_AGENT_RUNTIMES_ENABLED: 'true' }),
             cwd: 'I:\\Kovael',
             logger,
             spawn: (command, args) => {
@@ -121,10 +131,10 @@ describe('AgentRuntimeSupervisor', () => {
 
     it('requires explicit elevated opt-in before supervising openclaw', () => {
         const denied = AgentRuntimeSupervisor.fromEnvironment({
-            env: {
+            env: secureEnv({
                 KOVAEL_AGENT_RUNTIMES_ENABLED: 'true',
                 KOVAEL_AGENT_RUNTIME_IDS: 'nyx-openclaw',
-            },
+            }),
             cwd: 'I:\\Kovael',
             logger,
             spawn: () => new FakeChild(),
@@ -137,11 +147,11 @@ describe('AgentRuntimeSupervisor', () => {
 
         const spawned: Array<{ args: string[] }> = [];
         const allowed = AgentRuntimeSupervisor.fromEnvironment({
-            env: {
+            env: secureEnv({
                 KOVAEL_AGENT_RUNTIMES_ENABLED: 'true',
                 KOVAEL_AGENT_RUNTIME_IDS: 'nyx-openclaw',
                 KOVAEL_ENABLE_ELEVATED_RUNTIMES: 'true',
-            },
+            }),
             cwd: 'I:\\Kovael',
             logger,
             spawn: (_command, args) => {
@@ -156,6 +166,132 @@ describe('AgentRuntimeSupervisor', () => {
         expect(spawned[0].args).toContain('codex-openclaw');
 
         allowed.stop('cleanup');
+    });
+
+    it('places default managed hubs outside the workspace', () => {
+        const cwd = tempDir();
+        const supervisor = AgentRuntimeSupervisor.fromEnvironment({
+            env: secureEnv({ KOVAEL_AGENT_RUNTIMES_ENABLED: 'true' }),
+            cwd,
+            logger,
+            spawn: () => new FakeChild(),
+        });
+
+        const hubPath = supervisor.snapshot().agents[0].hubPath;
+        expect(path.isAbsolute(hubPath)).toBe(true);
+        expect(path.resolve(hubPath).toLowerCase().startsWith(path.resolve(cwd).toLowerCase())).toBe(false);
+    });
+
+    it('requires a hub encryption secret before managed runtime startup', () => {
+        const spawned: unknown[] = [];
+        const supervisor = AgentRuntimeSupervisor.fromEnvironment({
+            env: { KOVAEL_AGENT_RUNTIMES_ENABLED: 'true' },
+            cwd: tempDir(),
+            logger,
+            spawn: () => {
+                spawned.push(true);
+                return new FakeChild();
+            },
+        });
+
+        supervisor.start(18080, 'test_start');
+        expect(spawned).toHaveLength(0);
+        expect(supervisor.getAgentStatus('shaev')).toMatchObject({
+            state: 'failed',
+            lastError: expect.stringContaining('KOVAEL_AGENT_HUB_SECRET'),
+        });
+        expect(supervisor.startAgent('shaev', 18080)).toMatchObject({
+            accepted: false,
+            statusCode: 409,
+            error: 'agent_hub_encryption_required',
+        });
+    });
+
+    it('rejects unsafe network-style hub directories', () => {
+        const supervisor = AgentRuntimeSupervisor.fromEnvironment({
+            env: secureEnv({
+                KOVAEL_AGENT_RUNTIMES_ENABLED: 'true',
+                KOVAEL_AGENT_HUB_DIR: '\\\\server\\share\\kovael-agents',
+            }),
+            cwd: tempDir(),
+            logger,
+            spawn: () => new FakeChild(),
+        });
+
+        expect(supervisor.startAgent('shaev', 18080)).toMatchObject({
+            accepted: false,
+            statusCode: 409,
+            error: 'unsafe_agent_hub_dir',
+        });
+    });
+
+    it('passes only allowlisted environment values to adapter processes', () => {
+        let adapterEnv: NodeJS.ProcessEnv | undefined;
+        const supervisor = AgentRuntimeSupervisor.fromEnvironment({
+            env: secureEnv({
+                KOVAEL_AGENT_RUNTIMES_ENABLED: 'true',
+                KOVAEL_API_TOKEN: 'api-token-for-adapter',
+                KOVAEL_CHAIR_DISPATCH_SECRET: 'dispatch-secret-0123456789abcdef',
+                KOVAEL_CODEX_BIN: 'codex-test-bin',
+                KOVAEL_SECRET_CANARY: 'must-not-pass',
+                HTTPS_PROXY: 'http://proxy.example:8443',
+                no_proxy: '127.0.0.1,localhost',
+                OPENAI_API_KEY: 'must-not-pass-openai',
+            }),
+            cwd: tempDir(),
+            logger,
+            spawn: (_command, _args, options) => {
+                adapterEnv = options.env as NodeJS.ProcessEnv;
+                return new FakeChild();
+            },
+        });
+
+        supervisor.start(18080, 'test_start');
+
+        expect(adapterEnv?.KOVAEL_TOKEN).toBe('api-token-for-adapter');
+        expect(adapterEnv?.KOVAEL_API_TOKEN).toBeUndefined();
+        expect(adapterEnv?.KOVAEL_AGENT_HUB_SECRET).toBe(hubSecret);
+        expect(adapterEnv?.KOVAEL_AGENT_HUB_ENCRYPTION).toBe('required');
+        expect(adapterEnv?.KOVAEL_CHAIR_DISPATCH_SECRET).toBe('dispatch-secret-0123456789abcdef');
+        expect(adapterEnv?.KOVAEL_CODEX_BIN).toBe('codex-test-bin');
+        expect(adapterEnv?.HTTPS_PROXY).toBe('http://proxy.example:8443');
+        expect(adapterEnv?.no_proxy).toBe('127.0.0.1,localhost');
+        expect(adapterEnv?.KOVAEL_SECRET_CANARY).toBeUndefined();
+        expect(adapterEnv?.OPENAI_API_KEY).toBeUndefined();
+
+        supervisor.stop('cleanup');
+    });
+
+    it('redacts adapter stderr before logging', () => {
+        const lines: string[] = [];
+        const stderr = new PassThrough();
+        const child = new FakeChild(4700, false);
+        child.stderr = stderr;
+        const redactingLogger = new Logger({
+            service: 'agent-runtime-test',
+            sink: (line) => lines.push(line),
+        });
+        const supervisor = new AgentRuntimeSupervisor({
+            enabled: true,
+            cwd: tempDir(),
+            env: secureEnv(),
+            agents: [{
+                agentId: 'shaev',
+                provider: 'VantagePoint Local · Hermes 3',
+                runtime: 'claude-shaev',
+            }],
+            logger: redactingLogger,
+            spawn: () => child,
+        });
+
+        supervisor.startAgent('shaev', 18080, { reason: 'stderr_redaction' });
+        stderr.write('KOVAEL_SECRET_CANARY=super-secret-value bearer abcdefghijklmnopqrstuvwxyz0123456789abcdef\n');
+
+        const stderrRecord = lines.map((line) => JSON.parse(line) as { msg: string; line?: string })
+            .find((line) => line.msg === 'agent_runtime_stderr');
+        expect(stderrRecord?.line).toContain('KOVAEL_SECRET_CANARY=[REDACTED]');
+        expect(stderrRecord?.line).not.toContain('super-secret-value');
+        expect(stderrRecord?.line).not.toContain('abcdefghijklmnopqrstuvwxyz0123456789abcdef');
     });
 
     it('reports disabled, exited, and failed lifecycle states', () => {
@@ -185,6 +321,7 @@ describe('AgentRuntimeSupervisor', () => {
             enabled: true,
             cwd: 'I:\\Kovael',
             hubDir: tempDir(),
+            env: secureEnv(),
             agents: [{
                 agentId: 'shaev',
                 provider: 'VantagePoint Local · Hermes 3',
@@ -207,6 +344,7 @@ describe('AgentRuntimeSupervisor', () => {
             enabled: true,
             cwd: 'I:\\Kovael',
             hubDir: tempDir(),
+            env: secureEnv(),
             agents: [{
                 agentId: 'shaev',
                 provider: 'VantagePoint Local · Hermes 3',
@@ -232,6 +370,7 @@ describe('AgentRuntimeSupervisor', () => {
             enabled: true,
             cwd: 'I:\\Kovael',
             hubDir,
+            env: secureEnv(),
             agents: [{
                 agentId: 'shaev',
                 provider: 'VantagePoint Local · Hermes 3',
@@ -297,6 +436,7 @@ describe('AgentRuntimeSupervisor', () => {
             enabled: true,
             cwd: 'I:\\Kovael',
             hubDir,
+            env: secureEnv(),
             agents: [{
                 agentId: 'shaev',
                 provider: 'VantagePoint Local · Hermes 3',
@@ -337,6 +477,7 @@ describe('AgentRuntimeSupervisor', () => {
                 enabled: true,
                 cwd: 'I:\\Kovael',
                 hubDir,
+                env: secureEnv(),
                 agents: [{
                     agentId: 'shaev',
                     provider: 'VantagePoint Local · Hermes 3',
@@ -401,6 +542,7 @@ describe('AgentRuntimeSupervisor', () => {
             enabled: true,
             cwd: 'I:\\Kovael',
             hubDir,
+            env: secureEnv(),
             agents: [{
                 agentId: 'shaev',
                 provider: 'VantagePoint Local · Hermes 3',
