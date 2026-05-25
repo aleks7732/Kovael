@@ -1,13 +1,15 @@
 import { memo, useState } from 'react';
 import { Check } from 'lucide-react';
-import type { AgentRosterCard } from '../../store/useWarRoomStore';
+import type { AgentHubHealth, AgentRosterCard, AgentRuntimeSnapshot } from '../../store/useWarRoomStore';
 
 interface ConvenePanelProps {
   roster: AgentRosterCard[];
+  agentRuntimes?: AgentRuntimeSnapshot | null;
+  hubHealthByAgent?: Record<string, AgentHubHealth>;
   onTopicCreated?: (topicId: string) => void;
 }
 
-export const ConvenePanel = memo(({ roster, onTopicCreated }: ConvenePanelProps) => {
+export const ConvenePanel = memo(({ roster, agentRuntimes = null, hubHealthByAgent = {}, onTopicCreated }: ConvenePanelProps) => {
   const [title, setTitle] = useState('');
   const [goal, setGoal] = useState('');
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
@@ -17,6 +19,10 @@ export const ConvenePanel = memo(({ roster, onTopicCreated }: ConvenePanelProps)
   // Live Chair Beacon claims are eligible for selection. The backend decides
   // whether each selected chair has a dispatch inbox or is presence-only.
   const availableChairs = roster.filter((r) => r.status !== 'offline' && r.chair?.presence === 'live');
+  const readinessNotes = roster
+    .map((agent) => ({ agent, notes: dispatchReadinessNotes(agent, agentRuntimes, hubHealthByAgent[agent.id]) }))
+    .filter((item) => item.notes.length > 0)
+    .slice(0, 6);
 
   // Toggle selection of a participant
   const toggleSelection = (agentId: string) => {
@@ -194,6 +200,20 @@ export const ConvenePanel = memo(({ roster, onTopicCreated }: ConvenePanelProps)
                 })
               )}
             </div>
+            {readinessNotes.length > 0 ? (
+              <div
+                role="status"
+                aria-label="Dispatch readiness notes"
+                className="mt-2 max-h-[74px] overflow-y-auto rounded border border-white/5 bg-black/25 p-2 space-y-1"
+              >
+                {readinessNotes.map(({ agent, notes }) => (
+                  <div key={agent.id} className="text-[9px] leading-snug text-command-warm-white/55">
+                    <span className="font-bold text-command-warm-white/70">{agent.name.replace(/^nyx-/, '')}</span>
+                    <span> - {notes.join('; ')}</span>
+                  </div>
+                ))}
+              </div>
+            ) : null}
           </div>
         </div>
 
@@ -238,4 +258,34 @@ function deriveTopicTitle(goal: string): string {
   const compact = goal.replace(/\s+/g, ' ').trim();
   if (compact.length <= 72) return compact || 'Untitled convene';
   return `${compact.slice(0, 69).trimEnd()}...`;
+}
+
+function dispatchReadinessNotes(
+  agent: AgentRosterCard,
+  agentRuntimes: AgentRuntimeSnapshot | null,
+  hubHealth?: AgentHubHealth,
+): string[] {
+  const notes: string[] = [];
+  if (agent.status === 'offline' || agent.chair?.presence !== 'live') {
+    notes.push('no live chair beacon');
+  }
+
+  if (agentRuntimes) {
+    const runtime = agentRuntimes.agents[agent.id];
+    if (!agentRuntimes.enabled) {
+      notes.push('lifecycle supervision disabled');
+    } else if (!runtime) {
+      notes.push('not app-managed');
+    } else if (runtime.status === 'failed') {
+      notes.push('managed runtime failed');
+    } else if (!runtime.running) {
+      notes.push('managed runtime stopped');
+    }
+  }
+
+  if (hubHealth && hubHealth.status !== 'ok' && hubHealth.status !== 'unknown') {
+    notes.push(`hub ${hubHealth.status}`);
+  }
+
+  return notes;
 }

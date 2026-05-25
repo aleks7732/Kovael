@@ -2,7 +2,7 @@
 import { describe, it, expect, afterEach, vi, beforeEach } from 'vitest';
 import { render, cleanup, screen, fireEvent, waitFor } from '@testing-library/react';
 import { ConvenePanel } from '../../src/components/theater/ConvenePanel';
-import type { AgentRosterCard } from '../../src/store/useWarRoomStore';
+import type { AgentHubHealth, AgentRosterCard, AgentRuntimeSnapshot } from '../../src/store/useWarRoomStore';
 
 function card(id: string, overrides: Partial<AgentRosterCard> = {}): AgentRosterCard {
     return {
@@ -250,5 +250,51 @@ describe('ConvenePanel', () => {
         const [, init] = fetchMock.mock.calls[0];
         const body = JSON.parse(init.body);
         expect(body.participants).toEqual(['shaev']);
+    });
+
+    it('surfaces dispatch-readiness reasons without changing live-chair eligibility', () => {
+        const runtimes: AgentRuntimeSnapshot = {
+            enabled: true,
+            parkOnIdle: true,
+            configured: 1,
+            running: 0,
+            updatedAt: 1779262000000,
+            agents: {
+                shaev: {
+                    agentId: 'shaev',
+                    runtime: 'claude-shaev',
+                    running: false,
+                    pid: null,
+                    hubPath: 'I:\\Kovael\\.kovael\\agents\\shaev\\agent-hub.sqlite',
+                    status: 'stopped',
+                    managed: true,
+                },
+            },
+        };
+        const hubHealthByAgent: Record<string, AgentHubHealth> = {
+            shaev: {
+                agentId: 'shaev',
+                status: 'stale',
+                dispatches: 1,
+                accepted: 0,
+                running: 0,
+                succeeded: 1,
+                failed: 0,
+                memories: 0,
+                checkedAt: 1779262020000,
+            },
+        };
+
+        render(
+            <ConvenePanel
+                roster={[card('shaev', { name: 'Shaev', chair: liveChair('shaev-session') })]}
+                agentRuntimes={runtimes}
+                hubHealthByAgent={hubHealthByAgent}
+            />,
+        );
+
+        expect(screen.getByRole('button', { name: /Shaev/i })).toBeTruthy();
+        expect(screen.getByText(/managed runtime stopped/i)).toBeTruthy();
+        expect(screen.getByText(/hub stale/i)).toBeTruthy();
     });
 });

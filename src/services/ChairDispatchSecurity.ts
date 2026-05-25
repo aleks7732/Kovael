@@ -18,6 +18,12 @@ export interface ChairDispatchEnvelope {
     tag: string;
 }
 
+export interface ChairReplyProofInput {
+    requestId: string;
+    claimSessionId: string;
+    replyProofSecret: string;
+}
+
 export class ChairDispatchSecurityError extends Error {
     constructor(
         public readonly status: number,
@@ -47,6 +53,25 @@ function aadFor(requestId: string, timestamp: number): Buffer {
 
 function b64(value: Buffer): string {
     return value.toString('base64url');
+}
+
+function normalizeProofPart(value: string): string {
+    return value.trim();
+}
+
+export function createChairReplyProof(input: ChairReplyProofInput): string {
+    return crypto
+        .createHmac('sha256', normalizeProofPart(input.replyProofSecret))
+        .update(normalizeProofPart(input.requestId))
+        .update('\n')
+        .update(normalizeProofPart(input.claimSessionId))
+        .digest('hex');
+}
+
+export function verifyChairReplyProof(input: ChairReplyProofInput & { replyProof: string }): boolean {
+    const expected = Buffer.from(createChairReplyProof(input), 'hex');
+    const actual = Buffer.from(normalizeProofPart(input.replyProof), 'hex');
+    return actual.length === expected.length && crypto.timingSafeEqual(actual, expected);
 }
 
 function fromB64(value: unknown, field: string): Buffer {

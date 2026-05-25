@@ -5,6 +5,7 @@ import { PersonaLoader } from '../services/PersonaLoader.js';
 import { ConversationBus } from '../services/ConversationBus.js';
 import { ChairBridgeProvider } from '../services/ModelProvider.js';
 import { openOrchestratorDb } from '../services/OrchestratorDb.js';
+import { createChairReplyProof } from '../services/ChairDispatchSecurity.js';
 
 describe('ConversationBus', () => {
     let db: DatabaseSync;
@@ -279,6 +280,58 @@ describe('ConversationBus', () => {
             agentId: 'nyx-presence-only',
             reason: 'missing_inbox_url',
         });
+    });
+
+    it('records runtime error replies as failed turns, not successful assistant messages', async () => {
+        chairs.claim({
+            agentId: 'shaev',
+            provider: 'vitest',
+            inboxUrl: 'http://localhost:9999/inbox',
+        });
+
+        const topic = bus.createTopic('Runtime Failure Dispatch', ['shaev']);
+        const busEvents: any[] = [];
+        const originalFetch = global.fetch;
+        let dispatch: Record<string, string> | null = null;
+        bus.on('bus_event', (event) => busEvents.push(event));
+
+        global.fetch = (async (_url: string | URL | Request, init?: RequestInit) => {
+            dispatch = JSON.parse(String(init?.body ?? '{}')) as Record<string, string>;
+            queueMicrotask(() => {
+                if (dispatch) {
+                    ChairBridgeProvider.submitReplyForRequest({
+                        requestId: dispatch.requestId,
+                        agentId: dispatch.agentId,
+                        topicId: dispatch.topicId,
+                        claimSessionId: dispatch.claimSessionId,
+                        replyProof: createChairReplyProof({
+                            requestId: dispatch.requestId,
+                            claimSessionId: dispatch.claimSessionId,
+                            replyProofSecret: dispatch.replyProofSecret,
+                        }),
+                        content: 'Runtime error from shaev: adapter crashed',
+                        status: 'failed',
+                        error: 'adapter crashed',
+                    });
+                }
+            });
+            return new Response('', { status: 200 });
+        }) as typeof fetch;
+
+        try {
+            await bus.convene(topic.id, 'Fail honestly.');
+        } finally {
+            global.fetch = originalFetch;
+        }
+
+        expect(busEvents.some((event) => event.type === 'chair_dispatch_success')).toBe(false);
+        expect(busEvents).toContainEqual(expect.objectContaining({
+            type: 'chair_dispatch_failure',
+            agentId: 'shaev',
+            topicId: topic.id,
+        }));
+        expect(bus.getHistory(topic.id).some((message) => message.name === 'shaev' && message.role === 'assistant')).toBe(false);
+        expect(bus.getHistory(topic.id).at(-1)?.content).toContain('Failed turns: shaev');
     });
 
     it('persists a final convener result after every convene run', async () => {

@@ -56,6 +56,12 @@ Kovael's orchestrator remains authoritative for chairs, topics,
 conversation history, and routing. Stopping the app releases chairs and
 stops the adapter process, but it does not delete the hub file.
 
+Do not put hub files on a network filesystem, cloud-synced folder, or
+shared replica volume. Hubs are not a distributed queue and are not
+replicated between orchestrator instances. If a hub is deleted, that
+agent loses local edge history, but global orchestrator state remains
+intact.
+
 ```bash
 node scripts/kovael-agent-inbox.mjs \
   --id nyx-codex \
@@ -68,7 +74,9 @@ node scripts/kovael-agent-inbox.mjs \
 Set `KOVAEL_CHAIR_DISPATCH_SECRET` to a 32+ character secret to require
 encrypted dispatch and reply envelopes. The adapter keeps that secret for
 the inbox/reply boundary and strips it before launching the underlying
-agent runtime.
+agent runtime. `KOVAEL_AGENT_HUB_SECRET` is reserved for deployments that
+enable hub-at-rest sealing or encryption; until that path is active, use
+local filesystem permissions to protect `agent-hub.sqlite`.
 
 ## App-managed lifecycle
 
@@ -80,7 +88,9 @@ KOVAEL_AGENT_RUNTIMES_ENABLED=true npm start
 ```
 
 Default supervised agents are `shaev` and `nyx-codex`. `nyx-openclaw` is
-not started by the default local lifecycle profile. Useful overrides:
+not started by the default local lifecycle profile because it uses the
+elevated `codex-openclaw` runtime profile. Add it only through an
+explicit elevated-runtime opt-in.
 
 | Variable | Default | Purpose |
 |---|---:|---|
@@ -88,10 +98,32 @@ not started by the default local lifecycle profile. Useful overrides:
 | `KOVAEL_AGENT_RUNTIME_IDS` | `shaev,nyx-codex` | Comma-separated supervised agent IDs |
 | `KOVAEL_AGENT_HUB_DIR` | `.kovael/agents` | Parent directory for per-agent hub files |
 | `KOVAEL_AGENT_RUNTIMES_PARK_ON_IDLE` | `true` | Stop adapters in idle mode and restart on active use |
+| `KOVAEL_API_TOKEN` | unset | Bearer token for orchestrator API/metrics/WS gates; forwarded to adapters as `KOVAEL_TOKEN` |
+| `KOVAEL_CHAIR_DISPATCH_SECRET` | unset | 32+ character dispatch/reply envelope secret |
+| `KOVAEL_AGENT_HUB_SECRET` | unset | Reserved hub-at-rest secret material for deployments that enable hub sealing/encryption |
 
 If `KOVAEL_API_TOKEN` gates the HTTP API, the supervisor passes it to the
 adapter as `KOVAEL_TOKEN` and uses `--with-token`; the adapter removes
 both token variables before spawning the underlying runtime.
+
+Lifecycle behavior:
+
+- App start: the supervisor starts configured adapters after the
+  orchestrator binds its HTTP port.
+- App stop: the supervisor sends `SIGTERM`; adapters release their chair,
+  close their loopback inbox, and close their hub database.
+- Idle parking: when `KOVAEL_AGENT_RUNTIMES_PARK_ON_IDLE=true`, adaptive
+  resource mode stops adapters on idle and restarts them on active use.
+  Hub files are reused non-destructively.
+
+Container and Kubernetes defaults keep supervised local runtimes disabled.
+Only enable them in Docker or Kubernetes after adding runtime binaries, a
+writable local hub volume, and secret injection for `KOVAEL_API_TOKEN`,
+`KOVAEL_CHAIR_DISPATCH_SECRET`, and any `KOVAEL_AGENT_HUB_SECRET`
+material. The default two-replica Kubernetes deployment must not share
+per-agent hubs as distributed state.
+
+See `docs/runbooks/agent-hub-lifecycle.md` for the operator runbook.
 
 ## Quick-start — `kovael-chair` helper
 

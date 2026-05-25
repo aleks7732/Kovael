@@ -1,21 +1,38 @@
 import { EventEmitter } from 'node:events';
+import { DatabaseSync } from 'node:sqlite';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { AgentRuntimeSupervisor } from '../services/AgentRuntimeSupervisor.js';
 import { Logger } from '../services/Logger.js';
 
 class FakeChild extends EventEmitter {
-    public pid = 4242;
+    public pid: number;
     public killedWith: NodeJS.Signals | undefined;
+    public signals: NodeJS.Signals[] = [];
     public stdout = null;
     public stderr = null;
 
+    constructor(
+        pid = 4242,
+        private readonly exitOnKill = true,
+    ) {
+        super();
+        this.pid = pid;
+    }
+
     public kill(signal?: NodeJS.Signals): boolean {
         this.killedWith = signal;
-        this.emit('exit', 0, signal ?? null);
+        if (signal) this.signals.push(signal);
+        if (this.exitOnKill) {
+            this.emit('exit', 0, signal ?? null);
+        }
         return true;
+    }
+
+    public exit(code: number | null = 0, signal: NodeJS.Signals | null = null): void {
+        this.emit('exit', code, signal);
     }
 }
 
@@ -100,5 +117,321 @@ describe('AgentRuntimeSupervisor', () => {
         expect(spawned).toHaveLength(2);
 
         supervisor.stop('cleanup');
+    });
+
+    it('requires explicit elevated opt-in before supervising openclaw', () => {
+        const denied = AgentRuntimeSupervisor.fromEnvironment({
+            env: {
+                KOVAEL_AGENT_RUNTIMES_ENABLED: 'true',
+                KOVAEL_AGENT_RUNTIME_IDS: 'nyx-openclaw',
+            },
+            cwd: 'I:\\Kovael',
+            logger,
+            spawn: () => new FakeChild(),
+        });
+
+        expect(denied.snapshot()).toMatchObject({
+            configured: 0,
+            agents: [],
+        });
+
+        const spawned: Array<{ args: string[] }> = [];
+        const allowed = AgentRuntimeSupervisor.fromEnvironment({
+            env: {
+                KOVAEL_AGENT_RUNTIMES_ENABLED: 'true',
+                KOVAEL_AGENT_RUNTIME_IDS: 'nyx-openclaw',
+                KOVAEL_ENABLE_ELEVATED_RUNTIMES: 'true',
+            },
+            cwd: 'I:\\Kovael',
+            logger,
+            spawn: (_command, args) => {
+                spawned.push({ args });
+                return new FakeChild();
+            },
+        });
+
+        allowed.start(18080, 'test_start');
+
+        expect(allowed.snapshot().agents.map((agent) => agent.agentId)).toEqual(['nyx-openclaw']);
+        expect(spawned[0].args).toContain('codex-openclaw');
+
+        allowed.stop('cleanup');
+    });
+
+    it('reports disabled, exited, and failed lifecycle states', () => {
+        const disabled = new AgentRuntimeSupervisor({
+            enabled: false,
+            agents: [{
+                agentId: 'shaev',
+                provider: 'VantagePoint Local · Hermes 3',
+                runtime: 'claude-shaev',
+            }],
+            logger,
+            spawn: () => new FakeChild(),
+        });
+        expect(disabled.getAgentStatus('shaev')).toMatchObject({
+            state: 'disabled',
+            desiredState: 'stopped',
+            running: false,
+        });
+        expect(disabled.startAgent('shaev', 18080)).toMatchObject({
+            accepted: false,
+            statusCode: 409,
+            error: 'agent_runtime_disabled',
+        });
+
+        const exitingChild = new FakeChild(4300, false);
+        const exited = new AgentRuntimeSupervisor({
+            enabled: true,
+            cwd: 'I:\\Kovael',
+            hubDir: tempDir(),
+            agents: [{
+                agentId: 'shaev',
+                provider: 'VantagePoint Local · Hermes 3',
+                runtime: 'claude-shaev',
+            }],
+            logger,
+            spawn: () => exitingChild,
+        });
+        exited.startAgent('shaev', 18080, { reason: 'exit_state_test' });
+        exitingChild.exit(17, null);
+        expect(exited.getAgentStatus('shaev')).toMatchObject({
+            state: 'exited',
+            desiredState: 'running',
+            running: false,
+            exitCode: 17,
+        });
+
+        const failingChild = new FakeChild(4400, false);
+        const failed = new AgentRuntimeSupervisor({
+            enabled: true,
+            cwd: 'I:\\Kovael',
+            hubDir: tempDir(),
+            agents: [{
+                agentId: 'shaev',
+                provider: 'VantagePoint Local · Hermes 3',
+                runtime: 'claude-shaev',
+            }],
+            logger,
+            spawn: () => failingChild,
+        });
+        failed.startAgent('shaev', 18080, { reason: 'failed_state_test' });
+        failingChild.emit('error', new Error('spawn failed'));
+        expect(failed.getAgentStatus('shaev')).toMatchObject({
+            state: 'failed',
+            desiredState: 'running',
+            running: false,
+            lastError: 'spawn failed',
+        });
+    });
+
+    it('keeps manual stop sticky but restarts runtimes parked by idle mode', () => {
+        const hubDir = tempDir();
+        const spawned: FakeChild[] = [];
+        const supervisor = new AgentRuntimeSupervisor({
+            enabled: true,
+            cwd: 'I:\\Kovael',
+            hubDir,
+            agents: [{
+                agentId: 'shaev',
+                provider: 'VantagePoint Local · Hermes 3',
+                runtime: 'claude-shaev',
+            }],
+            logger,
+            spawn: () => {
+                const child = new FakeChild(5000 + spawned.length);
+                spawned.push(child);
+                return child;
+            },
+        });
+
+        supervisor.start(18080, 'boot');
+        expect(supervisor.getAgentStatus('shaev')).toMatchObject({
+            state: 'running',
+            desiredState: 'running',
+            pid: 5000,
+        });
+
+        supervisor.stopAgent('shaev', { reason: 'operator_stop' });
+        expect(supervisor.getAgentStatus('shaev')).toMatchObject({
+            state: 'stopped',
+            desiredState: 'stopped',
+            pid: null,
+        });
+
+        supervisor.start(18080, 'resource_active');
+        expect(spawned).toHaveLength(1);
+        expect(supervisor.getAgentStatus('shaev')).toMatchObject({
+            state: 'stopped',
+            desiredState: 'stopped',
+        });
+
+        supervisor.startAgent('shaev', 18080, { reason: 'operator_start' });
+        expect(spawned).toHaveLength(2);
+        expect(supervisor.getAgentStatus('shaev')).toMatchObject({
+            state: 'running',
+            desiredState: 'running',
+            pid: 5001,
+        });
+
+        supervisor.stop('resource_idle');
+        expect(supervisor.getAgentStatus('shaev')).toMatchObject({
+            state: 'stopped',
+            desiredState: 'running',
+            pid: null,
+        });
+
+        supervisor.start(18080, 'resource_active');
+        expect(spawned).toHaveLength(3);
+        expect(supervisor.getAgentStatus('shaev')).toMatchObject({
+            state: 'running',
+            desiredState: 'running',
+            pid: 5002,
+        });
+    });
+
+    it('ignores stale process exits after a restart spawns a new generation', () => {
+        const hubDir = tempDir();
+        const spawned: FakeChild[] = [];
+        const supervisor = new AgentRuntimeSupervisor({
+            enabled: true,
+            cwd: 'I:\\Kovael',
+            hubDir,
+            agents: [{
+                agentId: 'shaev',
+                provider: 'VantagePoint Local · Hermes 3',
+                runtime: 'claude-shaev',
+            }],
+            logger,
+            spawn: () => {
+                const child = new FakeChild(6000 + spawned.length, false);
+                spawned.push(child);
+                return child;
+            },
+        });
+
+        supervisor.startAgent('shaev', 18080, { reason: 'initial' });
+        const oldChild = spawned[0];
+        supervisor.restartAgent('shaev', 18080, { reason: 'restart', force: true });
+
+        expect(spawned).toHaveLength(2);
+        expect(supervisor.getAgentStatus('shaev')).toMatchObject({
+            state: 'running',
+            pid: 6001,
+        });
+
+        oldChild.exit(0, 'SIGTERM');
+
+        expect(supervisor.getAgentStatus('shaev')).toMatchObject({
+            state: 'running',
+            pid: 6001,
+        });
+    });
+
+    it('escalates from SIGTERM to SIGKILL when a process does not exit', () => {
+        vi.useFakeTimers();
+        try {
+            const hubDir = tempDir();
+            const child = new FakeChild(7000, false);
+            const supervisor = new AgentRuntimeSupervisor({
+                enabled: true,
+                cwd: 'I:\\Kovael',
+                hubDir,
+                agents: [{
+                    agentId: 'shaev',
+                    provider: 'VantagePoint Local · Hermes 3',
+                    runtime: 'claude-shaev',
+                }],
+                logger,
+                spawn: () => child,
+            });
+
+            supervisor.startAgent('shaev', 18080, { reason: 'initial' });
+            supervisor.stopAgent('shaev', { reason: 'operator_stop', timeoutMs: 1000 });
+
+            expect(supervisor.getAgentStatus('shaev')).toMatchObject({
+                state: 'stopping',
+                desiredState: 'stopped',
+                pid: 7000,
+            });
+            expect(child.signals).toEqual(['SIGTERM']);
+
+            vi.advanceTimersByTime(1000);
+
+            expect(child.signals).toEqual(['SIGTERM', 'SIGKILL']);
+
+            child.exit(null, 'SIGKILL');
+            expect(supervisor.getAgentStatus('shaev')).toMatchObject({
+                state: 'stopped',
+                pid: null,
+                exitSignal: 'SIGKILL',
+            });
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
+    it('blocks stop while the hub has accepted or running dispatches unless forced', () => {
+        const hubDir = tempDir();
+        const hubPath = path.join(hubDir, 'shaev', 'agent-hub.sqlite');
+        fs.mkdirSync(path.dirname(hubPath), { recursive: true });
+        const db = new DatabaseSync(hubPath);
+        try {
+            db.exec(`
+                CREATE TABLE agent_dispatches (
+                    request_id TEXT PRIMARY KEY,
+                    topic_id TEXT NOT NULL,
+                    agent_id TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    received_at INTEGER NOT NULL,
+                    payload_json TEXT NOT NULL
+                );
+            `);
+            db.prepare(`
+                INSERT INTO agent_dispatches (
+                    request_id, topic_id, agent_id, status, received_at, payload_json
+                ) VALUES (?, ?, ?, ?, ?, ?)
+            `).run('req-1', 'topic-1', 'shaev', 'running', 1, '{}');
+        } finally {
+            db.close();
+        }
+
+        const child = new FakeChild(8000, false);
+        const supervisor = new AgentRuntimeSupervisor({
+            enabled: true,
+            cwd: 'I:\\Kovael',
+            hubDir,
+            agents: [{
+                agentId: 'shaev',
+                provider: 'VantagePoint Local · Hermes 3',
+                runtime: 'claude-shaev',
+            }],
+            logger,
+            spawn: () => child,
+        });
+
+        supervisor.startAgent('shaev', 18080, { reason: 'initial' });
+        const blocked = supervisor.stopAgent('shaev', { reason: 'operator_stop' });
+
+        expect(blocked).toMatchObject({
+            accepted: false,
+            statusCode: 409,
+            error: 'agent_runtime_busy',
+            busy: { accepted: 0, running: 1 },
+        });
+        expect(child.signals).toEqual([]);
+        expect(supervisor.getAgentStatus('shaev')).toMatchObject({
+            state: 'running',
+            desiredState: 'running',
+        });
+
+        const forced = supervisor.stopAgent('shaev', { reason: 'operator_stop', force: true });
+
+        expect(forced).toMatchObject({
+            accepted: true,
+            changed: true,
+            statusCode: 202,
+        });
+        expect(child.signals).toEqual(['SIGTERM']);
     });
 });

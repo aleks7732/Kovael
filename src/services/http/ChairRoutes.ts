@@ -97,13 +97,34 @@ export async function handleChairRequest(
         }
         const topicId = typeof body.topicId === 'string' ? body.topicId.trim() : '';
         const agentId = typeof body.agentId === 'string' ? body.agentId.trim() : '';
+        const requestId = typeof body.requestId === 'string' ? body.requestId.trim() : '';
+        const claimSessionId = typeof body.claimSessionId === 'string' ? body.claimSessionId.trim() : '';
+        const replyProof = typeof body.replyProof === 'string' ? body.replyProof.trim() : '';
         const content = typeof body.content === 'string' ? body.content : '';
-        if (!topicId || !agentId) {
-            deps.writeJson(res, 400, { error: 'missing_required_fields', need: ['topicId', 'agentId'] });
+        const status = body.status === 'failed' ? 'failed' : 'succeeded';
+        const error = typeof body.error === 'string' ? body.error : undefined;
+        if (!requestId || !agentId || !claimSessionId || !replyProof) {
+            deps.writeJson(res, 400, {
+                error: 'missing_required_fields',
+                need: ['requestId', 'agentId', 'claimSessionId', 'replyProof'],
+            });
             return;
         }
-        const success = ChairBridgeProvider.submitReply(topicId, agentId, content);
-        deps.writeJson(res, 200, { success });
+        const result = ChairBridgeProvider.submitReplyForRequest({
+            requestId,
+            agentId,
+            topicId: topicId || undefined,
+            claimSessionId,
+            replyProof,
+            content,
+            status,
+            error,
+        }, context.chairs.get(agentId)?.sessionId);
+        if (!result.ok) {
+            deps.writeJson(res, result.status, { error: result.code });
+            return;
+        }
+        deps.writeJson(res, 200, { success: true, receipt: result.receipt });
         return;
     }
 

@@ -9,6 +9,7 @@ import {
     ModelProvider,
     StubMarkovProvider,
     ChairBridgeProvider,
+    ChairBridgeReplyFailure,
     TokenUsage,
 } from './ModelProvider.js';
 import {
@@ -17,6 +18,10 @@ import {
     CommitteeVote,
 } from './ConsensusEngine.js';
 import { conveneCommitteeVote } from './CommitteeVoting.js';
+
+function requireLiveChairs(): boolean {
+    return process.env.KOVAEL_REQUIRE_LIVE_CHAIRS === 'true';
+}
 
 export interface ActiveTopic {
     id: string;
@@ -324,6 +329,17 @@ export class ConversationBus extends EventEmitter {
             if (liveDispatch) {
                 provider = new ChairBridgeProvider(currentSpeaker, this.chairs, this.orchestratorPort);
             } else {
+                if (requireLiveChairs()) {
+                    const reason = claim?.inboxUrl ? 'dispatch_gate_closed' : 'chair_not_dispatch_ready';
+                    failedParticipants.add(currentSpeaker);
+                    this.emit('bus_event', {
+                        type: 'chair_dispatch_failure',
+                        agentId: currentSpeaker,
+                        topicId,
+                        reason,
+                    });
+                    continue;
+                }
                 if (claim && claim.inboxUrl && claim.status !== 'offline') {
                     this.emit('bus_event', {
                         type: 'chair_dispatch_rerouted',
@@ -387,10 +403,19 @@ export class ConversationBus extends EventEmitter {
                 // Persist the completed turn into SQLite
                 this.postMessage(topicId, currentSpeaker, 'assistant', accumulatedContent);
                 if (liveDispatch) {
+                    const receipt = provider instanceof ChairBridgeProvider ? provider.getLastReceipt() : null;
+                    if (receipt) {
+                        this.emit('bus_event', {
+                            type: 'chair_dispatch_receipt',
+                            ...receipt,
+                        });
+                    }
                     this.emit('bus_event', {
                         type: 'chair_dispatch_success',
                         agentId: currentSpeaker,
                         topicId,
+                        requestId: receipt?.requestId,
+                        claimSessionId: receipt?.claimSessionId,
                     });
                     liveHandoffParticipants.add(currentSpeaker);
                 }
@@ -487,11 +512,19 @@ export class ConversationBus extends EventEmitter {
             } catch (err: any) {
                 this.log.error('turn_execution_failed', { agent: currentSpeaker, error: err.message });
                 failedParticipants.add(currentSpeaker);
+                if (err instanceof ChairBridgeReplyFailure) {
+                    this.emit('bus_event', {
+                        type: 'chair_dispatch_receipt',
+                        ...err.receipt,
+                    });
+                }
                 this.emit('bus_event', {
                     type: 'chair_dispatch_failure',
                     agentId: currentSpeaker,
                     topicId,
                     reason: err.message,
+                    requestId: err instanceof ChairBridgeReplyFailure ? err.receipt.requestId : undefined,
+                    claimSessionId: err instanceof ChairBridgeReplyFailure ? err.receipt.claimSessionId : undefined,
                 });
                 // Break or proceed
                 break;

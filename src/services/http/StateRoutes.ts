@@ -6,6 +6,7 @@ export function handleStateSnapshot(
     _req: http.IncomingMessage,
     res: http.ServerResponse,
 ): void {
+    const agentRuntimeSnapshot = context.agentRuntimeSupervisor.snapshot();
     const snapshot = {
         timestamp: Date.now(),
         agentCards: context.agentCards.length,
@@ -38,7 +39,23 @@ export function handleStateSnapshot(
         tokens: { ...context.tokenTotals },
         rateLimits: context.rateLimits?.allSnapshots() ?? [],
         resourceMode: context.resourceGovernor.snapshot(),
-        agentRuntimes: context.agentRuntimeSupervisor.snapshot(),
+        agentRuntimes: agentRuntimeSnapshot,
+        hubHealthByAgent: Object.fromEntries(agentRuntimeSnapshot.agents.map((agent) => [
+            agent.agentId,
+            {
+                agentId: agent.agentId,
+                status: agent.hub.error ? 'error' : agent.hub.exists ? 'ok' : 'missing',
+                dispatches: agent.hub.dispatches,
+                accepted: agent.hub.accepted,
+                running: agent.hub.running,
+                succeeded: agent.hub.succeeded,
+                failed: agent.hub.failed,
+                memories: agent.hub.memories,
+                schemaVersion: agent.hub.schemaVersion,
+                error: agent.hub.error,
+                checkedAt: Date.now(),
+            },
+        ])),
         chairs: {
             stats: context.chairs.stats(),
             roster: context.chairs.snapshot(),

@@ -15,6 +15,7 @@ import path from 'node:path';
 import process from 'node:process';
 import { spawn } from 'node:child_process';
 import { DatabaseSync } from 'node:sqlite';
+import { pathToFileURL } from 'node:url';
 
 const SECURITY_VERSION = 'kovael-chair-v1';
 const ENCRYPTION_ALG = 'A256GCM';
@@ -61,7 +62,7 @@ function parseArgs(argv) {
 
 function usageAndExit(reason) {
     if (reason) console.error(`kovael-agent-inbox: ${reason}`);
-    console.error('Usage: node scripts/kovael-agent-inbox.mjs --id <agent-id> --provider "<provider>" --runtime codex|codex-openclaw|claude-shaev [--host http://127.0.0.1:8080] [--port 0] [--cwd I:\\Kovael] [--hub-path .kovael/agents/<id>/agent-hub.sqlite] [--model sonnet]');
+    console.error('Usage: node scripts/kovael-agent-inbox.mjs --id <agent-id> --provider "<provider>" --runtime codex|codex-openclaw|claude-shaev|fake-deterministic [--host http://127.0.0.1:8080] [--port 0] [--cwd I:\\Kovael] [--hub-path .kovael/agents/<id>/agent-hub.sqlite] [--model sonnet]');
     process.exit(2);
 }
 
@@ -88,6 +89,15 @@ function keyFor(secret) {
 
 function aadFor(requestId, timestamp) {
     return Buffer.from(`${SECURITY_VERSION}\n${requestId}\n${timestamp}`, 'utf8');
+}
+
+function createReplyProof(payload) {
+    return crypto
+        .createHmac('sha256', String(payload.replyProofSecret).trim())
+        .update(String(payload.requestId).trim())
+        .update('\n')
+        .update(String(payload.claimSessionId).trim())
+        .digest('hex');
 }
 
 function b64(value) {
@@ -327,6 +337,56 @@ class AgentHub {
     }
 }
 
+class SharedAgentHub {
+    constructor(store) {
+        this.store = store;
+    }
+
+    recordInbound(payload) {
+        return this.store.recordInboundDispatch(payload);
+    }
+
+    markRunning(requestId) {
+        this.store.markDispatchRunning(requestId);
+    }
+
+    markSucceeded(requestId, replyContent) {
+        this.store.markDispatchSucceeded(requestId, replyContent);
+    }
+
+    markFailed(requestId, error) {
+        this.store.markDispatchFailed(requestId, error);
+    }
+
+    close() {
+        this.store.close();
+    }
+}
+
+async function createAgentHub(cfg) {
+    const candidates = [
+        path.join(cfg.cwd, 'dist', 'services', 'AgentHubStore.js'),
+        path.join(process.cwd(), 'dist', 'services', 'AgentHubStore.js'),
+    ];
+    for (const candidate of candidates) {
+        if (!fs.existsSync(candidate)) continue;
+        try {
+            const mod = await import(pathToFileURL(candidate).href);
+            if (typeof mod.AgentHubStore === 'function') {
+                return new SharedAgentHub(new mod.AgentHubStore({
+                    agentId: cfg.id,
+                    dbPath: cfg.hubPath,
+                }));
+            }
+        } catch {
+            // Fall back to the embedded compatibility store below. The
+            // validation scripts run after build, so normal checked paths use
+            // the shared TypeScript AgentHubStore implementation.
+        }
+    }
+    return new AgentHub(cfg);
+}
+
 function spawnCapture(command, args, options) {
     return new Promise((resolve, reject) => {
         const child = spawn(command, args, {
@@ -475,22 +535,51 @@ async function runClaudeShaev(payload, cfg) {
     return text;
 }
 
+async function runFakeDeterministic(payload, cfg) {
+    const requestId = typeof payload.requestId === 'string' ? payload.requestId : 'missing-request';
+    const topicId = typeof payload.topicId === 'string' ? payload.topicId : 'missing-topic';
+    const inputHash = crypto
+        .createHash('sha256')
+        .update(JSON.stringify({
+            agentId: cfg.id,
+            topicId,
+            requestId,
+            system: payload.system ?? '',
+            messages: Array.isArray(payload.messages) ? payload.messages : [],
+        }))
+        .digest('hex')
+        .slice(0, 16);
+    return `FAKE_RUNTIME_REPLY agent=${cfg.id} request=${requestId} topic=${topicId} hash=${inputHash}`;
+}
+
 async function runRuntime(payload, cfg) {
+    if (cfg.runtime === 'fake-deterministic') return await runFakeDeterministic(payload, cfg);
     if (cfg.runtime === 'codex') return await runCodex(payload, cfg, 'read-only');
     if (cfg.runtime === 'codex-openclaw') return await runCodex(payload, cfg, 'danger-full-access');
     if (cfg.runtime === 'claude-shaev') return await runClaudeShaev(payload, cfg);
     throw new Error(`unknown runtime: ${cfg.runtime}`);
 }
 
-async function sendReply(payload, cfg, content) {
+async function sendReply(payload, cfg, content, status = 'succeeded', error = undefined) {
     const replyUrl = typeof payload.replyUrl === 'string' ? payload.replyUrl : '';
     if (!replyUrl) throw new Error('dispatch payload did not include replyUrl');
-    const requestId = crypto.randomUUID();
+    if (
+        typeof payload.requestId !== 'string' ||
+        typeof payload.claimSessionId !== 'string' ||
+        typeof payload.replyProofSecret !== 'string'
+    ) {
+        throw new Error('dispatch payload did not include request proof fields');
+    }
     const secured = encryptPayload({
         topicId: payload.topicId,
         agentId: cfg.id,
+        requestId: payload.requestId,
+        claimSessionId: payload.claimSessionId,
+        replyProof: createReplyProof(payload),
         content,
-    }, requestId);
+        status,
+        error,
+    }, payload.requestId);
     const headers = {
         ...secured.headers,
         'content-length': String(Buffer.byteLength(secured.body)),
@@ -538,7 +627,12 @@ async function startInbox(cfg, hub) {
             writeJson(res, 409, { error: 'wrong_agent', expected: cfg.id, got: payload.agentId });
             return;
         }
-        if (typeof payload.topicId !== 'string' || typeof payload.replyUrl !== 'string') {
+        if (
+            typeof payload.topicId !== 'string' ||
+            typeof payload.replyUrl !== 'string' ||
+            typeof payload.claimSessionId !== 'string' ||
+            typeof payload.replyProofSecret !== 'string'
+        ) {
             writeJson(res, 400, { error: 'missing_required_fields' });
             return;
         }
@@ -566,7 +660,13 @@ async function startInbox(cfg, hub) {
             .catch(async (err) => {
                 hub.markFailed(requestId, err.message);
                 console.error(`kovael-agent-inbox: ${cfg.id} dispatch failed: ${err.message}`);
-                await sendReply(payload, cfg, `Runtime error from ${cfg.id}: ${err.message}`).catch((replyErr) => {
+                await sendReply(
+                    payload,
+                    cfg,
+                    `Runtime error from ${cfg.id}: ${err.message}`,
+                    'failed',
+                    err.message,
+                ).catch((replyErr) => {
                     console.error(`kovael-agent-inbox: ${cfg.id} reply failed: ${replyErr.message}`);
                 });
             })
@@ -608,7 +708,7 @@ async function main() {
         hubPath: args['hub-path'] || path.join(args.cwd || process.cwd(), '.kovael', 'agents', args.id, 'agent-hub.sqlite'),
     };
     const token = bearerToken(args);
-    const hub = new AgentHub(cfg);
+    const hub = await createAgentHub(cfg);
     const server = await startInbox(cfg, hub);
     const address = server.address();
     if (!address || typeof address === 'string') throw new Error('failed to bind inbox');

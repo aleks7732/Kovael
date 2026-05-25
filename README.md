@@ -111,8 +111,10 @@ claimed without preventing idle trimming. Useful overrides:
 Local agent runtime supervision is opt-in. When enabled, Kovael starts
 the local loopback inbox adapters for `shaev` and `nyx-codex` by default,
 passes each adapter a persistent `agent-hub.sqlite`, and releases the
-chairs cleanly when the orchestrator stops. `nyx-openclaw` is intentionally
-not part of the default supervised set.
+chairs cleanly when the orchestrator stops. Idle resource mode can also
+park supervised adapters and restart them on active use. `nyx-openclaw` is
+intentionally not part of the default supervised set because it uses the
+elevated `codex-openclaw` runtime profile.
 
 | Variable | Default | Purpose |
 |---|---:|---|
@@ -120,11 +122,18 @@ not part of the default supervised set.
 | `KOVAEL_AGENT_RUNTIME_IDS` | `shaev,nyx-codex` | Comma-separated supervised agent IDs; unknown IDs are ignored |
 | `KOVAEL_AGENT_HUB_DIR` | `.kovael/agents` | Directory for per-agent `agent-hub.sqlite` files |
 | `KOVAEL_AGENT_RUNTIMES_PARK_ON_IDLE` | `true` | Stop supervised adapters when resource mode enters idle; restart on active use |
+| `KOVAEL_API_TOKEN` | unset | Bearer-token gate for `/api/v1/*`, `/metrics`, and authenticated WebSocket upgrades; forwarded to supervised adapters as `KOVAEL_TOKEN` |
 | `KOVAEL_CHAIR_DISPATCH_SECRET` | unset | Enables encrypted chair dispatch/reply envelopes; use at least 32 characters |
+| `KOVAEL_AGENT_HUB_SECRET` | unset | Reserved for hub-at-rest protection in deployments that enable hub sealing/encryption; keep it in secret storage |
 
 Agent hub files are local edge logs, not distributed sources of truth.
 They can be backed up, pruned, or rebuilt without corrupting global
-orchestrator state. Do not put hub files on a network filesystem.
+orchestrator state. Do not put hub files on a network filesystem, shared
+replica volume, or cloud-synced directory. Do not build distributed
+replication around per-agent hubs; the orchestrator remains authoritative
+for chairs, topics, conversation history, and routing. See
+[docs/runbooks/agent-hub-lifecycle.md](./docs/runbooks/agent-hub-lifecycle.md)
+for operator setup and validation.
 
 Claim a chair from another shell:
 
@@ -239,6 +248,14 @@ runtime as the `nonroot` user. The cockpit is excluded from the
 orchestrator image by `.dockerignore` and should be built/static-hosted
 separately.
 
+Supervised local agent runtimes are disabled in container and Kubernetes
+defaults. Enable `KOVAEL_AGENT_RUNTIMES_ENABLED` there only after adding a
+writable local hub volume, the adapter/runtime binaries needed by the
+selected agents, and secret injection for `KOVAEL_API_TOKEN`,
+`KOVAEL_CHAIR_DISPATCH_SECRET`, and any hub secret material. The default
+Kubernetes deployment is two replicas; per-agent hubs are local edge logs,
+not distributed replication state.
+
 Kubernetes manifests live under [deploy/k8s/](./deploy/k8s/):
 
 - `deployment.yaml` - two replicas by default, rolling update, non-root
@@ -270,7 +287,7 @@ npm run build --workspace=packages/spatial-war-room
 Full PR gate:
 
 ```bash
-node scripts/validate-pr.mjs
+npm run validate:pr
 ```
 
 `validate-pr.mjs` runs the root build, root Vitest suite, cockpit
@@ -280,6 +297,12 @@ validation pass:
 
 ```bash
 KOVAEL_VALIDATE_ALL_CHAIRS=true node scripts/validate-pr.mjs
+```
+
+Use the package alias for the all-chair dispatch validation:
+
+```bash
+npm run validate:chairs
 ```
 
 The repository currently has 52 Vitest files across the orchestrator and
@@ -307,6 +330,12 @@ the PII Guard workflow, TruffleHog workflow, and the changed-file secret
 scan inside `scripts/validate-pr.mjs`. See [SECURITY.md](./SECURITY.md)
 for reporting and setup details.
 
+Runtime secrets are operator-managed. Use `KOVAEL_API_TOKEN` for the HTTP
+and WebSocket gate, `KOVAEL_CHAIR_DISPATCH_SECRET` for encrypted chair
+dispatch/reply envelopes, and `KOVAEL_AGENT_HUB_SECRET` only for
+deployments that enable hub-at-rest protection. Never commit these values
+or bake them into the Docker image.
+
 ## Documentation
 
 - [WORKFLOW.md](./WORKFLOW.md) - triad contract, routing config, budget,
@@ -318,6 +347,8 @@ for reporting and setup details.
 - [docs/perf/](./docs/perf/) - performance baseline and SLO notes.
 - [docs/runbooks/](./docs/runbooks/) - operational verification
   runbooks.
+- [docs/runbooks/agent-hub-lifecycle.md](./docs/runbooks/agent-hub-lifecycle.md) -
+  app-managed local runtime and per-agent hub operations.
 - [SECURITY.md](./SECURITY.md) - security policy and PII guard setup.
 - [CONTRIBUTING.md](./CONTRIBUTING.md) - contribution guidelines.
 

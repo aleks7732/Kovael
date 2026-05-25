@@ -17,6 +17,8 @@ export const ConversationTheater = memo(() => {
   const activeTopicId = useWarRoomStore((s) => s.activeTopicId);
   const stoppingCriterion = useWarRoomStore((s) => s.conversationStoppingCriterion);
   const roster = useWarRoomStore((s) => s.agentRoster);
+  const agentRuntimes = useWarRoomStore((s) => s.agentRuntimes);
+  const hubHealthByAgent = useWarRoomStore((s) => s.hubHealthByAgent);
   
   const selectTopic = useWarRoomStore((s) => s.selectTopic);
   const openConversation = useWarRoomStore((s) => s.openConversation);
@@ -255,7 +257,12 @@ export const ConversationTheater = memo(() => {
         )}
 
         {/* Convene input panel dock at bottom */}
-        <ConvenePanel roster={roster} onTopicCreated={(id) => selectTopic(id)} />
+        <ConvenePanel
+          roster={roster}
+          agentRuntimes={agentRuntimes}
+          hubHealthByAgent={hubHealthByAgent}
+          onTopicCreated={(id) => selectTopic(id)}
+        />
       </main>
       {showCommitteeDrawer && (
         <>

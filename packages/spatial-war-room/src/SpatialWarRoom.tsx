@@ -11,7 +11,7 @@ import '@xyflow/react/dist/style.css';
 import './index.css';
 import './App.css';
 
-import { useWarRoomStore } from './store/useWarRoomStore.js';
+import { useWarRoomStore, type AgentLifecycleAction } from './store/useWarRoomStore.js';
 import { startDemoSimulation, stopDemoSimulation } from './store/demoFixture.js';
 import { AgentHeartbeatNode, TaskClusterNode, ANXBriefingNode } from './components/CustomNodes.js';
 import { TopBar } from './components/TopBar.js';
@@ -34,6 +34,7 @@ const nodeTypes = {
 };
 
 const PRESSURE_VALVE_INTERVAL_MS = 100;
+const STATE_POLL_INTERVAL_MS = 7_500;
 const ORCHESTRATOR_URL = 'ws://localhost:8080';
 const ShortcutSheet = lazy(() => import('./components/theater/ShortcutSheet.js'));
 
@@ -54,6 +55,11 @@ const SpatialWarRoom = () => {
   const flushPressureValve = useWarRoomStore((s) => s.flushPressureValve);
   const tokenTotals = useWarRoomStore((s) => s.tokenTotals);
   const rateLimits = useWarRoomStore((s) => s.rateLimits);
+  const agentRuntimes = useWarRoomStore((s) => s.agentRuntimes);
+  const resourceMode = useWarRoomStore((s) => s.resourceMode);
+  const hubHealthByAgent = useWarRoomStore((s) => s.hubHealthByAgent);
+  const pendingLifecycleActions = useWarRoomStore((s) => s.pendingLifecycleActions);
+  const lifecycleErrors = useWarRoomStore((s) => s.lifecycleErrors);
   const claimStats = useWarRoomStore((s) => s.claimStats);
   const retryPendingCount = useWarRoomStore((s) => s.retryPendingCount);
   const interAgentChatEnabled = useWarRoomStore((s) => s.interAgentChatEnabled);
@@ -77,6 +83,35 @@ const SpatialWarRoom = () => {
     if (agentRoster.length === 0 && nodes.length <= 1) return 'syncing';
     return 'live';
   }, [wsConnected, agentRoster.length, nodes.length]);
+
+  const refreshStateSnapshot = useCallback(async (signal?: AbortSignal) => {
+    try {
+      const response = await fetch('http://localhost:8080/api/v1/state', { signal });
+      if (!response.ok) return;
+      const snapshot = await response.json() as unknown;
+      useWarRoomStore.getState().applyStateSnapshot(snapshot);
+    } catch (err) {
+      if (err instanceof DOMException && err.name === 'AbortError') return;
+      if (import.meta.env.DEV) {
+        console.debug('[SpatialWarRoom] state snapshot refresh failed', err);
+      }
+    }
+  }, []);
+
+  useEffect(() => {
+    let controller: AbortController | null = null;
+    const run = () => {
+      controller?.abort();
+      controller = new AbortController();
+      void refreshStateSnapshot(controller.signal);
+    };
+    run();
+    const id = setInterval(run, STATE_POLL_INTERVAL_MS);
+    return () => {
+      clearInterval(id);
+      controller?.abort();
+    };
+  }, [refreshStateSnapshot]);
 
   // 100ms Telemetry Pressure Valve — Module A
   useEffect(() => {
@@ -116,6 +151,38 @@ const SpatialWarRoom = () => {
     if (!ws || ws.readyState !== WebSocket.OPEN) return;
     ws.send(JSON.stringify({ type: 'set_inter_agent_chat_mode', mode }));
   }, []);
+
+  const requestAgentLifecycle = useCallback(async (agentId: string, action: AgentLifecycleAction) => {
+    const store = useWarRoomStore.getState();
+    store.setLifecyclePending(agentId, action);
+    try {
+      const response = await fetch(`http://localhost:8080/api/v1/agent-runtimes/${encodeURIComponent(agentId)}/${action}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+      });
+      let body: unknown = null;
+      const text = await response.text();
+      if (text) {
+        try {
+          body = JSON.parse(text);
+        } catch {
+          body = { message: text };
+        }
+      }
+      if (!response.ok) {
+        const message = body && typeof body === 'object' && 'error' in body
+          ? String((body as { error: unknown }).error)
+          : text || `HTTP ${response.status}`;
+        throw new Error(message);
+      }
+      store.applyStateSnapshot(body);
+      await refreshStateSnapshot();
+    } catch (err) {
+      store.recordLifecycleError(agentId, err instanceof Error ? err.message : 'Lifecycle request failed');
+    } finally {
+      store.clearLifecyclePending(agentId);
+    }
+  }, [refreshStateSnapshot]);
 
   useEffect(() => {
     const isDemoMode = typeof window !== 'undefined' && new URLSearchParams(window.location.search).get('demo') === 'true';
@@ -157,6 +224,7 @@ const SpatialWarRoom = () => {
         if (!active) return;
         reconnectAttempt = 0;
         useWarRoomStore.getState().setWsConnected(true);
+        void refreshStateSnapshot();
       };
 
       ws.onmessage = (event) => {
@@ -204,6 +272,32 @@ const SpatialWarRoom = () => {
               break;
             case 'rate_limit_update':
               if (message.data?.agentId) store.recordRateLimit(message.data);
+              break;
+            case 'resource_mode':
+              store.setResourceModeSnapshot(message.data);
+              break;
+            case 'agent_runtime_snapshot':
+            case 'agent_runtimes_snapshot':
+              store.setAgentRuntimeSnapshot(message.data ?? message.snapshot);
+              break;
+            case 'agent_runtime_event':
+            case 'agent_runtime_started':
+            case 'agent_runtime_stopped':
+            case 'agent_runtime_exited':
+            case 'agent_runtime_spawn_failed':
+              store.recordAgentRuntimeEvent(message.data && typeof message.data === 'object'
+                ? { ...message.data, type: message.type }
+                : message);
+              break;
+            case 'agent_hub_health_snapshot':
+            case 'hub_health_snapshot':
+              store.applyHubHealthSnapshot(message.data ?? message.snapshot);
+              break;
+            case 'agent_hub_health_event':
+            case 'hub_health_event':
+              store.recordHubHealthEvent(message.data && typeof message.data === 'object'
+                ? { ...message.data, type: message.type }
+                : message);
               break;
             case 'inter_agent_chat_state':
               if (message.data) {
@@ -294,7 +388,7 @@ const SpatialWarRoom = () => {
         wsRef.current = null;
       }
     };
-  }, []);
+  }, [refreshStateSnapshot]);
 
   return (
     <div className="cockpit-grid h-screen w-screen overflow-hidden text-command-warm-white">
@@ -306,6 +400,9 @@ const SpatialWarRoom = () => {
         activeAgents={agentRoster.length}
         nodeCount={nodes.length}
         tokenTotals={tokenTotals}
+        agentRuntimes={agentRuntimes}
+        resourceMode={resourceMode}
+        hubHealthByAgent={hubHealthByAgent}
         onInjectMission={injectMission}
       />
 
@@ -376,8 +473,13 @@ const SpatialWarRoom = () => {
           interAgentChatEnabled={interAgentChatEnabled}
           interAgentChatMode={interAgentChatMode}
           interAgentMessages={interAgentMessages}
+          agentRuntimes={agentRuntimes}
+          hubHealthByAgent={hubHealthByAgent}
+          pendingLifecycleActions={pendingLifecycleActions}
+          lifecycleErrors={lifecycleErrors}
           onToggleInterAgentChat={toggleInterAgentChat}
           onChangeInterAgentChatMode={changeInterAgentChatMode}
+          onLifecycleAction={requestAgentLifecycle}
           width={rosterWidth}
         />
       </div>
