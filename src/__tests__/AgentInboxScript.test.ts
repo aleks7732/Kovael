@@ -1,5 +1,5 @@
-import { afterEach, describe, expect, it } from 'vitest';
-import { spawn, type ChildProcess } from 'node:child_process';
+import { afterEach, beforeAll, describe, expect, it } from 'vitest';
+import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
 import { DatabaseSync } from 'node:sqlite';
 import * as fs from 'node:fs';
 import * as http from 'node:http';
@@ -16,6 +16,10 @@ describe('kovael-agent-inbox hub persistence', () => {
     const servers: http.Server[] = [];
     const children: ChildProcess[] = [];
     const originalDispatchSecret = process.env[CHAIR_DISPATCH_SECRET_ENV];
+
+    beforeAll(() => {
+        ensureAgentHubStoreBuild();
+    });
 
     afterEach(async () => {
         await Promise.all(children.splice(0).map((child) => stopChild(child)));
@@ -146,9 +150,14 @@ describe('kovael-agent-inbox hub persistence', () => {
             `).all() as Array<{ name: string }>;
             expect(tables.map((row) => row.name)).toEqual(expect.arrayContaining([
                 'agent_dispatches',
+                'agent_outbox',
+                'agent_receipts',
                 'agent_hub_meta',
                 'agent_memory',
             ]));
+            const meta = db.prepare('SELECT value FROM agent_hub_meta WHERE key = ?')
+                .get('schema_version') as { value: string } | undefined;
+            expect(meta?.value).toBe('2');
         } finally {
             db.close();
         }
@@ -222,6 +231,21 @@ describe('kovael-agent-inbox hub persistence', () => {
         expect(Buffer.concat(stderr).toString('utf8')).not.toContain('dispatch failed');
     }, 10_000);
 });
+
+function ensureAgentHubStoreBuild(): void {
+    const builtStore = path.join(process.cwd(), 'dist', 'services', 'AgentHubStore.js');
+    if (fs.existsSync(builtStore)) return;
+
+    const npm = process.platform === 'win32' ? 'npm.cmd' : 'npm';
+    const result = spawnSync(npm, ['run', 'build'], {
+        cwd: process.cwd(),
+        encoding: 'utf8',
+        windowsHide: true,
+    });
+    if (result.status !== 0) {
+        throw new Error(`npm run build failed before agent inbox script tests\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}`);
+    }
+}
 
 async function readJson(req: http.IncomingMessage): Promise<Record<string, unknown>> {
     const chunks: Buffer[] = [];

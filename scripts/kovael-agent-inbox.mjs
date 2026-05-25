@@ -14,7 +14,6 @@ import os from 'node:os';
 import path from 'node:path';
 import process from 'node:process';
 import { spawn } from 'node:child_process';
-import { DatabaseSync } from 'node:sqlite';
 import { pathToFileURL } from 'node:url';
 
 const SECURITY_VERSION = 'kovael-chair-v1';
@@ -22,7 +21,6 @@ const ENCRYPTION_ALG = 'A256GCM';
 const MAX_CLOCK_SKEW_MS = 5 * 60_000;
 const MAX_INBOX_BYTES = 512 * 1024;
 const DEFAULT_RUNTIME_TIMEOUT_MS = 180_000;
-const HUB_SCHEMA_VERSION = '1';
 
 function parseArgs(argv) {
     const args = { capabilities: [] };
@@ -243,100 +241,6 @@ function childEnv() {
     return env;
 }
 
-class AgentHub {
-    constructor(cfg) {
-        this.agentId = cfg.id;
-        this.dbPath = cfg.hubPath;
-        fs.mkdirSync(path.dirname(this.dbPath), { recursive: true });
-        this.db = new DatabaseSync(this.dbPath);
-        this.db.exec(`
-            PRAGMA journal_mode = WAL;
-            PRAGMA synchronous = NORMAL;
-            PRAGMA busy_timeout = 5000;
-            CREATE TABLE IF NOT EXISTS agent_hub_meta (
-                key TEXT PRIMARY KEY,
-                value TEXT NOT NULL,
-                updated_at INTEGER NOT NULL
-            );
-            CREATE TABLE IF NOT EXISTS agent_dispatches (
-                request_id TEXT PRIMARY KEY,
-                topic_id TEXT NOT NULL,
-                agent_id TEXT NOT NULL,
-                status TEXT NOT NULL CHECK(status IN ('accepted', 'running', 'succeeded', 'failed')),
-                received_at INTEGER NOT NULL,
-                started_at INTEGER,
-                completed_at INTEGER,
-                payload_json TEXT NOT NULL,
-                reply_content TEXT,
-                error TEXT
-            );
-            CREATE INDEX IF NOT EXISTS idx_agent_dispatches_status
-                ON agent_dispatches(status, received_at);
-            CREATE TABLE IF NOT EXISTS agent_memory (
-                key TEXT PRIMARY KEY,
-                value_json TEXT NOT NULL,
-                updated_at INTEGER NOT NULL
-            );
-        `);
-        const now = Date.now();
-        const meta = this.db.prepare(`
-            INSERT INTO agent_hub_meta (key, value, updated_at)
-            VALUES (?, ?, ?)
-            ON CONFLICT(key) DO UPDATE SET
-                value = excluded.value,
-                updated_at = excluded.updated_at
-        `);
-        meta.run('schema_version', HUB_SCHEMA_VERSION, now);
-        meta.run('agent_id', this.agentId, now);
-    }
-
-    recordInbound(payload) {
-        if (payload.agentId !== this.agentId) {
-            throw new Error(`wrong agent hub: expected ${this.agentId}, got ${payload.agentId}`);
-        }
-        const result = this.db.prepare(`
-            INSERT OR IGNORE INTO agent_dispatches (
-                request_id, topic_id, agent_id, status, received_at, payload_json
-            ) VALUES (?, ?, ?, 'accepted', ?, ?)
-        `).run(
-            payload.requestId,
-            payload.topicId,
-            payload.agentId,
-            Date.now(),
-            JSON.stringify(payload),
-        );
-        return { duplicate: result.changes === 0 };
-    }
-
-    markRunning(requestId) {
-        this.db.prepare(`
-            UPDATE agent_dispatches
-            SET status = 'running', started_at = COALESCE(started_at, ?), error = NULL
-            WHERE request_id = ?
-        `).run(Date.now(), requestId);
-    }
-
-    markSucceeded(requestId, replyContent) {
-        this.db.prepare(`
-            UPDATE agent_dispatches
-            SET status = 'succeeded', completed_at = ?, reply_content = ?, error = NULL
-            WHERE request_id = ?
-        `).run(Date.now(), replyContent, requestId);
-    }
-
-    markFailed(requestId, error) {
-        this.db.prepare(`
-            UPDATE agent_dispatches
-            SET status = 'failed', completed_at = ?, error = ?
-            WHERE request_id = ?
-        `).run(Date.now(), String(error).slice(0, 4000), requestId);
-    }
-
-    close() {
-        this.db.close();
-    }
-}
-
 class SharedAgentHub {
     constructor(store) {
         this.store = store;
@@ -368,6 +272,7 @@ async function createAgentHub(cfg) {
         path.join(cfg.cwd, 'dist', 'services', 'AgentHubStore.js'),
         path.join(process.cwd(), 'dist', 'services', 'AgentHubStore.js'),
     ];
+    const failures = [];
     for (const candidate of candidates) {
         if (!fs.existsSync(candidate)) continue;
         try {
@@ -378,13 +283,14 @@ async function createAgentHub(cfg) {
                     dbPath: cfg.hubPath,
                 }));
             }
-        } catch {
-            // Fall back to the embedded compatibility store below. The
-            // validation scripts run after build, so normal checked paths use
-            // the shared TypeScript AgentHubStore implementation.
+            failures.push(`${candidate}: AgentHubStore export missing`);
+        } catch (err) {
+            failures.push(`${candidate}: ${err instanceof Error ? err.message : String(err)}`);
         }
     }
-    return new AgentHub(cfg);
+    const searched = candidates.join(', ');
+    const details = failures.length > 0 ? ` Details: ${failures.join('; ')}` : '';
+    throw new Error(`AgentHubStore build artifact is required before starting kovael-agent-inbox. Run npm run build first. Searched: ${searched}.${details}`);
 }
 
 function spawnCapture(command, args, options) {
