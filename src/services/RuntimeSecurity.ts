@@ -23,6 +23,17 @@ const PLATFORM_ENV_ALLOWLIST = [
     'COMSPEC',
 ] as const;
 
+const PROXY_ENV_ALLOWLIST = [
+    'HTTP_PROXY',
+    'HTTPS_PROXY',
+    'ALL_PROXY',
+    'NO_PROXY',
+    'http_proxy',
+    'https_proxy',
+    'all_proxy',
+    'no_proxy',
+] as const;
+
 const RUNTIME_LOCATOR_ENV_ALLOWLIST = [
     'KOVAEL_CODEX_BIN',
     'KOVAEL_CLAUDE_BIN',
@@ -42,6 +53,7 @@ export function buildAgentAdapterEnv(
 ): NodeJS.ProcessEnv {
     const env: NodeJS.ProcessEnv = {};
     copyAllowlisted(source, env, PLATFORM_ENV_ALLOWLIST);
+    copyAllowlisted(source, env, PROXY_ENV_ALLOWLIST);
     copyAllowlisted(source, env, RUNTIME_LOCATOR_ENV_ALLOWLIST);
 
     const token = source.KOVAEL_TOKEN ?? source.KOVAEL_API_TOKEN;
@@ -61,6 +73,7 @@ export function buildAgentAdapterEnv(
 export function buildAgentRuntimeEnv(source: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
     const env: NodeJS.ProcessEnv = {};
     copyAllowlisted(source, env, PLATFORM_ENV_ALLOWLIST);
+    copyAllowlisted(source, env, PROXY_ENV_ALLOWLIST);
     return env;
 }
 

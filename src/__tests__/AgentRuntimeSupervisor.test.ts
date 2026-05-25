@@ -234,6 +234,8 @@ describe('AgentRuntimeSupervisor', () => {
                 KOVAEL_CHAIR_DISPATCH_SECRET: 'dispatch-secret-0123456789abcdef',
                 KOVAEL_CODEX_BIN: 'codex-test-bin',
                 KOVAEL_SECRET_CANARY: 'must-not-pass',
+                HTTPS_PROXY: 'http://proxy.example:8443',
+                no_proxy: '127.0.0.1,localhost',
                 OPENAI_API_KEY: 'must-not-pass-openai',
             }),
             cwd: tempDir(),
@@ -252,6 +254,8 @@ describe('AgentRuntimeSupervisor', () => {
         expect(adapterEnv?.KOVAEL_AGENT_HUB_ENCRYPTION).toBe('required');
         expect(adapterEnv?.KOVAEL_CHAIR_DISPATCH_SECRET).toBe('dispatch-secret-0123456789abcdef');
         expect(adapterEnv?.KOVAEL_CODEX_BIN).toBe('codex-test-bin');
+        expect(adapterEnv?.HTTPS_PROXY).toBe('http://proxy.example:8443');
+        expect(adapterEnv?.no_proxy).toBe('127.0.0.1,localhost');
         expect(adapterEnv?.KOVAEL_SECRET_CANARY).toBeUndefined();
         expect(adapterEnv?.OPENAI_API_KEY).toBeUndefined();
 

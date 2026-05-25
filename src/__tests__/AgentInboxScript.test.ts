@@ -272,6 +272,9 @@ if (outIndex !== -1) fs.writeFileSync(process.argv[outIndex + 1], 'MOCK_RUNTIME_
                 KOVAEL_API_TOKEN: 'api-token-should-not-reach-runtime',
                 KOVAEL_TOKEN: 'token-should-not-reach-runtime',
                 KOVAEL_SECRET_CANARY: 'canary-should-not-reach-runtime',
+                HTTP_PROXY: 'http://proxy.example:8080',
+                NO_PROXY: '127.0.0.1,localhost',
+                no_proxy: '127.0.0.1,localhost',
                 [CHAIR_DISPATCH_SECRET_ENV]: process.env[CHAIR_DISPATCH_SECRET_ENV],
             },
             windowsHide: true,
@@ -301,6 +304,8 @@ if (outIndex !== -1) fs.writeFileSync(process.argv[outIndex + 1], 'MOCK_RUNTIME_
         const runtimeEnv = JSON.parse(fs.readFileSync(envCapturePath, 'utf8')) as Record<string, string>;
         expect(Object.keys(runtimeEnv).filter((key) => key.startsWith('KOVAEL_'))).toEqual([]);
         expect(runtimeEnv.OPENAI_API_KEY).toBeUndefined();
+        expect(runtimeEnv.HTTP_PROXY).toBe('http://proxy.example:8080');
+        expect(runtimeEnv.no_proxy ?? runtimeEnv.NO_PROXY).toBe('127.0.0.1,localhost');
     }, 10_000);
 
     it('redacts runtime failure details before reply, logs, and hub persistence', async () => {

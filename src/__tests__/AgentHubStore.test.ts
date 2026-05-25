@@ -4,6 +4,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { AgentHubStore } from '../services/AgentHubStore.js';
+import { chmodLocalPathBestEffort } from '../services/SqlitePathSecurity.js';
 
 describe('AgentHubStore', () => {
     const tempDirs: string[] = [];
@@ -93,6 +94,12 @@ describe('AgentHubStore', () => {
             encryptionSecret: '0123456789abcdef0123456789abcdef',
         });
         hub.close();
+    });
+
+    it('treats chmod failures as best effort on local hub paths', () => {
+        expect(() => chmodLocalPathBestEffort('agent-hub.sqlite', 0o600, () => {
+            throw new Error('chmod not supported');
+        })).not.toThrow();
     });
 
     it('rejects dispatch payloads for a different agent hub', () => {

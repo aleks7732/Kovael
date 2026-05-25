@@ -70,7 +70,7 @@ export function prepareLocalSqliteFile(dbPath: string, label: string): void {
 
     const dir = path.dirname(dbPath);
     fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
-    fs.chmodSync(dir, 0o700);
+    chmodLocalPathBestEffort(dir, 0o700);
     const dirMode = fs.statSync(dir).mode & 0o777;
     if (process.platform !== 'win32' && dirMode !== 0o700) {
         throw new Error(`${label} parent dir ${dir} has mode 0o${dirMode.toString(8)}, expected 0o700`);
@@ -80,7 +80,7 @@ export function prepareLocalSqliteFile(dbPath: string, label: string): void {
         const fd = fs.openSync(dbPath, 'a', 0o600);
         fs.closeSync(fd);
     } else {
-        fs.chmodSync(dbPath, 0o600);
+        chmodLocalPathBestEffort(dbPath, 0o600);
     }
     const fileMode = fs.statSync(dbPath).mode & 0o777;
     if (process.platform !== 'win32' && fileMode !== 0o600) {
@@ -96,4 +96,18 @@ function isUncPath(value: string): boolean {
 function looksCloudSynced(value: string): boolean {
     const parts = value.toLowerCase().split(/[\\/]+/);
     return CLOUD_SYNC_SEGMENTS.some((segment) => parts.includes(segment.toLowerCase()));
+}
+
+export function chmodLocalPathBestEffort(
+    target: string,
+    mode: number,
+    chmod: (path: string, mode: number) => void = fs.chmodSync,
+): void {
+    try {
+        chmod(target, mode);
+    } catch {
+        // ACL-backed filesystems, especially on Windows, can reject POSIX chmod
+        // even when the local path is otherwise safe. The mode checks below
+        // still enforce permissions on platforms where mode bits are reliable.
+    }
 }
