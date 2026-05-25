@@ -29,6 +29,7 @@ class FakeChild extends EventEmitter {
 
 describe('Agent runtime control routes', () => {
     const tempDirs: string[] = [];
+    const hubSecret = '0123456789abcdef0123456789abcdef';
     let orchestrator: MeshOrchestrator | null = null;
 
     afterEach(() => {
@@ -52,6 +53,7 @@ describe('Agent runtime control routes', () => {
             agentRuntimes: {
                 enabled: true,
                 hubDir,
+                env: { KOVAEL_AGENT_HUB_SECRET: hubSecret },
                 agents: [{
                     agentId: 'shaev',
                     provider: 'VantagePoint Local · Hermes 3',

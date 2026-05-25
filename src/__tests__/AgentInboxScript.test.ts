@@ -16,6 +16,9 @@ describe('kovael-agent-inbox hub persistence', () => {
     const servers: http.Server[] = [];
     const children: ChildProcess[] = [];
     const originalDispatchSecret = process.env[CHAIR_DISPATCH_SECRET_ENV];
+    const originalHubSecret = process.env.KOVAEL_AGENT_HUB_SECRET;
+    const originalHubEncryption = process.env.KOVAEL_AGENT_HUB_ENCRYPTION;
+    const originalCodexBin = process.env.KOVAEL_CODEX_BIN;
 
     beforeAll(() => {
         ensureAgentHubStoreBuild();
@@ -32,12 +35,21 @@ describe('kovael-agent-inbox hub persistence', () => {
         } else {
             process.env[CHAIR_DISPATCH_SECRET_ENV] = originalDispatchSecret;
         }
+        restoreEnv('KOVAEL_AGENT_HUB_SECRET', originalHubSecret);
+        restoreEnv('KOVAEL_AGENT_HUB_ENCRYPTION', originalHubEncryption);
+        restoreEnv('KOVAEL_CODEX_BIN', originalCodexBin);
     });
 
     function tempPath(): string {
         const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'kovael-agent-inbox-'));
         tempDirs.push(dir);
         return path.join(dir, 'hub-probe', 'agent-hub.sqlite');
+    }
+
+    function tempFile(name: string): string {
+        const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'kovael-agent-inbox-file-'));
+        tempDirs.push(dir);
+        return path.join(dir, name);
     }
 
     async function startFakeOrchestrator(): Promise<string> {
@@ -230,11 +242,141 @@ describe('kovael-agent-inbox hub persistence', () => {
 
         expect(Buffer.concat(stderr).toString('utf8')).not.toContain('dispatch failed');
     }, 10_000);
+
+    it('does not expose KOVAEL secrets to spawned runtime processes', async () => {
+        process.env[CHAIR_DISPATCH_SECRET_ENV] = 'vitest-env-boundary-secret-0123456789';
+        const envCapturePath = tempFile('runtime-env.json');
+        const mockCodexPath = tempFile('mock-codex.js');
+        fs.writeFileSync(mockCodexPath, `
+const fs = require('node:fs');
+fs.writeFileSync(${JSON.stringify(envCapturePath)}, JSON.stringify(process.env));
+const outIndex = process.argv.indexOf('--output-last-message');
+if (outIndex !== -1) fs.writeFileSync(process.argv[outIndex + 1], 'MOCK_RUNTIME_REPLY');
+`, 'utf8');
+
+        const hubPath = tempPath();
+        const orchestrator = await startDispatchOrchestrator();
+        const child = spawn(process.execPath, [
+            'scripts/kovael-agent-inbox.mjs',
+            '--id', 'hub-probe',
+            '--provider', 'vitest',
+            '--runtime', 'codex',
+            '--host', orchestrator.host,
+            '--hub-path', hubPath,
+        ], {
+            cwd: process.cwd(),
+            env: {
+                ...process.env,
+                KOVAEL_CODEX_BIN: mockCodexPath,
+                KOVAEL_AGENT_HUB_SECRET: 'hub-secret-0123456789abcdef012345',
+                KOVAEL_API_TOKEN: 'api-token-should-not-reach-runtime',
+                KOVAEL_TOKEN: 'token-should-not-reach-runtime',
+                KOVAEL_SECRET_CANARY: 'canary-should-not-reach-runtime',
+                [CHAIR_DISPATCH_SECRET_ENV]: process.env[CHAIR_DISPATCH_SECRET_ENV],
+            },
+            windowsHide: true,
+        });
+        children.push(child);
+
+        const inboxUrl = await orchestrator.waitForClaim();
+        const requestId = 'req-env-boundary';
+        const secured = secureChairDispatchBody({
+            requestId,
+            topicId: 'topic-env-boundary',
+            agentId: 'hub-probe',
+            claimSessionId: 'session-dispatch',
+            replyProofSecret: 'reply-proof-secret-0123456789abcdef',
+            replyUrl: `${orchestrator.host}/api/v1/chairs/reply`,
+            messages: [{ role: 'user', content: 'check env boundary' }],
+        }, requestId);
+
+        const dispatch = await fetch(inboxUrl, {
+            method: 'POST',
+            headers: secured.headers,
+            body: secured.body,
+        });
+        expect(dispatch.status, await dispatch.text()).toBe(202);
+        await orchestrator.waitForReply();
+
+        const runtimeEnv = JSON.parse(fs.readFileSync(envCapturePath, 'utf8')) as Record<string, string>;
+        expect(Object.keys(runtimeEnv).filter((key) => key.startsWith('KOVAEL_'))).toEqual([]);
+        expect(runtimeEnv.OPENAI_API_KEY).toBeUndefined();
+    }, 10_000);
+
+    it('redacts runtime failure details before reply, logs, and hub persistence', async () => {
+        process.env[CHAIR_DISPATCH_SECRET_ENV] = 'vitest-runtime-fail-secret-0123456789';
+        const mockCodexPath = tempFile('mock-codex-fail.js');
+        fs.writeFileSync(mockCodexPath, `
+console.error('runtime exploded KOVAEL_SECRET_CANARY=super-secret-value bearer abcdefghijklmnopqrstuvwxyz0123456789abcdef');
+process.exit(9);
+`, 'utf8');
+
+        const hubPath = tempPath();
+        const orchestrator = await startDispatchOrchestrator();
+        const child = spawn(process.execPath, [
+            'scripts/kovael-agent-inbox.mjs',
+            '--id', 'hub-probe',
+            '--provider', 'vitest',
+            '--runtime', 'codex',
+            '--host', orchestrator.host,
+            '--hub-path', hubPath,
+        ], {
+            cwd: process.cwd(),
+            env: {
+                ...process.env,
+                KOVAEL_CODEX_BIN: mockCodexPath,
+                [CHAIR_DISPATCH_SECRET_ENV]: process.env[CHAIR_DISPATCH_SECRET_ENV],
+            },
+            windowsHide: true,
+        });
+        children.push(child);
+        const stderr: Buffer[] = [];
+        child.stderr?.on('data', (chunk) => stderr.push(Buffer.from(chunk)));
+
+        const inboxUrl = await orchestrator.waitForClaim();
+        const requestId = 'req-runtime-failure-redacted';
+        const secured = secureChairDispatchBody({
+            requestId,
+            topicId: 'topic-runtime-failure-redacted',
+            agentId: 'hub-probe',
+            claimSessionId: 'session-dispatch',
+            replyProofSecret: 'reply-proof-secret-0123456789abcdef',
+            replyUrl: `${orchestrator.host}/api/v1/chairs/reply`,
+            messages: [{ role: 'user', content: 'do not leak this prompt in failure' }],
+        }, requestId);
+
+        const dispatch = await fetch(inboxUrl, {
+            method: 'POST',
+            headers: secured.headers,
+            body: secured.body,
+        });
+        expect(dispatch.status, await dispatch.text()).toBe(202);
+
+        const reply = await orchestrator.waitForReply();
+        expect(reply).toMatchObject({
+            requestId,
+            agentId: 'hub-probe',
+            status: 'failed',
+        });
+        expect(String(reply.content)).toContain('redacted failure');
+        expect(String(reply.content)).not.toContain('super-secret-value');
+        expect(String(reply.error)).not.toContain('abcdefghijklmnopqrstuvwxyz0123456789abcdef');
+
+        const record = await waitForDispatchRecord(hubPath, requestId, 'failed');
+        expect(String(record.error)).toContain('redacted failure');
+        expect(String(record.error)).not.toContain('super-secret-value');
+        const stderrText = Buffer.concat(stderr).toString('utf8');
+        expect(stderrText).toContain('redacted failure');
+        expect(stderrText).not.toContain('super-secret-value');
+    }, 10_000);
 });
 
 function ensureAgentHubStoreBuild(): void {
-    const builtStore = path.join(process.cwd(), 'dist', 'services', 'AgentHubStore.js');
-    if (fs.existsSync(builtStore)) return;
+    const requiredBuildArtifacts = [
+        path.join(process.cwd(), 'dist', 'services', 'AgentHubStore.js'),
+        path.join(process.cwd(), 'dist', 'services', 'RuntimeSecurity.js'),
+    ];
+    if (requiredBuildArtifacts.every((artifact) => fs.existsSync(artifact))) return;
 
     const npm = process.platform === 'win32' ? 'npm.cmd' : 'npm';
     const result = spawnSync(npm, ['run', 'build'], {
@@ -278,6 +420,14 @@ async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, label: str
         ]);
     } finally {
         if (timer) clearTimeout(timer);
+    }
+}
+
+function restoreEnv(name: string, value: string | undefined): void {
+    if (value === undefined) {
+        delete process.env[name];
+    } else {
+        process.env[name] = value;
     }
 }
 

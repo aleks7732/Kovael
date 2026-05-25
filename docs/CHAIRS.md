@@ -47,7 +47,7 @@ answer through `/api/v1/chairs/reply`.
 Each inbox adapter also opens a local SQLite hub file:
 
 ```text
-.kovael/agents/<agent-id>/agent-hub.sqlite
+%LOCALAPPDATA%\Kovael\agents\<agent-id>\agent-hub.sqlite
 ```
 
 The hub records inbound dispatches, runtime status, replies, errors,
@@ -60,7 +60,8 @@ Do not put hub files on a network filesystem, cloud-synced folder, or
 shared replica volume. Hubs are not a distributed queue and are not
 replicated between orchestrator instances. If a hub is deleted, that
 agent loses local edge history, but global orchestrator state remains
-intact.
+intact. The default app-managed hub location is outside the workspace.
+SQLite WAL sidecars (`-wal` and `-shm`) stay beside the hub on local disk.
 
 ```bash
 node scripts/kovael-agent-inbox.mjs \
@@ -74,9 +75,9 @@ node scripts/kovael-agent-inbox.mjs \
 Set `KOVAEL_CHAIR_DISPATCH_SECRET` to a 32+ character secret to require
 encrypted dispatch and reply envelopes. The adapter keeps that secret for
 the inbox/reply boundary and strips it before launching the underlying
-agent runtime. `KOVAEL_AGENT_HUB_SECRET` is reserved for deployments that
-enable hub-at-rest sealing or encryption; until that path is active, use
-local filesystem permissions to protect `agent-hub.sqlite`.
+agent runtime. `KOVAEL_AGENT_HUB_SECRET` enables active field encryption
+inside `agent-hub.sqlite`; managed runtimes require hub encryption and
+refuse startup without a 32+ character hub secret.
 
 ## App-managed lifecycle
 
@@ -96,11 +97,12 @@ explicit elevated-runtime opt-in.
 |---|---:|---|
 | `KOVAEL_AGENT_RUNTIMES_ENABLED` | `false` | Start local inbox adapters with the orchestrator |
 | `KOVAEL_AGENT_RUNTIME_IDS` | `shaev,nyx-codex` | Comma-separated supervised agent IDs |
-| `KOVAEL_AGENT_HUB_DIR` | `.kovael/agents` | Parent directory for per-agent hub files |
+| `KOVAEL_AGENT_HUB_DIR` | OS app data | Parent directory for per-agent hub files; default is outside the workspace |
 | `KOVAEL_AGENT_RUNTIMES_PARK_ON_IDLE` | `true` | Stop adapters in idle mode and restart on active use |
 | `KOVAEL_API_TOKEN` | unset | Bearer token for orchestrator API/metrics/WS gates; forwarded to adapters as `KOVAEL_TOKEN` |
 | `KOVAEL_CHAIR_DISPATCH_SECRET` | unset | 32+ character dispatch/reply envelope secret |
-| `KOVAEL_AGENT_HUB_SECRET` | unset | Reserved hub-at-rest secret material for deployments that enable hub sealing/encryption |
+| `KOVAEL_AGENT_HUB_SECRET` | unset | Active field-encryption secret for hub payloads, replies, receipts, and memory |
+| `KOVAEL_AGENT_HUB_ENCRYPTION` | optional | Set to `required` for manual adapters that must reject plaintext hub storage |
 
 If `KOVAEL_API_TOKEN` gates the HTTP API, the supervisor passes it to the
 adapter as `KOVAEL_TOKEN` and uses `--with-token`; the adapter removes
@@ -119,9 +121,9 @@ Lifecycle behavior:
 Container and Kubernetes defaults keep supervised local runtimes disabled.
 Only enable them in Docker or Kubernetes after adding runtime binaries, a
 writable local hub volume, and secret injection for `KOVAEL_API_TOKEN`,
-`KOVAEL_CHAIR_DISPATCH_SECRET`, and any `KOVAEL_AGENT_HUB_SECRET`
-material. The default two-replica Kubernetes deployment must not share
-per-agent hubs as distributed state.
+`KOVAEL_CHAIR_DISPATCH_SECRET`, and `KOVAEL_AGENT_HUB_SECRET` material.
+Managed runtimes require hub encryption. The default two-replica
+Kubernetes deployment must not share per-agent hubs as distributed state.
 
 See `docs/runbooks/agent-hub-lifecycle.md` for the operator runbook.
 

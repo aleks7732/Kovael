@@ -1,35 +1,71 @@
 # NEXT-PROMPT
 
-> The always-current handoff. Refreshed at the end of every working session
-> so the next session — yours or a sister-instance's — can pick up cleanly.
-> If this file is stale, the resume isn't trustworthy; rewrite before
-> dispatching anything.
+> The always-current handoff. Refresh this file at the end of every working
+> session so the next session can pick up cleanly.
 
-## Where we stopped
+## Where We Stopped
 
-Scaffolded the nyx dev-loop infrastructure in two pilot-orchestrated waves (6 subagent dispatches total). Wave 1 created the user-level template canon at `~/.claude/templates/nyx-loop/` (5 files) and designed project-level note drafts. Wave 2 installed `.claude/notes/` (local-only per repo `.gitignore` policy), `NEXT-PROMPT.md` (this file, tracked), and `CLAUDE.md` (tracked, pointer doc, 58 LOC). The B3 caveman:cavecrew-reviewer subagent reviewed all artifacts — 1 medium finding fixed inline, otherwise clean. Two strategy + two delta notes landed at `.claude/notes/2026-05-23_*.md`.
+SQLite hub hardening is implemented on `codex/sqlite-hub-hardening`.
 
-## What's next
+The branch hardens app-managed agent hubs and runtime boundaries:
 
-- Decide: `git add CLAUDE.md NEXT-PROMPT.md` + commit + PR — or leave untracked for further iteration.
-- If committing: write a commit message referencing the wave delta notes (which won't be in the diff since `.claude/` is gitignored).
-- Optional: audit-revert B1's global `git config --global --add safe.directory ...` change if undesired (see wave-2 delta D12).
-- Optional: write a memory-learning episode capturing the doubled-scope pilot pattern (6 dispatches across 2 waves with notes loop) as a reusable workflow.
+- adapter env allowlisting and runtime child `KOVAEL_*` secret stripping
+- shared runtime redaction and safe failure messages
+- mandatory hub encryption for managed runtimes
+- encrypted/redacted hub payloads, replies, receipts, memory, and failures
+- local-only hub path validation with UNC/cloud-sync rejection
+- default managed hub storage outside the workspace
+- WAL/SHM sidecar gitignore and docs validation
 
-## Files in flight
+Fresh verification evidence from this session:
 
-- `CLAUDE.md` — untracked, ready for `git add`
-- `NEXT-PROMPT.md` — this file, untracked, ready for `git add`
-- `.claude/notes/2026-05-23_wave-{1,2}-{strategy,delta}.md` — local-only, not committed
-- `.claude/notes/README.md`, `.claude/notes/filename-convention.md` — local-only, not committed
-- `~/.claude/templates/nyx-loop/*.md` — user-level canon, 5 files, outside worktree
+- `npx tsc --noEmit`
+- targeted hardening tests: `49 passed | 2 skipped`
+- `node scripts/validate-pr.mjs`: full repo validation passed, `515 passed | 4 skipped`
+- secure adapter smoke with 32+ char secrets: all 9 fake-deterministic adapters claimed, decrypted, dispatched, replied, and persisted hub success
 
-## Open questions
+## Outstanding Todo
 
-- Should `NEXT-PROMPT.md` be committed every session-end, or only when materially changed?
-- Are the user-level templates the right canon, or do they need migration to a different location (e.g., a plugin)?
-- Does the team want `.claude/notes/` ever made trackable, or is local-only the durable policy?
+- Create and merge the SQLite hub hardening PR from `codex/sqlite-hub-hardening`.
+- Keep the unrelated graph/cockpit cleanup out of the SQLite PR:
+  - `.graphifyignore`
+  - `packages/spatial-war-room/src/store/useWarRoomStore.ts`
+  - `packages/spatial-war-room/test/store/useWarRoomStore.spec.ts`
+  - `packages/spatial-war-room/src/store/snapshotNormalizers.ts`
+  - `packages/spatial-war-room/src/store/snapshotTypes.ts`
+  - `packages/spatial-war-room/test/store/snapshotNormalizers.spec.ts`
+- Open a separate graph/cockpit cleanup PR for the store snapshot normalizer split and graph ignore improvements.
+- Investigate the Node `[DEP0190]` test warning about `shell: true` in child process usage and remove it where safe.
+- Decide whether real-runtime smoke for `nyx-codex` and `shaev` should become a documented manual release gate, separate from CI-safe fake-deterministic adapter validation.
+- Add a future SQLite backup/checkpoint helper if operators need one; docs now warn not to blindly copy only the main DB file during writes.
 
-## Resume command
+## Files In Flight
 
-Start the next session with: read `.claude/notes/2026-05-23_wave-2-delta.md` first, then `CLAUDE.md`, then decide whether to commit the tracked files or keep iterating.
+SQLite hardening files expected in the PR:
+
+- `.gitignore`
+- `README.md`
+- `docs/CHAIRS.md`
+- `docs/runbooks/agent-hub-lifecycle.md`
+- `scripts/kovael-agent-inbox.mjs`
+- `scripts/real-runtime-smoke.mjs`
+- `scripts/validate-all-chairs.mjs`
+- `scripts/validate-pr.mjs`
+- `src/services/RuntimeSecurity.ts`
+- `src/services/SqlitePathSecurity.ts`
+- `src/services/AgentHubStore.ts`
+- `src/services/AgentRuntimeSupervisor.ts`
+- `src/services/ModelProvider.ts`
+- `src/__tests__/AgentHubStore.test.ts`
+- `src/__tests__/AgentInboxScript.test.ts`
+- `src/__tests__/AgentRuntimeRoutes.test.ts`
+- `src/__tests__/AgentRuntimeSupervisor.test.ts`
+- `NEXT-PROMPT.md`
+
+Unrelated cockpit/graph files remain dirty and should be handled separately.
+
+## Resume Command
+
+Start with `git status --short --branch`, confirm the SQLite hardening PR state,
+then either continue PR review fixes or branch/worktree off for the graph/cockpit
+cleanup PR.

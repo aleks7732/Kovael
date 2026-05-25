@@ -1,8 +1,14 @@
 import { DatabaseSync } from 'node:sqlite';
 import crypto from 'node:crypto';
-import * as fs from 'node:fs';
-import * as path from 'node:path';
 import { createChairReplyProof } from './ChairDispatchSecurity.js';
+import {
+    AGENT_HUB_ENCRYPTION_ENV,
+    AGENT_HUB_SECRET_ENV,
+    isHubEncryptionRequired,
+    isValidAgentHubSecret,
+    redactSensitiveText,
+} from './RuntimeSecurity.js';
+import { prepareLocalSqliteFile } from './SqlitePathSecurity.js';
 
 export type AgentDispatchStatus = 'accepted' | 'running' | 'succeeded' | 'failed';
 export type AgentOutboxKind = 'reply' | 'receipt';
@@ -14,6 +20,7 @@ export interface AgentHubStoreOptions {
     dbPath: string;
     now?: () => number;
     encryptionSecret?: string;
+    encryptionRequired?: boolean;
 }
 
 export interface AgentDispatchPayload {
@@ -147,7 +154,6 @@ interface MemoryRow {
 }
 
 const SCHEMA_VERSION = '2';
-const HUB_SECRET_ENV = 'KOVAEL_AGENT_HUB_SECRET';
 const ENCRYPTED_VALUE_MARKER = '__kovaelEncrypted';
 const ENCRYPTED_VALUE_VERSION = 1;
 const ENCRYPTION_AAD_VERSION = 'kovael-agent-hub-field-v1';
@@ -172,9 +178,10 @@ export class AgentHubStore {
         this.agentId = agentId;
         this.dbPath = options.dbPath;
         this.now = options.now ?? (() => Date.now());
-        this.encryptionSecret = readHubSecret(options.encryptionSecret);
+        const encryptionRequired = options.encryptionRequired ?? isHubEncryptionRequired(process.env);
+        this.encryptionSecret = readHubSecret(options.encryptionSecret, encryptionRequired);
 
-        prepareDbFile(this.dbPath);
+        prepareLocalSqliteFile(this.dbPath, 'agent hub db');
         this.db = new DatabaseSync(this.dbPath);
         this.configure();
         this.migrate();
@@ -189,6 +196,7 @@ export class AgentHubStore {
         }
 
         const payloadJson = stableStringify(payload);
+        const persistedPayloadJson = stableStringify(persistableDispatchPayload(payload));
         const payloadHash = sha256(payloadJson);
         const stamp = this.now();
         const existing = this.db.prepare(`
@@ -223,7 +231,7 @@ export class AgentHubStore {
                 agentId,
                 stamp,
                 stamp,
-                this.encodeSensitive(payloadJson, aad('agent_dispatches', requestId, 'payload_json')),
+                this.encodeSensitive(persistedPayloadJson, aad('agent_dispatches', requestId, 'payload_json')),
                 payloadHash,
                 stringOrNull(payload.replyUrl),
             );
@@ -276,14 +284,20 @@ export class AgentHubStore {
         if (result.changes === 0) throw new Error(`unknown dispatch requestId ${requestId}`);
     }
 
-    public markDispatchSucceeded(requestId: string, replyContent: string): void {
+    public markDispatchSucceeded(
+        requestId: string,
+        replyContent: string,
+        proofFields?: { claimSessionId?: string; replyProofSecret?: string },
+    ): void {
         const stamp = this.now();
         this.withTransaction(() => {
             const dispatch = this.requireDispatchRow(requestId);
             let outboxId: string | null = null;
             const dispatchPayload = this.dispatchFromRow(dispatch).payload;
-            const claimSessionId = stringOrNull(dispatchPayload.claimSessionId);
-            const replyProofSecret = stringOrNull(dispatchPayload.replyProofSecret);
+            const claimSessionId = stringOrNull(proofFields?.claimSessionId)
+                ?? stringOrNull(dispatchPayload.claimSessionId);
+            const replyProofSecret = stringOrNull(proofFields?.replyProofSecret)
+                ?? stringOrNull(dispatchPayload.replyProofSecret);
             const replyPayload = {
                 topicId: dispatch.topic_id,
                 agentId: dispatch.agent_id,
@@ -338,6 +352,7 @@ export class AgentHubStore {
 
     public markDispatchFailed(requestId: string, error: string): void {
         const stamp = this.now();
+        const safeError = redactSensitiveText(error);
         this.withTransaction(() => {
             const result = this.db.prepare(`
                 UPDATE agent_dispatches
@@ -345,13 +360,17 @@ export class AgentHubStore {
                     completed_at = ?,
                     error = ?
                 WHERE request_id = ?
-            `).run(stamp, error.slice(0, 4_000), requestId) as { changes: number };
+            `).run(
+                stamp,
+                this.encodeSensitive(safeError, aad('agent_dispatches', requestId, 'error')),
+                requestId,
+            ) as { changes: number };
             if (result.changes === 0) throw new Error(`unknown dispatch requestId ${requestId}`);
             this.appendReceipt(requestId, 'runtime_failed', {
                 requestId,
                 status: 'failed',
                 completedAt: stamp,
-                error: error.slice(0, 4_000),
+                error: safeError,
             });
         });
     }
@@ -863,7 +882,7 @@ export class AgentHubStore {
             payloadHash: row.payload_sha256 ?? sha256(payloadJson),
             replyUrl: row.reply_url,
             replyContent,
-            error: row.error,
+            error: row.error === null ? null : this.decodeSensitive(row.error, aad('agent_dispatches', row.request_id, 'error')),
             duplicateCount: row.duplicate_count ?? 0,
             lastSeenAt: row.last_seen_at,
             runtimeAttempts: row.runtime_attempts ?? 0,
@@ -928,7 +947,7 @@ export class AgentHubStore {
         const envelope = parseEncryptedEnvelope(value);
         if (!envelope) return value;
         if (!this.encryptionKey) {
-            throw new Error(`encrypted agent hub value requires ${HUB_SECRET_ENV}`);
+            throw new Error(`encrypted agent hub value requires ${AGENT_HUB_SECRET_ENV}`);
         }
         const decipher = crypto.createDecipheriv(
             'aes-256-gcm',
@@ -973,30 +992,19 @@ export class AgentHubStore {
     }
 }
 
-function prepareDbFile(dbPath: string): void {
-    if (dbPath === ':memory:') return;
-    const dir = path.dirname(dbPath);
-    fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
-    try {
-        fs.chmodSync(dir, 0o700);
-    } catch {
-        // chmod is best-effort on Windows and some mounted filesystems.
+function readHubSecret(explicit: string | undefined, required: boolean): string | null {
+    const value = explicit ?? process.env[AGENT_HUB_SECRET_ENV];
+    const trimmed = value?.trim();
+    if (required && !isValidAgentHubSecret(trimmed)) {
+        throw new Error(`${AGENT_HUB_SECRET_ENV} must be at least 32 characters when ${AGENT_HUB_ENCRYPTION_ENV}=required`);
     }
-    if (!fs.existsSync(dbPath)) {
-        const fd = fs.openSync(dbPath, 'a', 0o600);
-        fs.closeSync(fd);
-    }
-    try {
-        fs.chmodSync(dbPath, 0o600);
-    } catch {
-        // See directory chmod note above.
-    }
+    return trimmed ? trimmed : null;
 }
 
-function readHubSecret(explicit?: string): string | null {
-    const value = explicit ?? process.env[HUB_SECRET_ENV];
-    const trimmed = value?.trim();
-    return trimmed ? trimmed : null;
+function persistableDispatchPayload(payload: AgentDispatchPayload): AgentDispatchPayload {
+    const copy: AgentDispatchPayload = { ...payload };
+    delete copy.replyProofSecret;
+    return copy;
 }
 
 function requiredString(value: unknown, field: string): string {

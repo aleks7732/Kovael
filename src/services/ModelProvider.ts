@@ -4,6 +4,7 @@ import {
     secureChairDispatchBody,
     verifyChairReplyProof,
 } from './ChairDispatchSecurity.js';
+import { redactSensitiveText } from './RuntimeSecurity.js';
 
 export interface ChatMessage {
     role: 'system' | 'user' | 'assistant';
@@ -289,7 +290,7 @@ export class ChairBridgeProvider implements ModelProvider {
 
         const status = input.status ?? 'succeeded';
         const error = typeof input.error === 'string' && input.error.trim().length > 0
-            ? input.error.trim()
+            ? redactSensitiveText(input.error.trim())
             : undefined;
         const receipt: ChairDispatchReceipt = {
             requestId: input.requestId,

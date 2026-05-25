@@ -36,6 +36,7 @@ const steps = [
     { name: 'cockpit typecheck', ...npmStep(['run', 'typecheck'], cockpit) },
     { name: 'cockpit test typecheck', ...npmStep(['run', 'typecheck:tests'], cockpit) },
     { name: 'cockpit build', ...npmStep(['run', 'build'], cockpit) },
+    { name: 'sqlite hub hardening docs', run: validateSqliteHubHardeningDocs },
     { name: 'changed-file secret scan', run: scanChangedFiles },
 ];
 
@@ -110,6 +111,49 @@ function scanChangedFiles() {
     }
 
     process.stdout.write('[validate-pr] no high-confidence secret patterns in changed files\n');
+    return 0;
+}
+
+function validateSqliteHubHardeningDocs() {
+    const requiredGitignore = [
+        '*.db-wal',
+        '*.db-shm',
+        '*.sqlite-wal',
+        '*.sqlite-shm',
+        '*.sqlite3-wal',
+        '*.sqlite3-shm',
+    ];
+    const gitignore = readFileSync(path.join(root, '.gitignore'), 'utf8');
+    const missing = requiredGitignore.filter((pattern) => !gitignore.includes(pattern));
+    if (missing.length > 0) {
+        process.stderr.write(`[validate-pr] .gitignore missing SQLite sidecar patterns: ${missing.join(', ')}\n`);
+        return 1;
+    }
+
+    const docs = [
+        'README.md',
+        path.join('docs', 'CHAIRS.md'),
+        path.join('docs', 'runbooks', 'agent-hub-lifecycle.md'),
+    ].map((rel) => readFileSync(path.join(root, rel), 'utf8')).join('\n');
+
+    if (/KOVAEL_AGENT_HUB_SECRET[^.\n]*reserved/i.test(docs)) {
+        process.stderr.write('[validate-pr] docs still describe KOVAEL_AGENT_HUB_SECRET as reserved\n');
+        return 1;
+    }
+    for (const phrase of [
+        'managed runtimes require hub encryption',
+        'outside the workspace',
+        'local disk',
+        '-wal',
+        '-shm',
+    ]) {
+        if (!docs.toLowerCase().includes(phrase.toLowerCase())) {
+            process.stderr.write(`[validate-pr] docs missing SQLite hub hardening phrase: ${phrase}\n`);
+            return 1;
+        }
+    }
+
+    process.stdout.write('[validate-pr] SQLite hub hardening docs present\n');
     return 0;
 }
 
