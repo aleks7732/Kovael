@@ -85,4 +85,64 @@ describe('useWarRoomStore lifecycle snapshots', () => {
     store.clearLifecyclePending('shaev');
     expect(useWarRoomStore.getState().pendingLifecycleActions.shaev).toBeUndefined();
   });
+
+  it('normalizes runtime lifecycle events and clears pending actions', () => {
+    const store = useWarRoomStore.getState();
+
+    store.setLifecyclePending('shaev', 'restart');
+    store.recordLifecycleError('shaev', 'old error');
+    store.recordAgentRuntimeEvent({
+      agent_id: 'shaev',
+      runtime: 'claude-shaev',
+      type: 'agent_runtime_spawn_failed',
+      hub_path: 'hub.sqlite',
+      reason: 'spawn failed',
+      timestamp: 1779733030000,
+    });
+
+    const state = useWarRoomStore.getState();
+    expect(state.agentRuntimes?.agents.shaev).toMatchObject({
+      agentId: 'shaev',
+      runtime: 'claude-shaev',
+      status: 'failed',
+      running: false,
+      hubPath: 'hub.sqlite',
+      lastError: 'spawn failed',
+      updatedAt: 1779733030000,
+    });
+    expect(state.lifecycleErrors.shaev).toBe('spawn failed');
+    expect(state.pendingLifecycleActions.shaev).toBeUndefined();
+  });
+
+  it('normalizes hub health aliases with fallback agent ids', () => {
+    useWarRoomStore.getState().applyStateSnapshot({
+      agentHubs: {
+        shaev: {
+          health: 'not_found',
+          dispatches: 2,
+          dbPath: 'hub.sqlite',
+          updatedAt: null,
+        },
+      },
+    });
+
+    expect(useWarRoomStore.getState().hubHealthByAgent.shaev).toMatchObject({
+      agentId: 'shaev',
+      status: 'missing',
+      dispatches: 2,
+      hubPath: 'hub.sqlite',
+      lastWriteAt: null,
+    });
+  });
+
+  it('ignores invalid snapshots without clearing existing state', () => {
+    const store = useWarRoomStore.getState();
+    store.setResourceModeSnapshot({ mode: 'idle' });
+    const before = useWarRoomStore.getState().resourceMode;
+
+    store.setResourceModeSnapshot({ mode: 'bad' });
+    store.applyHubHealthSnapshot(null);
+
+    expect(useWarRoomStore.getState().resourceMode).toBe(before);
+  });
 });
