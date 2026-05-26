@@ -22,7 +22,8 @@
     "test": "vitest run",
     "showcase": "npm run dev --workspace=packages/spatial-war-room -- --open",
     "validate:pr": "node scripts/validate-pr.mjs",
-    "validate:chairs": "npm run build && node scripts/validate-all-chairs.mjs"
+    "validate:chairs": "npm run build && node scripts/validate-all-chairs.mjs",
+    "validate:real-runtimes": "npm run build && node scripts/real-runtime-smoke.mjs --agents nyx-codex,shaev --require-real --timeout-ms 180000"
   },
   "repository": {
     "type": "git",

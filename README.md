@@ -322,6 +322,29 @@ Use the package alias for the all-chair dispatch validation:
 npm run validate:chairs
 ```
 
+### Manual real-runtime release smoke
+
+CI-safe validation uses fake deterministic adapters:
+
+```powershell
+npm run validate:chairs
+```
+
+Before a release where local real runtimes matter, run:
+
+```powershell
+npm run validate:real-runtimes
+```
+
+This requires `nyx-codex` and `shaev` local runtime commands to be installed/configured. The command uses `--require-real`, so skipped or missing runtimes fail the gate instead of silently passing.
+
+#### Key Characteristics:
+- **Scope**: `validate:chairs` is automated and deterministic, suitable for CI. `validate:real-runtimes` is manual and environment-dependent, checking real local runtimes.
+- **Strictness**: Missing Codex/Shaev CLI binaries will cause `validate:real-runtimes` to fail under strict `--require-real` mode, whereas CI-safe defaults bypass missing runtimes.
+- **Authority**: The orchestrator remains fully authoritative for chairs, topics, conversation history, and routing.
+- **Telemetry & Durability**: The real-runtime smoke gate still operates via request-bound dispatch receipts and SQLite agent hub outbox delivery.
+- **Cognitive Scope**: A pass means the real adapter path successfully completed and returned live handoff; it does not prove cognitive/memory/tool correctness beyond the live adapter smoke path.
+
 The repository currently has 52 Vitest files across the orchestrator and
 cockpit, with more than 400 individual `it(...)` cases.
 

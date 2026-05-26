@@ -134,6 +134,16 @@ Kubernetes deployment must not share per-agent hubs as distributed state.
 
 See `docs/runbooks/agent-hub-lifecycle.md` for the operator runbook.
 
+## Manual Real-Runtime Smoke Gate
+
+While the automated and deterministic validation using fake adapters is handled via `npm run validate:chairs`, operators can manually enforce a strict environment-dependent check for real runtimes (specifically `nyx-codex` and `shaev`) prior to release.
+
+```powershell
+npm run validate:real-runtimes
+```
+
+This gate runs the script `scripts/real-runtime-smoke.mjs` with `--require-real`. If any of the requested real agent runtimes are skipped or their binaries (`codex` or `claude`) are unavailable, the run will fail strictly with exit code `1`. It tracks telemetry, receipts, and hub outbox status but does not qualify or guarantee future cognitive cognition or specific prompt tool behavior.
+
 ## Quick-start — `kovael-chair` helper
 
 A zero-dependency Node wrapper is included at `scripts/kovael-chair.mjs`.

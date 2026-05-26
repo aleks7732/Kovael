@@ -155,11 +155,26 @@ Full chair dispatch validation:
 npm run validate:chairs
 ```
 
+### Manual Real-Runtime Release Smoke Gate
+
+For a strict, non-deterministic manual gate verifying real local runtime environments (`nyx-codex` and `shaev`) before a release, run:
+
+```powershell
+npm run validate:real-runtimes
+```
+
 Equivalent direct command when script aliases are unavailable:
 
-```bash
-node scripts/validate-pr.mjs
+```powershell
+npm run build
+node scripts/real-runtime-smoke.mjs --agents nyx-codex,shaev --require-real --timeout-ms 180000
 ```
+
+#### Key Runbook Notes:
+- **Strict Availability**: This is an environment-dependent manual gate. It requires actual local `codex` and `claude` CLI commands to be installed and fully operational.
+- **Fail-Fast Behaviour**: The `--require-real` flag ensures that if either agent runtime is missing or skipped, the script terminates immediately with exit code `1` (fail) rather than falling back or silently passing.
+- **Authoritative Plane**: Telemetry events, active database dispatches, and agent hub SQLite outbox queues are populated, and the main orchestrator remains the authoritative plane for global chairs.
+- **Verification Limits**: Passing this smoke gate proves only that the live adapter path worked; it is not a certificate of overall future cognitive prompts or tool execution correctness.
 
 The all-chair validation builds against `dist`, boots an ephemeral
 orchestrator, claims all canonical chairs through real HTTP, dispatches to fake
