@@ -10,6 +10,8 @@ import {
     StubMarkovProvider,
     ChairBridgeProvider,
     ChairBridgeReplyFailure,
+    ChairBridgeDispatchFailure,
+    type ChairDispatchTelemetryEvent,
     TokenUsage,
 } from './ModelProvider.js';
 import {
@@ -21,6 +23,30 @@ import { conveneCommitteeVote } from './CommitteeVoting.js';
 
 function requireLiveChairs(): boolean {
     return process.env.KOVAEL_REQUIRE_LIVE_CHAIRS === 'true';
+}
+
+function dispatchFailureRequestId(err: unknown): string | undefined {
+    if (err instanceof ChairBridgeReplyFailure) return err.receipt.requestId;
+    if (err instanceof ChairBridgeDispatchFailure) return err.details.requestId;
+    return undefined;
+}
+
+function dispatchFailureClaimSessionId(err: unknown): string | undefined {
+    if (err instanceof ChairBridgeReplyFailure) return err.receipt.claimSessionId;
+    if (err instanceof ChairBridgeDispatchFailure) return err.details.claimSessionId;
+    return undefined;
+}
+
+function dispatchFailureAttempts(err: unknown): number | undefined {
+    if (err instanceof ChairBridgeReplyFailure) return err.receipt.dispatchAttempts;
+    if (err instanceof ChairBridgeDispatchFailure) return err.details.dispatchAttempts;
+    return undefined;
+}
+
+function dispatchFailureLatencyMs(err: unknown): number | undefined {
+    if (err instanceof ChairBridgeReplyFailure) return err.receipt.dispatchLatencyMs;
+    if (err instanceof ChairBridgeDispatchFailure) return err.details.dispatchLatencyMs;
+    return undefined;
 }
 
 export interface ActiveTopic {
@@ -327,7 +353,11 @@ export class ConversationBus extends EventEmitter {
             let provider: ModelProvider;
             const liveDispatch = Boolean(claim && claim.inboxUrl && claim.status !== 'offline' && this.dispatchGate(currentSpeaker));
             if (liveDispatch) {
-                provider = new ChairBridgeProvider(currentSpeaker, this.chairs, this.orchestratorPort);
+                provider = new ChairBridgeProvider(currentSpeaker, this.chairs, this.orchestratorPort, {
+                    onDispatchEvent: (event: ChairDispatchTelemetryEvent) => {
+                        this.emit('bus_event', event);
+                    },
+                });
             } else {
                 if (requireLiveChairs()) {
                     const reason = claim?.inboxUrl ? 'dispatch_gate_closed' : 'chair_not_dispatch_ready';
@@ -416,6 +446,8 @@ export class ConversationBus extends EventEmitter {
                         topicId,
                         requestId: receipt?.requestId,
                         claimSessionId: receipt?.claimSessionId,
+                        dispatchAttempts: receipt?.dispatchAttempts,
+                        dispatchLatencyMs: receipt?.dispatchLatencyMs,
                     });
                     liveHandoffParticipants.add(currentSpeaker);
                 }
@@ -523,8 +555,10 @@ export class ConversationBus extends EventEmitter {
                     agentId: currentSpeaker,
                     topicId,
                     reason: err.message,
-                    requestId: err instanceof ChairBridgeReplyFailure ? err.receipt.requestId : undefined,
-                    claimSessionId: err instanceof ChairBridgeReplyFailure ? err.receipt.claimSessionId : undefined,
+                    requestId: dispatchFailureRequestId(err),
+                    claimSessionId: dispatchFailureClaimSessionId(err),
+                    dispatchAttempts: dispatchFailureAttempts(err),
+                    dispatchLatencyMs: dispatchFailureLatencyMs(err),
                 });
                 // Break or proceed
                 break;

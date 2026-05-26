@@ -21,6 +21,12 @@ const ENCRYPTION_ALG = 'A256GCM';
 const MAX_CLOCK_SKEW_MS = 5 * 60_000;
 const MAX_INBOX_BYTES = 512 * 1024;
 const DEFAULT_RUNTIME_TIMEOUT_MS = 180_000;
+const DEFAULT_REPLY_TIMEOUT_MS = 15_000;
+const DEFAULT_OUTBOX_MAX_ATTEMPTS = 5;
+const DEFAULT_OUTBOX_LEASE_MS = 30_000;
+const DEFAULT_OUTBOX_DRAIN_INTERVAL_MS = 100;
+const RETRYABLE_REPLY_STATUS = new Set([429, 502, 503, 504]);
+const PERMANENT_REPLY_STATUS = new Set([400, 401, 403, 404, 409]);
 const AGENT_HUB_SECRET_ENV = 'KOVAEL_AGENT_HUB_SECRET';
 const AGENT_HUB_ENCRYPTION_ENV = 'KOVAEL_AGENT_HUB_ENCRYPTION';
 
@@ -98,15 +104,6 @@ function keyFor(secret) {
 
 function aadFor(requestId, timestamp) {
     return Buffer.from(`${SECURITY_VERSION}\n${requestId}\n${timestamp}`, 'utf8');
-}
-
-function createReplyProof(payload) {
-    return crypto
-        .createHmac('sha256', String(payload.replyProofSecret).trim())
-        .update(String(payload.requestId).trim())
-        .update('\n')
-        .update(String(payload.claimSessionId).trim())
-        .digest('hex');
 }
 
 function b64(value) {
@@ -258,14 +255,29 @@ class SharedAgentHub {
     }
 
     markSucceeded(requestId, replyContent, payload) {
-        this.store.markDispatchSucceeded(requestId, replyContent, {
+        return this.store.markDispatchSucceeded(requestId, replyContent, {
             claimSessionId: payload?.claimSessionId,
             replyProofSecret: payload?.replyProofSecret,
         });
     }
 
-    markFailed(requestId, error) {
-        this.store.markDispatchFailed(requestId, error);
+    markFailed(requestId, error, payload) {
+        return this.store.markDispatchFailed(requestId, error, {
+            claimSessionId: payload?.claimSessionId,
+            replyProofSecret: payload?.replyProofSecret,
+        });
+    }
+
+    claimDueOutbox(limit, leaseMs) {
+        return this.store.claimDueOutbox(limit, leaseMs);
+    }
+
+    markOutboxSent(id) {
+        this.store.markOutboxSent(id);
+    }
+
+    markOutboxDeliveryFailed(id, error, retryAt, maxAttempts) {
+        this.store.markOutboxDeliveryFailed(id, error, retryAt, maxAttempts);
     }
 
     close() {
@@ -508,39 +520,91 @@ async function runRuntime(payload, cfg) {
     throw new Error(`unknown runtime: ${cfg.runtime}`);
 }
 
-async function sendReply(payload, cfg, content, status = 'succeeded', error = undefined) {
-    const replyUrl = typeof payload.replyUrl === 'string' ? payload.replyUrl : '';
-    if (!replyUrl) throw new Error('dispatch payload did not include replyUrl');
-    if (
-        typeof payload.requestId !== 'string' ||
-        typeof payload.claimSessionId !== 'string' ||
-        typeof payload.replyProofSecret !== 'string'
-    ) {
-        throw new Error('dispatch payload did not include request proof fields');
-    }
-    const secured = encryptPayload({
-        topicId: payload.topicId,
-        agentId: cfg.id,
-        requestId: payload.requestId,
-        claimSessionId: payload.claimSessionId,
-        replyProof: createReplyProof(payload),
-        content,
-        status,
-        error,
-    }, payload.requestId);
+async function sendOutboxReply(row, cfg) {
+    if (!row || row.kind !== 'reply') return;
+    if (!row.targetUrl) throw new Error('outbox reply did not include targetUrl');
+    const requestId = typeof row.payload?.requestId === 'string' ? row.payload.requestId : row.requestId;
+    const secured = encryptPayload(row.payload, requestId);
     const headers = {
         ...secured.headers,
         'content-length': String(Buffer.byteLength(secured.body)),
     };
-    const res = await fetch(replyUrl, {
-        method: 'POST',
-        headers,
-        body: secured.body,
-    });
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), cfg.replyTimeoutMs);
+    timer.unref();
+    let res;
+    try {
+        res = await fetch(row.targetUrl, {
+            method: 'POST',
+            headers,
+            body: secured.body,
+            signal: controller.signal,
+        });
+    } finally {
+        clearTimeout(timer);
+    }
     if (!res.ok) {
         const text = await res.text().catch(() => '');
-        throw new Error(`reply webhook HTTP ${res.status}: ${text}`);
+        const error = new Error(`reply webhook HTTP ${res.status}: ${text}`);
+        error.status = res.status;
+        throw error;
     }
+}
+
+async function drainOutboxOnce(hub, cfg) {
+    const rows = hub.claimDueOutbox(10, cfg.outboxLeaseMs);
+    for (const row of rows) {
+        try {
+            await sendOutboxReply(row, cfg);
+            hub.markOutboxSent(row.id);
+        } catch (err) {
+            const { retryAt, message } = classifyOutboxDeliveryFailure(row, err, cfg);
+            hub.markOutboxDeliveryFailed(row.id, message, retryAt, cfg.outboxMaxAttempts);
+            if (retryAt === null) {
+                console.error(`kovael-agent-inbox: ${cfg.id} reply outbox ${row.id} dead: ${cfg.runtimeSecurity.redactSensitiveText(message)}`);
+            } else {
+                console.error(`kovael-agent-inbox: ${cfg.id} reply outbox ${row.id} retry: ${cfg.runtimeSecurity.redactSensitiveText(message)}`);
+            }
+        }
+    }
+}
+
+function classifyOutboxDeliveryFailure(row, err, cfg) {
+    const status = Number.isInteger(err?.status) ? err.status : null;
+    const message = cfg.runtimeSecurity.redactSensitiveText(err);
+    if (status !== null && PERMANENT_REPLY_STATUS.has(status)) {
+        return { retryAt: null, message };
+    }
+    if (row.attempts >= cfg.outboxMaxAttempts) {
+        return { retryAt: null, message };
+    }
+    if (status === null || RETRYABLE_REPLY_STATUS.has(status)) {
+        const delay = Math.min(5_000, cfg.replyRetryBaseMs * Math.max(1, row.attempts));
+        return { retryAt: Date.now() + delay, message };
+    }
+    return { retryAt: null, message };
+}
+
+function startOutboxDrain(hub, cfg) {
+    let active = false;
+    const tick = async () => {
+        if (active) return;
+        active = true;
+        try {
+            await drainOutboxOnce(hub, cfg);
+        } catch (err) {
+            console.error(`kovael-agent-inbox: ${cfg.id} outbox drain failed: ${cfg.runtimeSecurity.redactSensitiveText(err)}`);
+        } finally {
+            active = false;
+        }
+    };
+    const timer = setInterval(tick, cfg.outboxDrainIntervalMs);
+    timer.unref();
+    void tick();
+    return {
+        poke: () => void tick(),
+        stop: () => clearInterval(timer),
+    };
 }
 
 function writeJson(res, status, body) {
@@ -551,7 +615,7 @@ function writeJson(res, status, body) {
     res.end(JSON.stringify(body));
 }
 
-async function startInbox(cfg, hub) {
+async function startInbox(cfg, hub, outboxDrain) {
     const inFlight = new Set();
     const server = http.createServer(async (req, res) => {
         if (req.socket.remoteAddress !== '127.0.0.1' && req.socket.remoteAddress !== '::1' && req.socket.remoteAddress !== '::ffff:127.0.0.1') {
@@ -602,22 +666,14 @@ async function startInbox(cfg, hub) {
         hub.markRunning(requestId);
         runRuntime(payload, cfg)
             .then(async (content) => {
-                await sendReply(payload, cfg, content);
                 hub.markSucceeded(requestId, content, payload);
+                outboxDrain.poke();
             })
             .catch(async (err) => {
                 const safeError = cfg.runtimeSecurity.safeRuntimeFailureMessage(cfg.id, err);
-                hub.markFailed(requestId, safeError);
+                hub.markFailed(requestId, safeError, payload);
                 console.error(`kovael-agent-inbox: ${cfg.id} dispatch failed: ${safeError}`);
-                await sendReply(
-                    payload,
-                    cfg,
-                    safeError,
-                    'failed',
-                    safeError,
-                ).catch((replyErr) => {
-                    console.error(`kovael-agent-inbox: ${cfg.id} reply failed: ${cfg.runtimeSecurity.redactSensitiveText(replyErr)}`);
-                });
+                outboxDrain.poke();
             })
             .finally(() => {
                 inFlight.delete(requestId);
@@ -651,6 +707,11 @@ async function main() {
         codexBin: args['codex-bin'],
         claudeBin: args['claude-bin'],
         timeoutMs: args.timeoutMs ?? DEFAULT_RUNTIME_TIMEOUT_MS,
+        replyTimeoutMs: readPositiveInt(process.env.KOVAEL_CHAIR_REPLY_TIMEOUT_MS, DEFAULT_REPLY_TIMEOUT_MS),
+        replyRetryBaseMs: readPositiveInt(process.env.KOVAEL_CHAIR_REPLY_RETRY_BASE_MS, 100),
+        outboxMaxAttempts: readPositiveInt(process.env.KOVAEL_AGENT_OUTBOX_MAX_ATTEMPTS, DEFAULT_OUTBOX_MAX_ATTEMPTS),
+        outboxLeaseMs: readPositiveInt(process.env.KOVAEL_AGENT_OUTBOX_LEASE_MS, DEFAULT_OUTBOX_LEASE_MS),
+        outboxDrainIntervalMs: readPositiveInt(process.env.KOVAEL_AGENT_OUTBOX_DRAIN_INTERVAL_MS, DEFAULT_OUTBOX_DRAIN_INTERVAL_MS),
         capabilities: args.capabilities,
         trust: args.trust,
         note: args.note,
@@ -663,7 +724,8 @@ async function main() {
     cfg.runtimeSecurity = await loadRuntimeSecurity(cfg);
     const token = bearerToken(args);
     const hub = await createAgentHub(cfg);
-    const server = await startInbox(cfg, hub);
+    const outboxDrain = startOutboxDrain(hub, cfg);
+    const server = await startInbox(cfg, hub, outboxDrain);
     const address = server.address();
     if (!address || typeof address === 'string') throw new Error('failed to bind inbox');
     const inboxUrl = `http://127.0.0.1:${address.port}/inbox`;
@@ -686,6 +748,7 @@ async function main() {
 
     if (args.probe) {
         await postJson(cfg.host, '/api/v1/chairs/release', { agentId: cfg.id, sessionId }, token).catch(() => null);
+        outboxDrain.stop();
         hub.close();
         server.close();
         return;
@@ -701,6 +764,7 @@ async function main() {
         } catch (err) {
             console.error(`kovael-agent-inbox: ${cfg.id} release failed (${reason}): ${err.message}`);
         } finally {
+            outboxDrain.stop();
             server.close(() => {
                 hub.close();
                 process.exit(0);
@@ -732,3 +796,8 @@ main().catch((err) => {
     console.error(`kovael-agent-inbox: fatal: ${err.message}`);
     process.exit(1);
 });
+
+function readPositiveInt(value, fallback) {
+    const parsed = Number.parseInt(String(value ?? ''), 10);
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}

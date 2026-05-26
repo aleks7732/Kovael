@@ -11,7 +11,7 @@
  */
 
 import { spawn } from 'node:child_process';
-import { existsSync, mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import process from 'node:process';
@@ -25,13 +25,23 @@ import { ChairBridgeProvider } from '../dist/services/ModelProvider.js';
 const ROOT = path.resolve(import.meta.dirname, '..');
 const SCRIPT_PATH = path.join(ROOT, 'scripts', 'kovael-agent-inbox.mjs');
 const AGENT_IDS = Object.keys(AgentCards);
-const STRICT_LIVE = process.env.KOVAEL_REQUIRE_LIVE_CHAIRS === 'true';
+const STRICT_LIVE = process.env.KOVAEL_ALLOW_CHAIR_FALLBACKS !== 'true';
+const ARTIFACT_STAMP = new Date().toISOString().replace(/[:.]/g, '-');
+const artifactState = {
+    startedAt: new Date().toISOString(),
+    strictLive: STRICT_LIVE,
+    reports: {},
+    busEvents: [],
+    adapters: [],
+    error: null,
+};
 const DISPATCH_SECRET = validDispatchSecret(process.env.KOVAEL_CHAIR_DISPATCH_SECRET)
     ? process.env.KOVAEL_CHAIR_DISPATCH_SECRET.trim()
     : 'validate-all-chairs-secret-0123456789abcdef';
 
 process.env.KOVAEL_DB_PATH = ':memory:';
 process.env.KOVAEL_CHAIR_DISPATCH_SECRET = DISPATCH_SECRET;
+process.env.KOVAEL_REQUIRE_LIVE_CHAIRS = STRICT_LIVE ? 'true' : 'false';
 
 async function postJson(url, body, extraHeaders = {}) {
     const res = await fetch(url, {
@@ -56,6 +66,7 @@ function authHeaders(headers = {}) {
 }
 
 function report(title, rows) {
+    artifactState.reports[title] = sanitizeRows(rows);
     const widths = rows[0].map((_, i) => Math.max(...rows.map((r) => String(r[i]).length)));
     process.stdout.write(`\n=== ${title} ===\n`);
     for (const row of rows) {
@@ -142,7 +153,11 @@ async function waitForHubDispatch(hubPath, topicId, timeoutMs = 7000) {
                     ORDER BY received_at DESC
                     LIMIT 1
                 `).get(topicId);
-                if (last?.status === 'succeeded') return decodeHubRow(hubPath, last);
+                if (last?.status === 'succeeded') {
+                    const decoded = decodeHubRow(hubPath, last);
+                    last = decoded;
+                    if (decoded.outbox?.status === 'sent') return decoded;
+                }
             } finally {
                 db.close();
             }
@@ -184,6 +199,7 @@ function validateHubLifecycle(agentId, row, topicId, streamedText) {
     const expectedNeedle = `FAKE_RUNTIME_REPLY agent=${agentId} request=${row?.request_id} topic=${topicId}`;
     if (!String(row?.reply_content || '').includes(expectedNeedle)) errors.push('reply missing deterministic proof');
     if (row?.reply_content !== streamedText) errors.push('streamed reply differs from hub reply');
+    if (row?.outbox?.status !== 'sent') errors.push(`outbox status=${row?.outbox?.status}`);
     return errors;
 }
 
@@ -196,6 +212,7 @@ function decodeHubRow(hubPath, row) {
             payload: dispatch?.payload ?? {},
             reply_content: dispatch?.replyContent ?? null,
             error: dispatch?.error ?? row.error,
+            outbox: store.listOutbox().find((candidate) => candidate.requestId === row.request_id && candidate.kind === 'reply') ?? null,
         };
     } finally {
         store.close();
@@ -255,9 +272,12 @@ try {
     report('Adapter chair claims', claimRows);
 
     const busEvents = [];
-    orchestrator.conversationBus.on('bus_event', (event) => busEvents.push(event));
+    orchestrator.conversationBus.on('bus_event', (event) => {
+        busEvents.push(event);
+        artifactState.busEvents.push(sanitizeArtifact(event));
+    });
 
-    const directRows = [['agent', 'dispatch status', 'requestId', 'hub lifecycle', 'reply preview']];
+    const directRows = [['agent', 'dispatch status', 'requestId', 'hub/outbox lifecycle', 'reply preview']];
     const directByAgent = new Map();
     for (const agentId of AGENT_IDS) {
         const { body: topic } = await postJson(
@@ -297,7 +317,7 @@ try {
                 directRows.push([agentId, 'FAIL hub', hubRow?.request_id ?? '-', errors.join('; '), text.slice(0, 48)]);
                 exitCode = 1;
             } else {
-                directRows.push([agentId, 'DISPATCHED', hubRow.request_id.slice(0, 8), 'accepted→running→succeeded', text.slice(0, 48)]);
+                directRows.push([agentId, 'DISPATCHED', hubRow.request_id.slice(0, 8), 'accepted→running→succeeded→sent', text.slice(0, 48)]);
             }
         } catch (err) {
             directRows.push([agentId, `FAIL ${err && err.message ? err.message : err}`, '-', '-', '-']);
@@ -360,9 +380,20 @@ try {
     );
 } catch (err) {
     process.stderr.write(`[validate] threw: ${err && err.stack ? err.stack : err}\n`);
+    artifactState.error = sanitizeArtifact(err && err.stack ? err.stack : err);
     exitCode = 1;
 } finally {
     await Promise.all(adapters.map((adapter) => stopAdapter(adapter)));
+    artifactState.adapters = adapters.map((adapter) => sanitizeArtifact({
+        agentId: adapter.agentId,
+        exitCode: adapter.child.exitCode,
+        killed: adapter.child.killed,
+        stderrTail: adapter.stderr.join('').slice(-4000),
+        hubFile: path.basename(adapter.hubPath),
+    }));
+    if (shouldRetainArtifacts(exitCode)) {
+        writeSmokeArtifacts(artifactState);
+    }
     if (orchestrator) orchestrator.close();
     if (hubRoot && path.resolve(hubRoot).startsWith(path.resolve(os.tmpdir()))) {
         rmSync(hubRoot, { recursive: true, force: true });
@@ -377,4 +408,57 @@ function validDispatchSecret(value) {
 
 function safePathSegment(value) {
     return value.replace(/[^a-zA-Z0-9._-]/g, '_');
+}
+
+function shouldRetainArtifacts(code) {
+    return code !== 0 || process.env.KOVAEL_RETAIN_SMOKE_ARTIFACTS === 'always';
+}
+
+function writeSmokeArtifacts(state) {
+    const dir = path.join(ROOT, '.notes', 'chair-smoke', ARTIFACT_STAMP);
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(
+        path.join(dir, 'summary.json'),
+        JSON.stringify(sanitizeArtifact({
+            ...state,
+            finishedAt: new Date().toISOString(),
+        }), null, 2),
+        'utf8',
+    );
+    process.stdout.write(`[validate] retained sanitized smoke artifacts at ${path.relative(ROOT, dir)}\n`);
+}
+
+function sanitizeArtifact(value) {
+    if (Array.isArray(value)) return value.map((item) => sanitizeArtifact(item));
+    if (value && typeof value === 'object') {
+        return Object.fromEntries(Object.entries(value).map(([key, child]) => {
+            if (/authorization|token|secret|proof|message|prompt|system|content|delta|text|reply|reason/i.test(key)) {
+                return [key, '[redacted]'];
+            }
+            return [key, sanitizeArtifact(child)];
+        }));
+    }
+    if (typeof value !== 'string') return value;
+    return value
+        .replace(/\bBearer\s+[A-Za-z0-9._~+/-]+=*/gi, 'Bearer [redacted]')
+        .replace(/\bsk-(?:proj-)?[A-Za-z0-9_-]{16,}\b/g, '[redacted-openai-key]')
+        .replace(/\bgh[pousr]_[A-Za-z0-9_]{16,}\b/g, '[redacted-github-token]')
+        .replace(/(replyProofSecret|replyProof|authorization|token|secret)=?[A-Za-z0-9._~+/-]*/gi, '$1=[redacted]')
+        .replace(/\bhttps?:\/\/([^/\s]+)\/[^\s"'<>)]*/gi, 'http://$1/[redacted-path]');
+}
+
+function sanitizeRows(rows) {
+    if (!Array.isArray(rows) || rows.length === 0 || !Array.isArray(rows[0])) {
+        return sanitizeArtifact(rows);
+    }
+    const sensitiveColumns = new Set(
+        rows[0]
+            .map((header, index) => /reply|prompt|message|content/i.test(String(header)) ? index : -1)
+            .filter((index) => index >= 0),
+    );
+    return rows.map((row, rowIndex) => {
+        if (!Array.isArray(row)) return sanitizeArtifact(row);
+        if (rowIndex === 0) return row.map((cell) => sanitizeArtifact(cell));
+        return row.map((cell, index) => sensitiveColumns.has(index) ? '[redacted]' : sanitizeArtifact(cell));
+    });
 }

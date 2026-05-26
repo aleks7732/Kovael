@@ -152,6 +152,30 @@ describe('HealthEndpoints — metrics', () => {
         expect(res.body).toContain('kovael_process_heap_used_bytes');
     });
 
+    it('Prometheus output includes chair dispatch counters and inflight gauge', () => {
+        const ep = makeEndpoints({
+            chairsActive: 3,
+            topicsActive: 7,
+            chairDispatch: {
+                attempts: 5,
+                retries: 2,
+                accepted: 3,
+                successes: 2,
+                failures: 1,
+                inflight: 1,
+            },
+        } as MetricsSnapshot);
+        const res = mockRes();
+        ep.metrics(res as unknown as ServerResponse);
+
+        expect(res.body).toContain('kovael_chair_dispatch_attempts_total 5');
+        expect(res.body).toContain('kovael_chair_dispatch_retries_total 2');
+        expect(res.body).toContain('kovael_chair_dispatch_accepted_total 3');
+        expect(res.body).toContain('kovael_chair_dispatch_success_total 2');
+        expect(res.body).toContain('kovael_chair_dispatch_failures_total 1');
+        expect(res.body).toContain('kovael_chair_dispatch_inflight 1');
+    });
+
     it('returns 500 when the snapshot function throws', () => {
         const ep = new HealthEndpoints(() => {
             throw new Error('snap fail');

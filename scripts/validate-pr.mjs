@@ -8,6 +8,10 @@ import process from 'node:process';
 const root = path.resolve(import.meta.dirname, '..');
 const cockpit = path.join(root, 'packages', 'spatial-war-room');
 const npmCommand = resolveNpmCommand();
+const chairValidationEnv = {
+    ...process.env,
+    KOVAEL_ALLOW_CHAIR_FALLBACKS: process.env.KOVAEL_ALLOW_CHAIR_FALLBACKS ?? 'false',
+};
 
 const binaryExtensions = new Set([
     '.avif',
@@ -38,16 +42,14 @@ const steps = [
     { name: 'cockpit build', ...npmStep(['run', 'build'], cockpit) },
     { name: 'sqlite hub hardening docs', run: validateSqliteHubHardeningDocs },
     { name: 'changed-file secret scan', run: scanChangedFiles },
-];
-
-if (process.env.KOVAEL_VALIDATE_ALL_CHAIRS === 'true') {
-    steps.push({
+    {
         name: 'all chairs validation',
         cmd: 'node',
         args: ['scripts/validate-all-chairs.mjs'],
         cwd: root,
-    });
-}
+        env: chairValidationEnv,
+    },
+];
 
 for (const step of steps) {
     process.stdout.write(`\n=== ${step.name} ===\n`);
@@ -55,7 +57,7 @@ for (const step of steps) {
         ? step.run()
         : spawnSync(step.cmd, step.args, {
             cwd: step.cwd,
-            env: process.env,
+            env: step.env ?? process.env,
             shell: false,
             stdio: 'inherit',
         });

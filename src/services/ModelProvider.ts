@@ -156,6 +156,39 @@ export interface DispatchPolicy {
     baseBackoffMs: number;
 }
 
+export type ChairDispatchTelemetryEvent =
+    | {
+        type: 'chair_dispatch_started';
+        requestId: string;
+        topicId: string;
+        agentId: string;
+        claimSessionId: string;
+        attempt: 0;
+      }
+    | {
+        type: 'chair_dispatch_attempt';
+        requestId: string;
+        topicId: string;
+        agentId: string;
+        claimSessionId: string;
+        attempt: number;
+        dispatchLatencyMs: number;
+        statusCode?: number;
+      }
+    | {
+        type: 'chair_dispatch_accepted';
+        requestId: string;
+        topicId: string;
+        agentId: string;
+        claimSessionId: string;
+        dispatchAttempts: number;
+        dispatchLatencyMs: number;
+      };
+
+export interface ChairBridgeProviderOptions extends Partial<DispatchPolicy> {
+    onDispatchEvent?: (event: ChairDispatchTelemetryEvent) => void;
+}
+
 export const DEFAULT_DISPATCH_POLICY: DispatchPolicy = {
     dispatchTimeoutMs: 10_000,
     maxAttempts: 3,
@@ -183,6 +216,8 @@ export interface ChairDispatchReceipt {
     status: ChairReplyStatus;
     receivedAt: number;
     proofVerified: boolean;
+    dispatchAttempts?: number;
+    dispatchLatencyMs?: number;
     error?: string;
 }
 
@@ -194,6 +229,22 @@ export class ChairBridgeReplyFailure extends Error {
     constructor(
         message: string,
         public readonly receipt: ChairDispatchReceipt,
+    ) {
+        super(message);
+    }
+}
+
+export class ChairBridgeDispatchFailure extends Error {
+    constructor(
+        message: string,
+        public readonly details: {
+            requestId: string;
+            topicId: string;
+            agentId: string;
+            claimSessionId: string;
+            dispatchAttempts: number;
+            dispatchLatencyMs: number;
+        },
     ) {
         super(message);
     }
@@ -211,6 +262,9 @@ interface PendingChairReply {
     claimSessionId: string;
     replyProofSecret: string;
     createdAt: number;
+    dispatchStartedAt?: number;
+    dispatchAttempts?: number;
+    dispatchLatencyMs?: number;
     resolve: (reply: ResolvedChairReply) => void;
     reject: (err: Error) => void;
 }
@@ -222,18 +276,33 @@ function replyTimeoutMs(): number {
     return Number.isFinite(parsed) ? Math.max(5_000, Math.min(600_000, Math.floor(parsed))) : 30_000;
 }
 
+function pendingDispatchDetails(pending: PendingChairReply): ChairBridgeDispatchFailure['details'] {
+    return {
+        requestId: pending.requestId,
+        topicId: pending.topicId,
+        agentId: pending.agentId,
+        claimSessionId: pending.claimSessionId,
+        dispatchAttempts: pending.dispatchAttempts ?? 0,
+        dispatchLatencyMs: pending.dispatchLatencyMs
+            ?? (pending.dispatchStartedAt !== undefined ? Date.now() - pending.dispatchStartedAt : 0),
+    };
+}
+
 export class ChairBridgeProvider implements ModelProvider {
     private static pendingReplies = new Map<string, PendingChairReply>();
     private readonly policy: DispatchPolicy;
+    private readonly onDispatchEvent?: (event: ChairDispatchTelemetryEvent) => void;
     private lastDispatchReceipt: ChairDispatchReceipt | null = null;
 
     constructor(
         public id: string,
         private chairs: ChairRegistry,
         private orchestratorPort: number,
-        policy: Partial<DispatchPolicy> = {},
+        options: ChairBridgeProviderOptions = {},
     ) {
+        const { onDispatchEvent, ...policy } = options;
         this.policy = { ...DEFAULT_DISPATCH_POLICY, ...policy };
+        this.onDispatchEvent = onDispatchEvent;
     }
 
     /**
@@ -256,6 +325,8 @@ export class ChairBridgeProvider implements ModelProvider {
                 status: 'succeeded',
                 receivedAt: Date.now(),
                 proofVerified: false,
+                dispatchAttempts: pending.dispatchAttempts,
+                dispatchLatencyMs: pending.dispatchLatencyMs,
             },
         });
         return true;
@@ -263,7 +334,7 @@ export class ChairBridgeProvider implements ModelProvider {
 
     public static submitReplyForRequest(
         input: ChairReplySubmission,
-        activeClaimSessionId?: string,
+        _activeClaimSessionId?: string,
     ): ChairReplySubmitResult {
         const pending = this.pendingReplies.get(input.requestId);
         if (!pending) {
@@ -274,9 +345,6 @@ export class ChairBridgeProvider implements ModelProvider {
         }
         if (pending.claimSessionId !== input.claimSessionId) {
             return { ok: false, status: 409, code: 'wrong_claim_session' };
-        }
-        if (activeClaimSessionId !== undefined && activeClaimSessionId !== pending.claimSessionId) {
-            return { ok: false, status: 409, code: 'stale_chair_claim_session' };
         }
         const proofVerified = verifyChairReplyProof({
             requestId: input.requestId,
@@ -292,6 +360,9 @@ export class ChairBridgeProvider implements ModelProvider {
         const error = typeof input.error === 'string' && input.error.trim().length > 0
             ? redactSensitiveText(input.error.trim())
             : undefined;
+        const dispatchAttempts = pending.dispatchAttempts;
+        const dispatchLatencyMs = pending.dispatchLatencyMs
+            ?? (pending.dispatchStartedAt !== undefined ? Date.now() - pending.dispatchStartedAt : undefined);
         const receipt: ChairDispatchReceipt = {
             requestId: input.requestId,
             topicId: pending.topicId,
@@ -300,6 +371,8 @@ export class ChairBridgeProvider implements ModelProvider {
             status,
             receivedAt: Date.now(),
             proofVerified,
+            dispatchAttempts,
+            dispatchLatencyMs,
             error,
         };
 
@@ -332,15 +405,35 @@ export class ChairBridgeProvider implements ModelProvider {
         body: string,
         parentSignal: AbortSignal | undefined,
         requestId: string,
+        topicId: string,
+        agentId: string,
+        claimSessionId: string,
+        dispatchStartedAt: number,
         headers: Record<string, string> = {},
-    ): Promise<void> {
+    ): Promise<{ attempts: number }> {
         let lastErr: Error = new Error('chair bridge dispatch: no attempts ran');
+        let attemptsMade = 0;
+        const dispatchFailure = (err: Error) => new ChairBridgeDispatchFailure(err.message, {
+            requestId,
+            topicId,
+            agentId,
+            claimSessionId,
+            dispatchAttempts: attemptsMade,
+            dispatchLatencyMs: Date.now() - dispatchStartedAt,
+        });
         for (let attempt = 0; attempt < this.policy.maxAttempts; attempt += 1) {
             if (parentSignal?.aborted) {
-                throw new Error('chair bridge dispatch: aborted by caller');
+                throw dispatchFailure(new Error('chair bridge dispatch: aborted by caller'));
+            }
+            attemptsMade = attempt + 1;
+            const pending = ChairBridgeProvider.pendingReplies.get(requestId);
+            if (pending) {
+                pending.dispatchAttempts = attemptsMade;
+                pending.dispatchLatencyMs = Date.now() - dispatchStartedAt;
             }
 
             const ctrl = new AbortController();
+            const attemptStartedAt = Date.now();
             const timer = setTimeout(() => ctrl.abort(), this.policy.dispatchTimeoutMs);
             // Chain parent abort → this attempt's abort.
             const onParentAbort = () => ctrl.abort();
@@ -361,21 +454,46 @@ export class ChairBridgeProvider implements ModelProvider {
                 lastErr = err instanceof Error ? err : new Error(String(err));
                 // AbortError from caller-signal must surface immediately —
                 // it is not a transient failure, it is intent.
-                if (parentSignal?.aborted) throw lastErr;
+                if (parentSignal?.aborted) throw dispatchFailure(lastErr);
             } finally {
                 clearTimeout(timer);
                 parentSignal?.removeEventListener('abort', onParentAbort);
             }
 
             if (response) {
-                if (response.ok) return;
+                const active = ChairBridgeProvider.pendingReplies.get(requestId);
+                if (active) {
+                    active.dispatchAttempts = attemptsMade;
+                    active.dispatchLatencyMs = Date.now() - dispatchStartedAt;
+                }
+                this.emitDispatchEvent({
+                    type: 'chair_dispatch_attempt',
+                    requestId,
+                    topicId,
+                    agentId,
+                    claimSessionId,
+                    attempt: attempt + 1,
+                    dispatchLatencyMs: Date.now() - attemptStartedAt,
+                    statusCode: response.status,
+                });
+                if (response.ok) return { attempts: attempt + 1 };
                 // Non-retryable status — surface immediately. Don't burn
                 // attempts on a 400/401/403/404; the upstream isn't going
                 // to start agreeing with us.
                 if (!RETRYABLE_STATUS.has(response.status)) {
-                    throw new Error(`upstream returned non-retryable ${response.status}`);
+                    throw dispatchFailure(new Error(`upstream returned non-retryable ${response.status}`));
                 }
                 lastErr = new Error(`upstream returned retryable ${response.status}`);
+            } else {
+                this.emitDispatchEvent({
+                    type: 'chair_dispatch_attempt',
+                    requestId,
+                    topicId,
+                    agentId,
+                    claimSessionId,
+                    attempt: attempt + 1,
+                    dispatchLatencyMs: Date.now() - attemptStartedAt,
+                });
             }
 
             // Don't sleep after the last attempt — fall through to throw.
@@ -385,7 +503,15 @@ export class ChairBridgeProvider implements ModelProvider {
                 await new Promise((resolve) => setTimeout(resolve, delay));
             }
         }
-        throw lastErr;
+        throw dispatchFailure(lastErr);
+    }
+
+    private emitDispatchEvent(event: ChairDispatchTelemetryEvent): void {
+        try {
+            this.onDispatchEvent?.({ ...event });
+        } catch {
+            // Telemetry observers must never alter dispatch/reply state.
+        }
     }
 
     public async *stream(opts: ModelProviderOptions): AsyncIterable<{ delta: string; usage?: TokenUsage }> {
@@ -417,16 +543,23 @@ export class ChairBridgeProvider implements ModelProvider {
         const claimSessionId = claim.sessionId;
         const replyProofSecret = crypto.randomBytes(32).toString('hex');
 
-        // Reply timeout captured here so the dispatch-failure path can
-        // cancel it. Leaving it inside the Promise closure would leak a
-        // ghost 30s timer per failed dispatch.
+        // Pending must exist before POST so a very fast chair reply can be
+        // matched, but the reply timeout starts only after POST acceptance.
         let replyTimer: NodeJS.Timeout | undefined;
+        let abortCleanup: (() => void) | undefined;
+        let replySettled = false;
+        const cleanupPending = () => {
+            if (replyTimer) {
+                clearTimeout(replyTimer);
+                replyTimer = undefined;
+            }
+            if (abortCleanup) {
+                abortCleanup();
+                abortCleanup = undefined;
+            }
+            ChairBridgeProvider.pendingReplies.delete(requestId);
+        };
         const replyReceived = new Promise<ResolvedChairReply>((resolve, reject) => {
-            replyTimer = setTimeout(() => {
-                ChairBridgeProvider.pendingReplies.delete(requestId);
-                reject(new Error(`Chair Bridge timeout: Agent "${agentId}" did not reply in ${Math.round(replyTimeoutMs() / 1000)} seconds.`));
-            }, replyTimeoutMs());
-
             ChairBridgeProvider.pendingReplies.set(requestId, {
                 requestId,
                 topicId,
@@ -435,15 +568,18 @@ export class ChairBridgeProvider implements ModelProvider {
                 replyProofSecret,
                 createdAt: Date.now(),
                 resolve: (reply) => {
-                    if (replyTimer) clearTimeout(replyTimer);
+                    replySettled = true;
+                    cleanupPending();
                     resolve(reply);
                 },
                 reject: (err) => {
-                    if (replyTimer) clearTimeout(replyTimer);
+                    replySettled = true;
+                    cleanupPending();
                     reject(err);
                 },
             });
         });
+        const pending = ChairBridgeProvider.pendingReplies.get(requestId);
 
         // Make async POST to external agent inboxUrl
         try {
@@ -460,10 +596,79 @@ export class ChairBridgeProvider implements ModelProvider {
             };
             const secured = secureChairDispatchBody(payload, requestId);
 
-            await this.postWithRetry(claim.inboxUrl, secured.body, opts.signal, requestId, secured.headers);
+            const dispatchStartedAt = Date.now();
+            if (pending) {
+                pending.dispatchStartedAt = dispatchStartedAt;
+            }
+            this.emitDispatchEvent({
+                type: 'chair_dispatch_started',
+                requestId,
+                topicId,
+                agentId,
+                claimSessionId,
+                attempt: 0,
+            });
+            const dispatchResult = await this.postWithRetry(
+                claim.inboxUrl,
+                secured.body,
+                opts.signal,
+                requestId,
+                topicId,
+                agentId,
+                claimSessionId,
+                dispatchStartedAt,
+                secured.headers,
+            );
+            const dispatchLatencyMs = Date.now() - dispatchStartedAt;
+            if (pending) {
+                pending.dispatchAttempts = dispatchResult.attempts;
+                pending.dispatchLatencyMs = dispatchLatencyMs;
+            }
+            this.emitDispatchEvent({
+                type: 'chair_dispatch_accepted',
+                requestId,
+                topicId,
+                agentId,
+                claimSessionId,
+                dispatchAttempts: dispatchResult.attempts,
+                dispatchLatencyMs,
+            });
+
+            if (!replySettled && ChairBridgeProvider.pendingReplies.has(requestId)) {
+                const rejectAfterPostAbort = () => {
+                    const active = ChairBridgeProvider.pendingReplies.get(requestId);
+                    if (!active) return;
+                    active.reject(new ChairBridgeDispatchFailure(
+                        'chair bridge dispatch: aborted by caller',
+                        pendingDispatchDetails(active),
+                    ));
+                };
+                if (opts.signal?.aborted) {
+                    rejectAfterPostAbort();
+                } else {
+                    opts.signal?.addEventListener('abort', rejectAfterPostAbort, { once: true });
+                    abortCleanup = () => opts.signal?.removeEventListener('abort', rejectAfterPostAbort);
+                }
+
+                if (!replySettled && ChairBridgeProvider.pendingReplies.has(requestId)) {
+                    replyTimer = setTimeout(() => {
+                        const active = ChairBridgeProvider.pendingReplies.get(requestId);
+                        if (!active) return;
+                        active.reject(new ChairBridgeDispatchFailure(
+                            `Chair Bridge timeout: Agent "${agentId}" did not reply in ${Math.round(replyTimeoutMs() / 1000)} seconds.`,
+                            pendingDispatchDetails(active),
+                        ));
+                    }, replyTimeoutMs());
+                }
+            }
         } catch (err: any) {
-            if (replyTimer) clearTimeout(replyTimer);
-            ChairBridgeProvider.pendingReplies.delete(requestId);
+            cleanupPending();
+            if (err instanceof ChairBridgeDispatchFailure) {
+                throw new ChairBridgeDispatchFailure(
+                    `Chair Bridge dispatch failed for agent "${agentId}": ${err.message}`,
+                    err.details,
+                );
+            }
             throw new Error(`Chair Bridge dispatch failed for agent "${agentId}": ${err.message}`);
         }
 

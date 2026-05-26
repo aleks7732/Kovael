@@ -158,12 +158,18 @@ npm run validate:chairs
 Equivalent direct command when script aliases are unavailable:
 
 ```bash
-KOVAEL_VALIDATE_ALL_CHAIRS=true node scripts/validate-pr.mjs
+node scripts/validate-pr.mjs
 ```
 
 The all-chair validation builds against `dist`, boots an ephemeral
 orchestrator, claims all canonical chairs through real HTTP, dispatches to fake
-loopback inboxes, and asserts every chair receives traffic.
+loopback inboxes, and asserts every chair receives traffic. It is strict by
+default and fails on chair fallback paths; set
+`KOVAEL_ALLOW_CHAIR_FALLBACKS=true` only when intentionally validating a
+fallback-tolerant environment. Failures retain sanitized artifacts under
+`.notes/chair-smoke/<timestamp>/`; set
+`KOVAEL_RETAIN_SMOKE_ARTIFACTS=always` to retain those artifacts for passing
+runs too.
 
 ## Docker And Kubernetes Caveats
 

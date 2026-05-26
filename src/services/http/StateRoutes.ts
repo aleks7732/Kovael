@@ -37,6 +37,7 @@ export function handleStateSnapshot(
             loadedAt: context.workflowLoader?.document()?.loadedAt ?? null,
         },
         tokens: { ...context.tokenTotals },
+        chairDispatch: { ...context.chairDispatchMetrics },
         rateLimits: context.rateLimits?.allSnapshots() ?? [],
         resourceMode: context.resourceGovernor.snapshot(),
         agentRuntimes: agentRuntimeSnapshot,

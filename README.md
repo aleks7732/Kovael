@@ -124,6 +124,8 @@ elevated `codex-openclaw` runtime profile.
 | `KOVAEL_AGENT_RUNTIMES_PARK_ON_IDLE` | `true` | Stop supervised adapters when resource mode enters idle; restart on active use |
 | `KOVAEL_API_TOKEN` | unset | Bearer-token gate for `/api/v1/*`, `/metrics`, and authenticated WebSocket upgrades; forwarded to supervised adapters as `KOVAEL_TOKEN` |
 | `KOVAEL_CHAIR_DISPATCH_SECRET` | unset | Enables encrypted chair dispatch/reply envelopes; use at least 32 characters |
+| `KOVAEL_ALLOW_CHAIR_FALLBACKS` | `false` | Allows chair smoke validation to tolerate local fallback paths; strict live dispatch is the default |
+| `KOVAEL_RETAIN_SMOKE_ARTIFACTS` | unset | Set to `always` to retain sanitized all-chair smoke artifacts under `.notes/chair-smoke/<timestamp>/`; failures are retained automatically |
 | `KOVAEL_AGENT_HUB_SECRET` | unset | Enables agent hub field encryption; required for app-managed runtimes and should be at least 32 characters |
 | `KOVAEL_AGENT_HUB_ENCRYPTION` | optional | Set to `required` for manual adapters that must refuse plaintext hub storage |
 
@@ -157,6 +159,19 @@ Probe endpoints are intentionally ungated so Kubernetes can call them:
 | `GET` | `/livez` | Liveness probe |
 | `GET` | `/readyz` | Readiness probe |
 | `GET` | `/metrics` | Prometheus metrics; token-gated when `KOVAEL_API_TOKEN` is set |
+
+Dispatch observability emits sanitized `chair_dispatch_started`,
+`chair_dispatch_attempt`, `chair_dispatch_accepted`,
+`chair_dispatch_receipt`, `chair_dispatch_success`, and
+`chair_dispatch_failure` events. These include request/session IDs,
+attempt counts, and latency fields where available, but not raw prompts,
+messages, replies, bearer headers, full inbox URL paths, or reply proof
+secrets. `/metrics` exposes `kovael_chair_dispatch_attempts_total`,
+`kovael_chair_dispatch_retries_total`,
+`kovael_chair_dispatch_accepted_total`,
+`kovael_chair_dispatch_success_total`,
+`kovael_chair_dispatch_failures_total`, and
+`kovael_chair_dispatch_inflight`.
 
 Primary HTTP API:
 
@@ -296,13 +311,10 @@ npm run validate:pr
 ```
 
 `validate-pr.mjs` runs the root build, root Vitest suite, cockpit
-typechecks, cockpit build, and a changed-file high-confidence secret
-scan. Set `KOVAEL_VALIDATE_ALL_CHAIRS=true` to include the live chair
-validation pass:
-
-```bash
-KOVAEL_VALIDATE_ALL_CHAIRS=true node scripts/validate-pr.mjs
-```
+typechecks, cockpit build, strict all-chair validation, and a changed-file
+high-confidence secret scan. The chair smoke fails on fallback dispatch by
+default; set `KOVAEL_ALLOW_CHAIR_FALLBACKS=true` only for an intentional
+fallback-tolerant run.
 
 Use the package alias for the all-chair dispatch validation:
 

@@ -123,7 +123,7 @@ try {
         const text = out.join('').trim();
         const adapter = adapters.find((candidate) => candidate.agentId === agentId);
         const hubRow = await waitForHubDispatch(adapter.hubPath, topic.id);
-        if (!text || hubRow.status !== 'succeeded' || hubRow.reply_content !== text) {
+        if (!text || hubRow.status !== 'succeeded' || hubRow.reply_content !== text || hubRow.outbox?.status !== 'sent') {
             process.stderr.write(`[real-smoke] FAIL direct dispatch mismatch for ${agentId}\n`);
             exitCode = 1;
         } else {
@@ -303,7 +303,11 @@ async function waitForHubDispatch(hubPath, topicId, timeoutMs = 10_000) {
                     ORDER BY received_at DESC
                     LIMIT 1
                 `).get(topicId);
-                if (last?.status === 'succeeded') return decodeHubRow(hubPath, last);
+                if (last?.status === 'succeeded') {
+                    const decoded = decodeHubRow(hubPath, last);
+                    last = decoded;
+                    if (decoded.outbox?.status === 'sent') return decoded;
+                }
             } finally {
                 db.close();
             }
@@ -322,6 +326,7 @@ function decodeHubRow(hubPath, row) {
             payload: dispatch?.payload ?? {},
             reply_content: dispatch?.replyContent ?? null,
             error: dispatch?.error ?? row.error,
+            outbox: store.listOutbox().find((candidate) => candidate.requestId === row.request_id && candidate.kind === 'reply') ?? null,
         };
     } finally {
         store.close();

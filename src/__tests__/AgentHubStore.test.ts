@@ -352,6 +352,128 @@ describe('AgentHubStore', () => {
                 status: 'succeeded',
             }),
         });
+        expect(hub.markDispatchSucceeded('req-success', 'durable reply')).toEqual({
+            requestId: 'req-success',
+            outboxId: outbox[0].id,
+        });
+        expect(hub.listOutbox()).toHaveLength(1);
+        hub.close();
+    });
+
+    it('records runtime failure as a redacted reply outbox row', () => {
+        const dbPath = tempDbPath();
+        const hub = new AgentHubStore({ agentId: 'shaev', dbPath, now: () => 100 });
+
+        hub.recordInboundDispatch({
+            requestId: 'req-failed-reply',
+            topicId: 'topic-failed-reply',
+            agentId: 'shaev',
+            replyUrl: 'http://127.0.0.1:8080/api/v1/chairs/reply',
+            claimSessionId: 'claim-session',
+        });
+        const result = hub.markDispatchFailed(
+            'req-failed-reply',
+            'runtime exploded KOVAEL_SECRET_CANARY=super-secret-value bearer abcdefghijklmnopqrstuvwxyz0123456789abcdef',
+            {
+                claimSessionId: 'claim-session',
+                replyProofSecret: 'reply-proof-secret-0123456789abcdef',
+            },
+        );
+
+        const outbox = hub.listOutbox();
+        expect(result).toEqual({ requestId: 'req-failed-reply', outboxId: outbox[0].id });
+        expect(outbox).toHaveLength(1);
+        expect(outbox[0]).toMatchObject({
+            requestId: 'req-failed-reply',
+            kind: 'reply',
+            dedupeKey: 'reply:req-failed-reply',
+            status: 'pending',
+            payload: expect.objectContaining({
+                requestId: 'req-failed-reply',
+                topicId: 'topic-failed-reply',
+                agentId: 'shaev',
+                claimSessionId: 'claim-session',
+                status: 'failed',
+                content: expect.stringContaining('KOVAEL_SECRET_CANARY=[REDACTED]'),
+                error: expect.stringContaining('KOVAEL_SECRET_CANARY=[REDACTED]'),
+                replyProof: expect.any(String),
+            }),
+        });
+        expect(String(outbox[0].payload.content)).not.toContain('super-secret-value');
+        expect(String(outbox[0].payload.error)).not.toContain('abcdefghijklmnopqrstuvwxyz0123456789abcdef');
+        hub.close();
+    });
+
+    it('claims due outbox rows, retries delivery failures, marks exhausted rows dead, and reclaims stale sending rows', () => {
+        const dbPath = tempDbPath();
+        let now = 100;
+        const hub = new AgentHubStore({ agentId: 'shaev', dbPath, now: () => now });
+
+        hub.recordInboundDispatch({
+            requestId: 'req-outbox-drain',
+            topicId: 'topic-outbox-drain',
+            agentId: 'shaev',
+            replyUrl: 'http://127.0.0.1:8080/api/v1/chairs/reply',
+        });
+        const { outboxId } = hub.markDispatchSucceeded('req-outbox-drain', 'drain me');
+        if (!outboxId) throw new Error('expected success reply outbox id');
+
+        expect(hub.claimDueOutbox(10, 1_000)).toMatchObject([{
+            id: outboxId,
+            status: 'sending',
+            attempts: 1,
+        }]);
+        expect(hub.claimDueOutbox(10, 1_000)).toEqual([]);
+
+        hub.markOutboxDeliveryFailed(outboxId, 'HTTP 503', 500, 3);
+        expect(hub.listOutbox()[0]).toMatchObject({
+            status: 'failed',
+            attempts: 1,
+            nextAttemptAt: 500,
+            lastError: 'HTTP 503',
+        });
+        now = 499;
+        expect(hub.claimDueOutbox(10, 1_000)).toEqual([]);
+        now = 500;
+        expect(hub.claimDueOutbox(10, 1_000)[0]).toMatchObject({
+            id: outboxId,
+            status: 'sending',
+            attempts: 2,
+        });
+
+        hub.markOutboxDeliveryFailed(outboxId, 'HTTP 503 again', 700, 2);
+        expect(hub.listOutbox()[0]).toMatchObject({
+            status: 'dead',
+            attempts: 2,
+            nextAttemptAt: null,
+            lastError: 'HTTP 503 again',
+        });
+
+        hub.recordInboundDispatch({
+            requestId: 'req-outbox-stale',
+            topicId: 'topic-outbox-stale',
+            agentId: 'shaev',
+            replyUrl: 'http://127.0.0.1:8080/api/v1/chairs/reply',
+        });
+        const { outboxId: staleId } = hub.markDispatchSucceeded('req-outbox-stale', 'reclaim me');
+        if (!staleId) throw new Error('expected stale reply outbox id');
+        expect(hub.claimDueOutbox(10, 1_000)[0].id).toBe(staleId);
+        now = 1_499;
+        expect(hub.claimDueOutbox(10, 1_000)).toEqual([]);
+        now = 1_500;
+        expect(hub.claimDueOutbox(10, 1_000)[0]).toMatchObject({
+            id: staleId,
+            attempts: 2,
+        });
+
+        hub.markOutboxSent(staleId);
+        const sentAt = hub.listOutbox().find((row) => row.id === staleId)?.sentAt;
+        now = 2_000;
+        hub.markOutboxSent(staleId);
+        expect(hub.listOutbox().find((row) => row.id === staleId)).toMatchObject({
+            status: 'sent',
+            sentAt,
+        });
         hub.close();
     });
 

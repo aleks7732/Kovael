@@ -79,10 +79,11 @@ describe('kovael-agent-inbox hub persistence', () => {
         return `http://127.0.0.1:${address.port}`;
     }
 
-    async function startDispatchOrchestrator() {
+    async function startDispatchOrchestrator(options: { replyStatuses?: number[] } = {}) {
         let claimedInboxUrl: string | null = null;
         let resolveClaim!: (inboxUrl: string) => void;
         let resolveReply!: (reply: Record<string, unknown>) => void;
+        let replyAttempts = 0;
         const claimed = new Promise<string>((resolve) => {
             resolveClaim = resolve;
         });
@@ -111,6 +112,12 @@ describe('kovael-agent-inbox hub persistence', () => {
                 return;
             }
             if (req.method === 'POST' && req.url === '/api/v1/chairs/reply') {
+                replyAttempts += 1;
+                const status = options.replyStatuses?.[replyAttempts - 1] ?? 200;
+                if (status < 200 || status >= 300) {
+                    writeJson(res, status, { error: `reply_attempt_${replyAttempts}` });
+                    return;
+                }
                 const opened = openChairDispatchBody(body);
                 resolveReply(opened);
                 writeJson(res, 200, { success: true });
@@ -127,6 +134,7 @@ describe('kovael-agent-inbox hub persistence', () => {
             host,
             waitForClaim: () => withTimeout(claimed, 5000, 'claim timeout'),
             waitForReply: () => withTimeout(replied, 5000, 'reply timeout'),
+            replyAttempts: () => replyAttempts,
         };
     }
 
@@ -236,11 +244,68 @@ describe('kovael-agent-inbox hub persistence', () => {
             status: 'succeeded',
             reply_content: reply.content,
         });
+        expect(record.started_at).not.toBeNull();
+        expect(record.completed_at).not.toBeNull();
+        if (record.started_at === null || record.completed_at === null) {
+            throw new Error('expected completed dispatch timestamps');
+        }
         expect(record.started_at).toBeGreaterThanOrEqual(record.received_at);
         expect(record.completed_at).toBeGreaterThanOrEqual(record.started_at);
         expect(JSON.parse(record.payload_json)).toMatchObject({ requestId, topicId, agentId: 'hub-probe' });
+        await waitForOutboxRecord(hubPath, requestId, 'sent');
 
         expect(Buffer.concat(stderr).toString('utf8')).not.toContain('dispatch failed');
+    }, 10_000);
+
+    it('retries transient reply webhook failures from the outbox without rerunning runtime', async () => {
+        process.env[CHAIR_DISPATCH_SECRET_ENV] = 'vitest-reply-retry-secret-0123456789';
+
+        const hubPath = tempPath();
+        const orchestrator = await startDispatchOrchestrator({ replyStatuses: [503, 200] });
+        const child = spawn(process.execPath, [
+            'scripts/kovael-agent-inbox.mjs',
+            '--id', 'hub-probe',
+            '--provider', 'vitest',
+            '--runtime', 'fake-deterministic',
+            '--host', orchestrator.host,
+            '--hub-path', hubPath,
+        ], {
+            cwd: process.cwd(),
+            env: {
+                ...process.env,
+                [CHAIR_DISPATCH_SECRET_ENV]: process.env[CHAIR_DISPATCH_SECRET_ENV],
+            },
+            windowsHide: true,
+        });
+        children.push(child);
+
+        const inboxUrl = await orchestrator.waitForClaim();
+        const requestId = 'req-retry-transient-reply';
+        const secured = secureChairDispatchBody({
+            requestId,
+            topicId: 'topic-retry-transient-reply',
+            agentId: 'hub-probe',
+            claimSessionId: 'session-dispatch',
+            replyProofSecret: 'reply-proof-secret-0123456789abcdef',
+            replyUrl: `${orchestrator.host}/api/v1/chairs/reply`,
+            messages: [{ role: 'user', content: 'reply endpoint retries only' }],
+        }, requestId);
+
+        const dispatch = await fetch(inboxUrl, {
+            method: 'POST',
+            headers: secured.headers,
+            body: secured.body,
+        });
+        expect(dispatch.status, await dispatch.text()).toBe(202);
+
+        const reply = await orchestrator.waitForReply();
+        expect(reply).toMatchObject({ requestId, status: 'succeeded' });
+        expect(orchestrator.replyAttempts()).toBe(2);
+
+        const record = await waitForDispatchRecord(hubPath, requestId, 'succeeded');
+        const outbox = await waitForOutboxRecord(hubPath, requestId, 'sent');
+        expect(record.runtime_attempts).toBe(1);
+        expect(outbox.attempts).toBe(2);
     }, 10_000);
 
     it('does not expose KOVAEL secrets to spawned runtime processes', async () => {
@@ -370,27 +435,70 @@ process.exit(9);
         const record = await waitForDispatchRecord(hubPath, requestId, 'failed');
         expect(String(record.error)).toContain('redacted failure');
         expect(String(record.error)).not.toContain('super-secret-value');
+        await waitForOutboxRecord(hubPath, requestId, 'sent');
         const stderrText = Buffer.concat(stderr).toString('utf8');
         expect(stderrText).toContain('redacted failure');
         expect(stderrText).not.toContain('super-secret-value');
     }, 10_000);
+
+    it('marks permanent reply webhook failures dead', async () => {
+        process.env[CHAIR_DISPATCH_SECRET_ENV] = 'vitest-permanent-reply-secret-0123456789';
+
+        const hubPath = tempPath();
+        const orchestrator = await startDispatchOrchestrator({ replyStatuses: [400] });
+        const child = spawn(process.execPath, [
+            'scripts/kovael-agent-inbox.mjs',
+            '--id', 'hub-probe',
+            '--provider', 'vitest',
+            '--runtime', 'fake-deterministic',
+            '--host', orchestrator.host,
+            '--hub-path', hubPath,
+        ], {
+            cwd: process.cwd(),
+            env: {
+                ...process.env,
+                [CHAIR_DISPATCH_SECRET_ENV]: process.env[CHAIR_DISPATCH_SECRET_ENV],
+            },
+            windowsHide: true,
+        });
+        children.push(child);
+
+        const inboxUrl = await orchestrator.waitForClaim();
+        const requestId = 'req-permanent-reply-failure';
+        const secured = secureChairDispatchBody({
+            requestId,
+            topicId: 'topic-permanent-reply-failure',
+            agentId: 'hub-probe',
+            claimSessionId: 'session-dispatch',
+            replyProofSecret: 'reply-proof-secret-0123456789abcdef',
+            replyUrl: `${orchestrator.host}/api/v1/chairs/reply`,
+            messages: [{ role: 'user', content: 'permanent failure' }],
+        }, requestId);
+
+        const dispatch = await fetch(inboxUrl, {
+            method: 'POST',
+            headers: secured.headers,
+            body: secured.body,
+        });
+        expect(dispatch.status, await dispatch.text()).toBe(202);
+
+        await waitForDispatchRecord(hubPath, requestId, 'succeeded');
+        const outbox = await waitForOutboxRecord(hubPath, requestId, 'dead');
+        expect(outbox.attempts).toBe(1);
+        expect(String(outbox.last_error)).toContain('HTTP 400');
+        expect(orchestrator.replyAttempts()).toBe(1);
+    }, 10_000);
 });
 
 function ensureAgentHubStoreBuild(): void {
-    const requiredBuildArtifacts = [
-        path.join(process.cwd(), 'dist', 'services', 'AgentHubStore.js'),
-        path.join(process.cwd(), 'dist', 'services', 'RuntimeSecurity.js'),
-    ];
-    if (requiredBuildArtifacts.every((artifact) => fs.existsSync(artifact))) return;
-
-    const npm = process.platform === 'win32' ? 'npm.cmd' : 'npm';
-    const result = spawnSync(npm, ['run', 'build'], {
+    const tscBin = path.join(process.cwd(), 'node_modules', 'typescript', 'bin', 'tsc');
+    const result = spawnSync(process.execPath, [tscBin], {
         cwd: process.cwd(),
         encoding: 'utf8',
         windowsHide: true,
     });
     if (result.status !== 0) {
-        throw new Error(`npm run build failed before agent inbox script tests\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}`);
+        throw new Error(`tsc build failed before agent inbox script tests\nerror:\n${result.error?.message ?? ''}\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}`);
     }
 }
 
@@ -440,19 +548,19 @@ async function waitForDispatchRecord(
     hubPath: string,
     requestId: string,
     status: 'accepted' | 'running' | 'succeeded' | 'failed',
-): Promise<any> {
+): Promise<DispatchRecordRow> {
     const deadline = Date.now() + 5000;
-    let last: any = null;
+    let last: DispatchRecordRow | null = null;
     while (Date.now() < deadline) {
         if (fs.existsSync(hubPath)) {
             const db = new DatabaseSync(hubPath);
             try {
                 last = db.prepare(`
                     SELECT request_id, topic_id, agent_id, status, received_at, started_at,
-                           completed_at, payload_json, reply_content, error
+                           completed_at, payload_json, reply_content, error, runtime_attempts
                     FROM agent_dispatches
                     WHERE request_id = ?
-                `).get(requestId) as any;
+                `).get(requestId) as DispatchRecordRow | undefined ?? null;
                 if (last?.status === status) return last;
             } finally {
                 db.close();
@@ -461,4 +569,54 @@ async function waitForDispatchRecord(
         await new Promise((resolve) => setTimeout(resolve, 50));
     }
     throw new Error(`dispatch ${requestId} did not reach ${status}; last=${JSON.stringify(last)}`);
+}
+
+async function waitForOutboxRecord(
+    hubPath: string,
+    requestId: string,
+    status: 'pending' | 'sending' | 'sent' | 'failed' | 'dead',
+): Promise<OutboxRecordRow> {
+    const deadline = Date.now() + 5000;
+    let last: OutboxRecordRow | null = null;
+    while (Date.now() < deadline) {
+        if (fs.existsSync(hubPath)) {
+            const db = new DatabaseSync(hubPath);
+            try {
+                last = db.prepare(`
+                    SELECT id, request_id, status, attempts, next_attempt_at, last_error, sent_at
+                    FROM agent_outbox
+                    WHERE request_id = ?
+                `).get(requestId) as OutboxRecordRow | undefined ?? null;
+                if (last?.status === status) return last;
+            } finally {
+                db.close();
+            }
+        }
+        await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    throw new Error(`outbox ${requestId} did not reach ${status}; last=${JSON.stringify(last)}`);
+}
+
+interface DispatchRecordRow {
+    request_id: string;
+    topic_id: string;
+    agent_id: string;
+    status: 'accepted' | 'running' | 'succeeded' | 'failed';
+    received_at: number;
+    started_at: number | null;
+    completed_at: number | null;
+    payload_json: string;
+    reply_content: string | null;
+    error: string | null;
+    runtime_attempts: number;
+}
+
+interface OutboxRecordRow {
+    id: string;
+    request_id: string;
+    status: 'pending' | 'sending' | 'sent' | 'failed' | 'dead';
+    attempts: number;
+    next_attempt_at: number | null;
+    last_error: string | null;
+    sent_at: number | null;
 }

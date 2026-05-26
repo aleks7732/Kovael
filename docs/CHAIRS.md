@@ -103,10 +103,17 @@ explicit elevated-runtime opt-in.
 | `KOVAEL_CHAIR_DISPATCH_SECRET` | unset | 32+ character dispatch/reply envelope secret |
 | `KOVAEL_AGENT_HUB_SECRET` | unset | Active field-encryption secret for hub payloads, replies, receipts, and memory |
 | `KOVAEL_AGENT_HUB_ENCRYPTION` | optional | Set to `required` for manual adapters that must reject plaintext hub storage |
+| `KOVAEL_ALLOW_CHAIR_FALLBACKS` | `false` | Allows all-chair smoke validation to tolerate fallback paths |
+| `KOVAEL_RETAIN_SMOKE_ARTIFACTS` | unset | Set to `always` to keep sanitized smoke artifacts; failures are retained automatically |
 
 If `KOVAEL_API_TOKEN` gates the HTTP API, the supervisor passes it to the
 adapter as `KOVAEL_TOKEN` and uses `--with-token`; the adapter removes
 both token variables before spawning the underlying runtime.
+
+Dispatch telemetry is intentionally bounded. Request-bound chair dispatch
+events carry request IDs, agent IDs, claim session IDs, attempts, and
+latency where available. They must not include raw prompts, messages,
+reply text, bearer headers, full inbox paths, or reply proof secrets.
 
 Lifecycle behavior:
 
