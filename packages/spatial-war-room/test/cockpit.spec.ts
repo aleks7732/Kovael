@@ -15,7 +15,8 @@
  * interaction testing.
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { execSync, spawn } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
+import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
@@ -25,8 +26,11 @@ import * as net from 'node:net';
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
+const require = createRequire(import.meta.url);
 const WAR_ROOM_DIR = path.resolve(fileURLToPath(new URL('.', import.meta.url)), '..');
 const DIST_DIR    = path.join(WAR_ROOM_DIR, 'dist');
+const VITE_PACKAGE = require.resolve('vite/package.json', { paths: [WAR_ROOM_DIR] });
+const VITE_CLI     = path.join(path.dirname(VITE_PACKAGE), 'bin', 'vite.js');
 let previewPort = 0;
 
 // ---------------------------------------------------------------------------
@@ -86,10 +90,8 @@ function getFreePort(): Promise<number> {
 let previewProc: ReturnType<typeof spawn> | null = null;
 
 beforeAll(async () => {
-    const npxBin = process.platform === 'win32' ? 'npx.cmd' : 'npx';
-
     // 1. Build
-    execSync(`${npxBin} vite build`, {
+    execFileSync(process.execPath, [VITE_CLI, 'build'], {
         cwd: WAR_ROOM_DIR,
         stdio: 'pipe',
         timeout: 120_000,
@@ -100,9 +102,9 @@ beforeAll(async () => {
     // test fail before the frontend is exercised.
     previewPort = await getFreePort();
     previewProc = spawn(
-        'npx',
-        ['vite', 'preview', '--host', '127.0.0.1', '--port', String(previewPort), '--strictPort'],
-        { cwd: WAR_ROOM_DIR, stdio: 'pipe', shell: true },
+        process.execPath,
+        [VITE_CLI, 'preview', '--host', '127.0.0.1', '--port', String(previewPort), '--strictPort'],
+        { cwd: WAR_ROOM_DIR, stdio: 'pipe' },
     );
 
     // 3. Wait until preview responds

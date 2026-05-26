@@ -5,67 +5,41 @@
 
 ## Where We Stopped
 
-SQLite hub hardening is implemented on `codex/sqlite-hub-hardening`.
+Main is current through the chair dispatch correctness work:
 
-The branch hardens app-managed agent hubs and runtime boundaries:
+- `67fe0d4` Harden per-agent SQLite hubs (#53)
+- `74683c0` Refine graph cleanup and snapshot normalizers (#54)
+- `f3a6750` Harden chair dispatch and outbox correctness (#55)
 
-- adapter env allowlisting and runtime child `KOVAEL_*` secret stripping
-- shared runtime redaction and safe failure messages
-- mandatory hub encryption for managed runtimes
-- encrypted/redacted hub payloads, replies, receipts, memory, and failures
-- local-only hub path validation with UNC/cloud-sync rejection
-- default managed hub storage outside the workspace
-- WAL/SHM sidecar gitignore and docs validation
+The repo was clean on `main` before starting this follow-up branch:
 
-Fresh verification evidence from this session:
+- Branch: `codex/release-hygiene-followups`
+- Purpose: clear small release-hygiene leftovers after #55
 
-- `npx tsc --noEmit`
-- targeted hardening tests: `49 passed | 2 skipped`
-- `node scripts/validate-pr.mjs`: full repo validation passed, `515 passed | 4 skipped`
-- secure adapter smoke with 32+ char secrets: all 9 fake-deterministic adapters claimed, decrypted, dispatched, replied, and persisted hub success
+## Current Follow-Up Scope
 
-## Outstanding Todo
+- Refresh this stale handoff file so it no longer points at merged PRs.
+- Remove the Node `[DEP0190]` warning caused by `spawn(..., { shell: true })`
+  in the spatial war-room cockpit smoke test.
+- Validate the focused cockpit test and the normal PR gate before merging.
 
-- Create and merge the SQLite hub hardening PR from `codex/sqlite-hub-hardening`.
-- Keep the unrelated graph/cockpit cleanup out of the SQLite PR:
-  - `.graphifyignore`
-  - `packages/spatial-war-room/src/store/useWarRoomStore.ts`
-  - `packages/spatial-war-room/test/store/useWarRoomStore.spec.ts`
-  - `packages/spatial-war-room/src/store/snapshotNormalizers.ts`
-  - `packages/spatial-war-room/src/store/snapshotTypes.ts`
-  - `packages/spatial-war-room/test/store/snapshotNormalizers.spec.ts`
-- Open a separate graph/cockpit cleanup PR for the store snapshot normalizer split and graph ignore improvements.
-- Investigate the Node `[DEP0190]` test warning about `shell: true` in child process usage and remove it where safe.
-- Decide whether real-runtime smoke for `nyx-codex` and `shaev` should become a documented manual release gate, separate from CI-safe fake-deterministic adapter validation.
-- Add a future SQLite backup/checkpoint helper if operators need one; docs now warn not to blindly copy only the main DB file during writes.
+## Remaining Todo
 
-## Files In Flight
+- Decide whether real-runtime smoke for `nyx-codex` and `shaev` should become
+  a documented manual release gate, separate from CI-safe fake-deterministic
+  adapter validation.
+- Add a future SQLite backup/checkpoint helper if operators need one; docs warn
+  not to blindly copy only the main DB file during writes.
+- Consider deferred architecture cleanup PRs:
+  - `codex/theater-trace-correlation`
+  - `codex/agent-hub-store-split-protocol-dedupe`
 
-SQLite hardening files expected in the PR:
+## Useful Commands
 
-- `.gitignore`
-- `README.md`
-- `docs/CHAIRS.md`
-- `docs/runbooks/agent-hub-lifecycle.md`
-- `scripts/kovael-agent-inbox.mjs`
-- `scripts/real-runtime-smoke.mjs`
-- `scripts/validate-all-chairs.mjs`
-- `scripts/validate-pr.mjs`
-- `src/services/RuntimeSecurity.ts`
-- `src/services/SqlitePathSecurity.ts`
-- `src/services/AgentHubStore.ts`
-- `src/services/AgentRuntimeSupervisor.ts`
-- `src/services/ModelProvider.ts`
-- `src/__tests__/AgentHubStore.test.ts`
-- `src/__tests__/AgentInboxScript.test.ts`
-- `src/__tests__/AgentRuntimeRoutes.test.ts`
-- `src/__tests__/AgentRuntimeSupervisor.test.ts`
-- `NEXT-PROMPT.md`
-
-Unrelated cockpit/graph files remain dirty and should be handled separately.
-
-## Resume Command
-
-Start with `git status --short --branch`, confirm the SQLite hardening PR state,
-then either continue PR review fixes or branch/worktree off for the graph/cockpit
-cleanup PR.
+```powershell
+git status --short --branch
+npx vitest run packages/spatial-war-room/test/cockpit.spec.ts
+node scripts/validate-pr.mjs
+npm run validate:chairs
+node scripts/real-runtime-smoke.mjs --agents nyx-codex,shaev --require-real --timeout-ms 180000
+```
