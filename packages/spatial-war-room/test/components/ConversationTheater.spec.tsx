@@ -132,6 +132,55 @@ describe('ConversationTheater', () => {
         expect(screen.getByText(/mesh state nominal/i)).toBeTruthy();
     });
 
+    it('shows disabled trace state when the active topic has no cycle id', () => {
+        stubFetchOk();
+        seed({
+            topics: [makeTopic({ id: 't1', title: 'retry policy', active: true })],
+            activeTopicId: 't1',
+            agentRoster: [makeCard('nyx-antigravity')],
+        });
+
+        render(<ConversationTheater />);
+
+        const trace = screen.getByRole('button', { name: /NO TRACE|NO CYCLE/i });
+        expect(trace.hasAttribute('disabled')).toBe(true);
+    });
+
+    it('opens the trace timeline with the topic traceCycleId when present', async () => {
+        const fetchMock = vi.fn().mockImplementation((url: string) => {
+            if (url.includes('/api/v1/traces/cycle-1')) {
+                return Promise.resolve({
+                    ok: true,
+                    json: () => Promise.resolve({
+                        cycleId: 'cycle-1',
+                        traceId: 'trace-1',
+                        rootSpanId: 'root-1',
+                        startedAt: 1,
+                        endedAt: 2,
+                        spans: [],
+                    }),
+                    text: () => Promise.resolve(''),
+                });
+            }
+            return Promise.resolve({
+                ok: true,
+                json: () => Promise.resolve({ conversations: [] }),
+                text: () => Promise.resolve(''),
+            });
+        });
+        vi.stubGlobal('fetch', fetchMock as unknown as typeof fetch);
+        seed({
+            topics: [makeTopic({ id: 't1', title: 'retry policy', active: true, traceCycleId: 'cycle-1' })],
+            activeTopicId: 't1',
+            agentRoster: [makeCard('nyx-antigravity')],
+        });
+
+        render(<ConversationTheater />);
+        fireEvent.click(screen.getByRole('button', { name: /OTEL TRACE/i }));
+
+        await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('http://localhost:8080/api/v1/traces/cycle-1'));
+    });
+
     it('renders the StoppingCard when a stopping criterion exists for the active topic', () => {
         stubFetchOk();
         seed({

@@ -39,10 +39,14 @@ export const TraceTimeline = memo(({ initialCycleId = null }: TraceTimelineProps
   // Listen to window-level custom events to open the timeline
   useEffect(() => {
     const handleOpenTrace = (event: Event) => {
-      const customEvent = event as CustomEvent<{ topicId: string }>;
-      const topic = customEvent.detail?.topicId;
-      if (topic) {
-        setCycleId(topic);
+      const customEvent = event as CustomEvent<{ topicId?: string; cycleId?: string }>;
+      const nextCycleId = typeof customEvent.detail?.cycleId === 'string'
+        ? customEvent.detail.cycleId.trim()
+        : '';
+      if (nextCycleId) {
+        setError(null);
+        setTrace(null);
+        setCycleId(nextCycleId);
         setIsOpen(true);
       }
     };

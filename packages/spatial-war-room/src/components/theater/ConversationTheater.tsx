@@ -184,7 +184,7 @@ export const ConversationTheater = memo(() => {
                 </span>
               </div>
               <div className="flex items-center gap-2">
-                <TraceBreadcrumb topicId={activeTopic.id} />
+                <TraceBreadcrumb topicId={activeTopic.id} cycleId={activeTopic.traceCycleId ?? null} />
                 {activeTopic.active && (
                   <span className="px-2 py-0.5 rounded bg-command-accent/15 border border-command-accent/30 text-[9px] font-bold text-command-accent tracking-widest animate-pulse uppercase">
                     STREAMING DELTAS

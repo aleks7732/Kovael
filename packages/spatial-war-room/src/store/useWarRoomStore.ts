@@ -89,6 +89,7 @@ export interface ConversationTopic {
   title: string;
   participants: string[];
   active: boolean;
+  traceCycleId?: string | null;
 }
 
 export interface ConversationMessage {

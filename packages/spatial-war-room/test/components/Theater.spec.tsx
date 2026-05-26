@@ -1,8 +1,9 @@
 // @vitest-environment happy-dom
 import { describe, it, expect, afterEach, vi } from 'vitest';
-import { render, cleanup, screen, fireEvent } from '@testing-library/react';
+import { render, cleanup, screen, fireEvent, waitFor } from '@testing-library/react';
 import { StoppingCard } from '../../src/components/theater/StoppingCard';
 import { TraceBreadcrumb } from '../../src/components/theater/TraceBreadcrumb';
+import { TraceTimeline } from '../../src/components/theater/TraceTimeline';
 import { areStagePropsEqual, Stage } from '../../src/components/theater/Stage';
 import { ShortcutSheet } from '../../src/components/theater/ShortcutSheet';
 import { CommitteeDrawer } from '../../src/components/theater/CommitteeDrawer';
@@ -78,22 +79,74 @@ describe('StoppingCard', () => {
 // TraceBreadcrumb — verifies the trace timeline launch event contract.
 // ---------------------------------------------------------------------------
 describe('TraceBreadcrumb', () => {
-    it('renders the OTEL TRACE pill with the topic id as title text', () => {
-        render(<TraceBreadcrumb topicId="topic-abcd-1234" />);
-        const pill = screen.getByText('OTEL TRACE').closest('div');
+    it('renders the OTEL TRACE pill with the cycle id as title text', () => {
+        render(<TraceBreadcrumb topicId="topic-xyz" cycleId="cycle-123" />);
+        const pill = screen.getByRole('button', { name: /OTEL TRACE/i });
         expect(pill).toBeTruthy();
-        expect(pill!.getAttribute('title')).toContain('topic-abcd-1234');
+        expect(pill.getAttribute('title')).toContain('cycle-123');
+        expect(pill.getAttribute('title')).not.toContain('topic-xyz');
     });
 
-    it('dispatches a trace-open event on click', () => {
+    it('dispatches a trace-open event with the real cycle id on click', () => {
         const spy = vi.fn();
         window.addEventListener('kovael:open-trace', spy);
-        render(<TraceBreadcrumb topicId="topic-xyz" />);
-        const pill = screen.getByText('OTEL TRACE');
+        render(<TraceBreadcrumb topicId="topic-xyz" cycleId="cycle-123" />);
+        const pill = screen.getByRole('button', { name: /OTEL TRACE/i });
         fireEvent.click(pill);
         expect(spy).toHaveBeenCalledTimes(1);
-        expect((spy.mock.calls[0]?.[0] as CustomEvent).detail).toEqual({ topicId: 'topic-xyz' });
+        expect((spy.mock.calls[0]?.[0] as CustomEvent).detail).toEqual({ topicId: 'topic-xyz', cycleId: 'cycle-123' });
         window.removeEventListener('kovael:open-trace', spy);
+    });
+
+    it('renders disabled no-trace state and does not dispatch without a cycle id', () => {
+        const spy = vi.fn();
+        window.addEventListener('kovael:open-trace', spy);
+        render(<TraceBreadcrumb topicId="topic-xyz" cycleId={null} />);
+        const pill = screen.getByRole('button', { name: /NO TRACE|NO CYCLE/i });
+        expect(pill.hasAttribute('disabled')).toBe(true);
+
+        fireEvent.click(pill);
+        fireEvent.keyDown(pill, { key: 'Enter' });
+        fireEvent.keyDown(pill, { key: ' ' });
+
+        expect(spy).not.toHaveBeenCalled();
+        window.removeEventListener('kovael:open-trace', spy);
+    });
+});
+
+describe('TraceTimeline', () => {
+    it('fetches traces by cycle id from the trace-open event', async () => {
+        const fetchSpy = vi.fn().mockResolvedValue({
+            ok: true,
+            json: async () => ({
+                cycleId: 'cycle-1',
+                traceId: 'trace-1',
+                rootSpanId: 'root-1',
+                startedAt: 1,
+                endedAt: 2,
+                spans: [],
+            }),
+        });
+        vi.stubGlobal('fetch', fetchSpy);
+
+        render(<TraceTimeline />);
+        window.dispatchEvent(new CustomEvent('kovael:open-trace', { detail: { topicId: 'topic-1', cycleId: 'cycle-1' } }));
+
+        await waitFor(() => expect(fetchSpy).toHaveBeenCalledWith('http://localhost:8080/api/v1/traces/cycle-1'));
+    });
+
+    it('ignores legacy trace-open events that only carry a topic id', async () => {
+        const fetchSpy = vi.fn().mockResolvedValue({
+            ok: true,
+            json: async () => ({}),
+        });
+        vi.stubGlobal('fetch', fetchSpy);
+
+        render(<TraceTimeline />);
+        window.dispatchEvent(new CustomEvent('kovael:open-trace', { detail: { topicId: 'topic-1' } }));
+        await Promise.resolve();
+
+        expect(fetchSpy).not.toHaveBeenCalled();
     });
 });
 
