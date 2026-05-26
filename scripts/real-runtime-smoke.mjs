@@ -6,7 +6,7 @@
  * available safe runtimes, dispatches through ChairBridgeProvider, then runs
  * a strict ConversationBus convene and fails if any fallback path is used.
  *
- * Requires: `npm run build` first (this script imports from dist/).
+ * Requires: `npm run build` first for non-help smoke runs.
  *
  *   node scripts/real-runtime-smoke.mjs
  *   node scripts/real-runtime-smoke.mjs --agents nyx-codex,shaev --require-real
@@ -19,10 +19,6 @@ import * as path from 'node:path';
 import process from 'node:process';
 import { DatabaseSync } from 'node:sqlite';
 import { setTimeout as sleep } from 'node:timers/promises';
-import { AgentCards } from '../dist/AgentCards.js';
-import { AgentHubStore } from '../dist/services/AgentHubStore.js';
-import { MeshOrchestrator } from '../dist/MeshOrchestrator.js';
-import { ChairBridgeProvider } from '../dist/services/ModelProvider.js';
 
 const ROOT = path.resolve(import.meta.dirname, '..');
 const SCRIPT_PATH = path.join(ROOT, 'scripts', 'kovael-agent-inbox.mjs');
@@ -38,6 +34,36 @@ process.env.KOVAEL_DB_PATH = ':memory:';
 process.env.KOVAEL_CHAIR_DISPATCH_SECRET = DISPATCH_SECRET;
 
 const args = parseArgs(process.argv.slice(2));
+if (args.help) {
+    process.stdout.write(`Manual Real-Runtime Smoke Gate for Kovael Chair Adapters
+
+Usage:
+  node scripts/real-runtime-smoke.mjs [options]
+
+This is a manual release gate, not the CI default. It verifies that real local runtimes
+are installed, configured, and can successfully complete the live adapter smoke path.
+
+Options:
+  --agents <list>      Comma-separated list of agent IDs to test (default: nyx-codex).
+                       Supported agents with safe local runtimes: nyx-codex, shaev.
+  --require-real       Strict environment mode. The run fails if any requested runtime
+                       is missing or skipped, rather than silently passing.
+  --timeout-ms <ms>    Handoff timeout in milliseconds (default: 180000).
+  --help, -h           Show this help message.
+
+Note:
+  CI-safe validation remains 'npm run validate:chairs' (which uses fake deterministic adapters).
+  A pass from this smoke gate means the real adapter path worked for the selected agents;
+  it does not prove every possible future prompt or tool action will succeed.
+`);
+    process.exit(0);
+}
+
+// Load compiled packages dynamically after the help path remains build-free.
+const { AgentCards } = await import('../dist/AgentCards.js');
+const { AgentHubStore } = await import('../dist/services/AgentHubStore.js');
+const { MeshOrchestrator } = await import('../dist/MeshOrchestrator.js');
+const { ChairBridgeProvider } = await import('../dist/services/ModelProvider.js');
 const requireReal = args.requireReal || process.env.KOVAEL_REQUIRE_LIVE_CHAIRS === 'true';
 const requestedAgents = args.agents.length > 0 ? args.agents : ['nyx-codex'];
 const timeoutMs = args.timeoutMs ?? 180_000;
@@ -47,6 +73,8 @@ let exitCode = 0;
 let orchestrator = null;
 let hubRoot = null;
 const adapters = [];
+const directDispatchStatus = {};
+let conveneStatus = 'SKIPPED';
 
 try {
     const runnable = [];
@@ -72,10 +100,12 @@ try {
     }
     if (requireReal && skipped.length > 0) {
         process.stderr.write('[real-smoke] FAIL --require-real/KOVAEL_REQUIRE_LIVE_CHAIRS forbids skipped requested agents\n');
+        printSummary(requestedAgents, runnable, skipped, directDispatchStatus, 'FAIL', 'FAIL');
         process.exit(1);
     }
     if (runnable.length === 0) {
         process.stdout.write('[real-smoke] SKIP no requested real runtimes are available\n');
+        printSummary(requestedAgents, runnable, skipped, directDispatchStatus, 'SKIPPED', requireReal ? 'FAIL' : 'SKIP');
         process.exit(requireReal ? 1 : 0);
     }
 
@@ -126,8 +156,10 @@ try {
         if (!text || hubRow.status !== 'succeeded' || hubRow.reply_content !== text || hubRow.outbox?.status !== 'sent') {
             process.stderr.write(`[real-smoke] FAIL direct dispatch mismatch for ${agentId}\n`);
             exitCode = 1;
+            directDispatchStatus[agentId] = 'FAIL';
         } else {
             process.stdout.write(`[real-smoke] direct ${agentId} request=${hubRow.request_id.slice(0, 8)} reply=${text.slice(0, 96)}\n`);
+            directDispatchStatus[agentId] = 'PASS';
         }
     }
 
@@ -152,8 +184,10 @@ try {
     if (fallbackEvents.length > 0 || missingSuccess.length > 0) {
         process.stderr.write(`[real-smoke] FAIL fallback/failure detected events=${JSON.stringify(fallbackEvents)} missingSuccess=${missingSuccess.join(',')}\n`);
         exitCode = 1;
+        conveneStatus = 'FAIL';
     } else {
         process.stdout.write(`[real-smoke] convene live handoffs verified for ${participants.join(', ')}\n`);
+        conveneStatus = 'PASS';
     }
 
     for (const adapter of adapters) {
@@ -164,10 +198,11 @@ try {
         }
     }
 
-    process.stdout.write(`\n[real-smoke] result: ${exitCode === 0 ? 'PASS' : 'FAIL'}\n`);
+    printSummary(requestedAgents, runnable, skipped, directDispatchStatus, conveneStatus, exitCode === 0 ? 'PASS' : 'FAIL');
 } catch (err) {
     process.stderr.write(`[real-smoke] threw: ${err && err.stack ? err.stack : err}\n`);
     exitCode = 1;
+    printSummary(requestedAgents, runnable, skipped, directDispatchStatus, conveneStatus, 'FAIL');
 } finally {
     await Promise.all(adapters.map((adapter) => stopAdapter(adapter)));
     if (orchestrator) orchestrator.close();
@@ -179,9 +214,13 @@ try {
 }
 
 function parseArgs(argv) {
-    const parsed = { agents: [], requireReal: false, timeoutMs: undefined };
+    const parsed = { agents: [], requireReal: false, timeoutMs: undefined, help: false };
     for (let i = 0; i < argv.length; i += 1) {
         const arg = argv[i];
+        if (arg === '--help' || arg === '-h') {
+            parsed.help = true;
+            continue;
+        }
         if (arg === '--require-real') {
             parsed.requireReal = true;
             continue;
@@ -242,14 +281,41 @@ function spawnAdapter(spec, orchestratorPort, hubRoot, timeoutMs) {
     ];
     if (process.env.KOVAEL_API_TOKEN) args.push('--with-token');
 
+    const allowedEnv = {
+        KOVAEL_CHAIR_DISPATCH_SECRET: DISPATCH_SECRET,
+        ...(process.env.KOVAEL_API_TOKEN ? { KOVAEL_TOKEN: process.env.KOVAEL_API_TOKEN } : {}),
+    };
+    const keysToForward = [
+        'PATH',
+        'SystemRoot',
+        'SystemDrive',
+        'windir',
+        'APPDATA',
+        'LOCALAPPDATA',
+        'USERPROFILE',
+        'HOME',
+        'HOMEPATH',
+        'HOMEDRIVE',
+        'KOVAEL_CLAUDE_BIN',
+        'KOVAEL_CODEX_BIN',
+        'KOVAEL_AGENT_HUB_SECRET',
+        'HTTP_PROXY',
+        'HTTPS_PROXY',
+        'NO_PROXY',
+        'http_proxy',
+        'https_proxy',
+        'no_proxy',
+    ];
+    for (const key of keysToForward) {
+        if (process.env[key] !== undefined) {
+            allowedEnv[key] = process.env[key];
+        }
+    }
+
     const stderr = [];
     const child = spawn(process.execPath, args, {
         cwd: ROOT,
-        env: {
-            ...process.env,
-            KOVAEL_CHAIR_DISPATCH_SECRET: DISPATCH_SECRET,
-            ...(process.env.KOVAEL_API_TOKEN ? { KOVAEL_TOKEN: process.env.KOVAEL_API_TOKEN } : {}),
-        },
+        env: allowedEnv,
         stdio: ['ignore', 'ignore', 'pipe'],
         windowsHide: true,
     });
@@ -370,4 +436,19 @@ function validDispatchSecret(value) {
 
 function safePathSegment(value) {
     return value.replace(/[^a-zA-Z0-9._-]/g, '_');
+}
+
+function printSummary(requestedAgents, runnable, skipped, directDispatchStatus, conveneStatus, finalResult) {
+    process.stdout.write(`\n=== REAL-RUNTIME SMOKE SUMMARY ===\n`);
+    process.stdout.write(`Requested Agents: ${requestedAgents.join(', ')}\n`);
+    process.stdout.write(`Runnable Agents:  ${runnable.map(r => r.agentId).join(', ') || 'none'}\n`);
+    process.stdout.write(`Skipped Agents:   ${skipped.map(s => `${s.agentId} (${s.reason})`).join(', ') || 'none'}\n`);
+
+    const dispatchDetails = runnable.length > 0
+        ? runnable.map(r => `${r.agentId}:${directDispatchStatus[r.agentId] || 'FAIL'}`).join(', ')
+        : 'SKIPPED';
+    process.stdout.write(`Direct Dispatch:  ${dispatchDetails}\n`);
+    process.stdout.write(`Convene Handoff:  ${conveneStatus}\n`);
+    process.stdout.write(`Overall Result:   ${finalResult}\n`);
+    process.stdout.write(`==================================\n`);
 }
