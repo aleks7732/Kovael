@@ -119,7 +119,7 @@ export async function handleChairRequest(
             content,
             status,
             error,
-        }, context.chairs.get(agentId)?.sessionId);
+        });
         if (!result.ok) {
             deps.writeJson(res, result.status, { error: result.code });
             return;

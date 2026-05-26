@@ -219,6 +219,13 @@ describe('ConversationBus', () => {
         const agentReply = history.find((h) => h.name === 'nyx-openclaw');
         expect(agentReply).toBeDefined();
         expect(agentReply!.content).toBe(replyText);
+        expect(busEvents).toContainEqual(expect.objectContaining({
+            type: 'chair_dispatch_success',
+            agentId: 'nyx-openclaw',
+            topicId: topic.id,
+            dispatchAttempts: 1,
+            dispatchLatencyMs: expect.any(Number),
+        }));
     });
 
     it('dispatches lean system prompts without persona lore preamble', async () => {
@@ -332,6 +339,34 @@ describe('ConversationBus', () => {
         }));
         expect(bus.getHistory(topic.id).some((message) => message.name === 'shaev' && message.role === 'assistant')).toBe(false);
         expect(bus.getHistory(topic.id).at(-1)?.content).toContain('Failed turns: shaev');
+    });
+
+    it('includes attempt and latency fields on dispatch POST failure events', async () => {
+        chairs.claim({
+            agentId: 'shaev',
+            provider: 'vitest',
+            inboxUrl: 'http://localhost:9999/inbox',
+        });
+
+        const topic = bus.createTopic('Dispatch POST Failure', ['shaev']);
+        const busEvents: Array<Record<string, unknown>> = [];
+        const originalFetch = global.fetch;
+        bus.on('bus_event', (event) => busEvents.push(event));
+        global.fetch = (async () => new Response('bad request', { status: 400 })) as typeof fetch;
+
+        try {
+            await bus.convene(topic.id, 'Fail before acceptance.');
+        } finally {
+            global.fetch = originalFetch;
+        }
+
+        expect(busEvents).toContainEqual(expect.objectContaining({
+            type: 'chair_dispatch_failure',
+            agentId: 'shaev',
+            topicId: topic.id,
+            dispatchAttempts: 1,
+            dispatchLatencyMs: expect.any(Number),
+        }));
     });
 
     it('persists a final convener result after every convene run', async () => {

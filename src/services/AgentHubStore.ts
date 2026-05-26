@@ -57,6 +57,11 @@ export interface AgentDispatchInsertResult {
     payloadHash: string;
 }
 
+export interface AgentDispatchOutboxResult {
+    requestId: string;
+    outboxId: string | null;
+}
+
 export interface AgentOutboxRecord {
     id: string;
     requestId: string;
@@ -288,9 +293,9 @@ export class AgentHubStore {
         requestId: string,
         replyContent: string,
         proofFields?: { claimSessionId?: string; replyProofSecret?: string },
-    ): void {
+    ): AgentDispatchOutboxResult {
         const stamp = this.now();
-        this.withTransaction(() => {
+        return this.withTransaction(() => {
             const dispatch = this.requireDispatchRow(requestId);
             let outboxId: string | null = null;
             const dispatchPayload = this.dispatchFromRow(dispatch).payload;
@@ -347,13 +352,53 @@ export class AgentHubStore {
                 outboxId,
                 replyHash: sha256(replyContent),
             });
+            return { requestId, outboxId };
         });
     }
 
-    public markDispatchFailed(requestId: string, error: string): void {
+    public markDispatchFailed(
+        requestId: string,
+        error: string,
+        proofFields?: { claimSessionId?: string; replyProofSecret?: string },
+    ): AgentDispatchOutboxResult {
         const stamp = this.now();
         const safeError = redactSensitiveText(error);
-        this.withTransaction(() => {
+        return this.withTransaction(() => {
+            const dispatch = this.requireDispatchRow(requestId);
+            let outboxId: string | null = null;
+            const dispatchPayload = this.dispatchFromRow(dispatch).payload;
+            const claimSessionId = stringOrNull(proofFields?.claimSessionId)
+                ?? stringOrNull(dispatchPayload.claimSessionId);
+            const replyProofSecret = stringOrNull(proofFields?.replyProofSecret)
+                ?? stringOrNull(dispatchPayload.replyProofSecret);
+            const replyPayload = {
+                topicId: dispatch.topic_id,
+                agentId: dispatch.agent_id,
+                content: safeError,
+                requestId,
+                ...(claimSessionId ? { claimSessionId } : {}),
+                ...(claimSessionId && replyProofSecret
+                    ? {
+                        replyProof: createChairReplyProof({
+                            requestId,
+                            claimSessionId,
+                            replyProofSecret,
+                        }),
+                    }
+                    : {}),
+                status: 'failed',
+                error: safeError,
+            };
+
+            if (dispatch.reply_url) {
+                outboxId = this.upsertOutboxReply(
+                    requestId,
+                    dispatch.reply_url,
+                    replyPayload,
+                    stamp,
+                );
+            }
+
             const result = this.db.prepare(`
                 UPDATE agent_dispatches
                 SET status = 'failed',
@@ -371,7 +416,9 @@ export class AgentHubStore {
                 status: 'failed',
                 completedAt: stamp,
                 error: safeError,
+                outboxId,
             });
+            return { requestId, outboxId };
         });
     }
 
@@ -425,6 +472,10 @@ export class AgentHubStore {
 
     public markOutboxSent(id: string): void {
         const stamp = this.now();
+        const existing = this.db.prepare('SELECT status FROM agent_outbox WHERE id = ?')
+            .get(id) as { status: AgentOutboxStatus } | undefined;
+        if (!existing) throw new Error(`unknown outbox id ${id}`);
+        if (existing.status === 'sent') return;
         const result = this.db.prepare(`
             UPDATE agent_outbox
             SET status = 'sent',
@@ -434,6 +485,87 @@ export class AgentHubStore {
             WHERE id = ?
         `).run(stamp, stamp, id) as { changes: number };
         if (result.changes === 0) throw new Error(`unknown outbox id ${id}`);
+    }
+
+    public claimDueOutbox(limit: number, leaseMs: number): AgentOutboxRecord[] {
+        if (!Number.isFinite(limit) || limit <= 0) throw new Error('limit must be positive');
+        if (!Number.isFinite(leaseMs) || leaseMs <= 0) throw new Error('leaseMs must be positive');
+        const stamp = this.now();
+        const staleBefore = stamp - Math.floor(leaseMs);
+        return this.withTransaction(() => {
+            const rows = this.db.prepare(`
+                SELECT id, request_id, kind, dedupe_key, target_url, payload_body,
+                       payload_sha256, status, attempts, next_attempt_at, last_error,
+                       created_at, updated_at, sent_at
+                FROM agent_outbox
+                WHERE (
+                    status IN ('pending', 'failed')
+                    AND (next_attempt_at IS NULL OR next_attempt_at <= ?)
+                ) OR (
+                    status = 'sending'
+                    AND updated_at <= ?
+                )
+                ORDER BY COALESCE(next_attempt_at, created_at) ASC, created_at ASC, rowid ASC
+                LIMIT ?
+            `).all(stamp, staleBefore, Math.floor(limit)) as unknown as OutboxRow[];
+
+            const claim = this.db.prepare(`
+                UPDATE agent_outbox
+                SET status = 'sending',
+                    attempts = attempts + 1,
+                    next_attempt_at = NULL,
+                    updated_at = ?
+                WHERE id = ?
+            `);
+            for (const row of rows) {
+                claim.run(stamp, row.id);
+            }
+            if (rows.length === 0) return [];
+            const placeholders = rows.map(() => '?').join(', ');
+            const claimedRows = this.db.prepare(`
+                SELECT id, request_id, kind, dedupe_key, target_url, payload_body,
+                       payload_sha256, status, attempts, next_attempt_at, last_error,
+                       created_at, updated_at, sent_at
+                FROM agent_outbox
+                WHERE id IN (${placeholders})
+                ORDER BY created_at ASC, rowid ASC
+            `).all(...rows.map((row) => row.id)) as unknown as OutboxRow[];
+            return claimedRows.map((row) => this.outboxFromRow(row));
+        });
+    }
+
+    public markOutboxDeliveryFailed(
+        id: string,
+        error: string,
+        retryAt: number | null,
+        maxAttempts: number,
+    ): void {
+        if (!Number.isFinite(maxAttempts) || maxAttempts <= 0) {
+            throw new Error('maxAttempts must be positive');
+        }
+        if (retryAt !== null && (!Number.isFinite(retryAt) || retryAt < 0)) {
+            throw new Error('retryAt must be null or a non-negative timestamp');
+        }
+        const row = this.db.prepare('SELECT attempts FROM agent_outbox WHERE id = ?')
+            .get(id) as { attempts: number } | undefined;
+        if (!row) throw new Error(`unknown outbox id ${id}`);
+        const exhausted = row.attempts >= Math.floor(maxAttempts);
+        const terminal = retryAt === null || exhausted;
+        const stamp = this.now();
+        this.db.prepare(`
+            UPDATE agent_outbox
+            SET status = ?,
+                next_attempt_at = ?,
+                last_error = ?,
+                updated_at = ?
+            WHERE id = ?
+        `).run(
+            terminal ? 'dead' : 'failed',
+            terminal ? null : Math.floor(retryAt),
+            redactSensitiveText(error),
+            stamp,
+            id,
+        );
     }
 
     public listReceipts(requestId?: string): AgentReceiptRecord[] {
@@ -749,15 +881,38 @@ export class AgentHubStore {
                 payload_sha256, status, attempts, created_at, updated_at
             ) VALUES (?, ?, 'reply', ?, ?, ?, ?, 'pending', 0, ?, ?)
             ON CONFLICT(dedupe_key) DO UPDATE SET
-                target_url = excluded.target_url,
-                payload_body = excluded.payload_body,
-                payload_sha256 = excluded.payload_sha256,
+                target_url = CASE
+                    WHEN agent_outbox.status = 'sent' THEN agent_outbox.target_url
+                    ELSE excluded.target_url
+                END,
+                payload_body = CASE
+                    WHEN agent_outbox.status = 'sent' THEN agent_outbox.payload_body
+                    ELSE excluded.payload_body
+                END,
+                payload_sha256 = CASE
+                    WHEN agent_outbox.status = 'sent' THEN agent_outbox.payload_sha256
+                    ELSE excluded.payload_sha256
+                END,
                 status = CASE
                     WHEN agent_outbox.status = 'sent' THEN agent_outbox.status
                     ELSE 'pending'
                 END,
-                updated_at = excluded.updated_at,
-                last_error = NULL
+                attempts = CASE
+                    WHEN agent_outbox.status = 'sent' THEN agent_outbox.attempts
+                    ELSE 0
+                END,
+                next_attempt_at = CASE
+                    WHEN agent_outbox.status = 'sent' THEN agent_outbox.next_attempt_at
+                    ELSE NULL
+                END,
+                updated_at = CASE
+                    WHEN agent_outbox.status = 'sent' THEN agent_outbox.updated_at
+                    ELSE excluded.updated_at
+                END,
+                last_error = CASE
+                    WHEN agent_outbox.status = 'sent' THEN agent_outbox.last_error
+                    ELSE NULL
+                END
         `).run(
             id,
             requestId,

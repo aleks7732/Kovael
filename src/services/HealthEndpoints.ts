@@ -17,6 +17,14 @@ import type { ServerResponse } from 'node:http';
 export interface MetricsSnapshot {
     chairsActive: number;
     topicsActive: number;
+    chairDispatch?: {
+        attempts: number;
+        retries: number;
+        accepted: number;
+        successes: number;
+        failures: number;
+        inflight: number;
+    };
 }
 
 export interface HealthEndpointOptions {
@@ -64,6 +72,14 @@ export class HealthEndpoints {
             res.end(JSON.stringify({ status: 'error' }));
             return;
         }
+        const dispatch = snap.chairDispatch ?? {
+            attempts: 0,
+            retries: 0,
+            accepted: 0,
+            successes: 0,
+            failures: 0,
+            inflight: 0,
+        };
         const body = [
             '# HELP kovael_uptime_seconds Seconds since the orchestrator started.',
             '# TYPE kovael_uptime_seconds counter',
@@ -74,6 +90,24 @@ export class HealthEndpoints {
             '# HELP kovael_topics_active Currently open conversation topics.',
             '# TYPE kovael_topics_active gauge',
             `kovael_topics_active ${snap.topicsActive}`,
+            '# HELP kovael_chair_dispatch_attempts_total Total chair dispatch POST attempts.',
+            '# TYPE kovael_chair_dispatch_attempts_total counter',
+            `kovael_chair_dispatch_attempts_total ${dispatch.attempts}`,
+            '# HELP kovael_chair_dispatch_retries_total Total chair dispatch retry attempts.',
+            '# TYPE kovael_chair_dispatch_retries_total counter',
+            `kovael_chair_dispatch_retries_total ${dispatch.retries}`,
+            '# HELP kovael_chair_dispatch_accepted_total Total chair dispatches accepted by inbox adapters.',
+            '# TYPE kovael_chair_dispatch_accepted_total counter',
+            `kovael_chair_dispatch_accepted_total ${dispatch.accepted}`,
+            '# HELP kovael_chair_dispatch_success_total Total chair dispatches completed with successful replies.',
+            '# TYPE kovael_chair_dispatch_success_total counter',
+            `kovael_chair_dispatch_success_total ${dispatch.successes}`,
+            '# HELP kovael_chair_dispatch_failures_total Total chair dispatches that failed before or during reply.',
+            '# TYPE kovael_chair_dispatch_failures_total counter',
+            `kovael_chair_dispatch_failures_total ${dispatch.failures}`,
+            '# HELP kovael_chair_dispatch_inflight Current chair dispatches awaiting acceptance or reply.',
+            '# TYPE kovael_chair_dispatch_inflight gauge',
+            `kovael_chair_dispatch_inflight ${dispatch.inflight}`,
             '# HELP kovael_process_resident_memory_bytes Resident set size in bytes.',
             '# TYPE kovael_process_resident_memory_bytes gauge',
             `kovael_process_resident_memory_bytes ${mem.rss}`,

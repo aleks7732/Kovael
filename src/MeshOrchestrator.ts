@@ -100,6 +100,14 @@ export class MeshOrchestrator extends EventEmitter implements OrchestratorContex
     public readonly activeCycles: Map<string, PhaseEvent> = new Map();
     public tokenTotals = { input: 0, output: 0, total: 0, runtimeMs: 0, cycles: 0 };
     public receiptsIssued: number = 0;
+    public readonly chairDispatchMetrics = {
+        attempts: 0,
+        retries: 0,
+        accepted: 0,
+        successes: 0,
+        failures: 0,
+        inflight: 0,
+    };
 
     private readonly server: http.Server;
     private readonly wsBus: WebSocketBus;
@@ -124,6 +132,7 @@ export class MeshOrchestrator extends EventEmitter implements OrchestratorContex
     private routingPolicy: RoutingPolicy;
     private episodicMemory: EpisodicMemory;
     private hardware: HardwareMonitor;
+    private readonly activeChairDispatches: Set<string> = new Set();
 
     // Inter-agent chat — extracted to InterAgentChatManager (Batch 3).
     private readonly chatManager: InterAgentChatManager;
@@ -220,6 +229,7 @@ export class MeshOrchestrator extends EventEmitter implements OrchestratorContex
             () => ({
                 chairsActive: this.chairs.stats().online,
                 topicsActive: this.conversationBus.activeTopicCount(),
+                chairDispatch: { ...this.chairDispatchMetrics },
             }),
             { minReadyChairs: cfg.minReadyChairs },
         );
@@ -577,6 +587,7 @@ export class MeshOrchestrator extends EventEmitter implements OrchestratorContex
 
     private initializeBus() {
         this.conversationBus.on('bus_event', (event) => {
+            this.recordChairDispatchMetric(event);
             if (event?.type === 'chair_dispatch_failure' && typeof event.agentId === 'string') {
                 this.circuitBreaker.recordFailure(event.agentId, String(event.reason ?? 'dispatch_failure'));
             } else if (event?.type === 'chair_dispatch_success' && typeof event.agentId === 'string') {
@@ -584,6 +595,47 @@ export class MeshOrchestrator extends EventEmitter implements OrchestratorContex
             }
             this.broadcast(enrichWithAgUi(event));
         });
+    }
+
+    private recordChairDispatchMetric(event: unknown): void {
+        if (!event || typeof event !== 'object') return;
+        const payload = event as { type?: unknown; requestId?: unknown; attempt?: unknown };
+        const requestId = typeof payload.requestId === 'string' ? payload.requestId : undefined;
+        switch (payload.type) {
+            case 'chair_dispatch_started':
+                if (requestId) {
+                    this.activeChairDispatches.add(requestId);
+                    this.chairDispatchMetrics.inflight = this.activeChairDispatches.size;
+                }
+                break;
+            case 'chair_dispatch_attempt':
+                this.chairDispatchMetrics.attempts += 1;
+                if (typeof payload.attempt === 'number' && payload.attempt > 1) {
+                    this.chairDispatchMetrics.retries += 1;
+                }
+                break;
+            case 'chair_dispatch_accepted':
+                this.chairDispatchMetrics.accepted += 1;
+                break;
+            case 'chair_dispatch_success':
+                this.chairDispatchMetrics.successes += 1;
+                this.finishChairDispatchMetric(requestId);
+                break;
+            case 'chair_dispatch_failure':
+                this.chairDispatchMetrics.failures += 1;
+                this.finishChairDispatchMetric(requestId);
+                break;
+        }
+    }
+
+    private finishChairDispatchMetric(requestId?: string): void {
+        if (requestId) {
+            this.activeChairDispatches.delete(requestId);
+        } else {
+            const first = this.activeChairDispatches.values().next();
+            if (!first.done) this.activeChairDispatches.delete(first.value);
+        }
+        this.chairDispatchMetrics.inflight = this.activeChairDispatches.size;
     }
 
     public async injectTask(goal: string): Promise<VerificationReceipt> {

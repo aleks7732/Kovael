@@ -80,6 +80,14 @@ export interface OrchestratorContext {
         cycles: number;
     };
     receiptsIssued: number;
+    readonly chairDispatchMetrics: {
+        attempts: number;
+        retries: number;
+        accepted: number;
+        successes: number;
+        failures: number;
+        inflight: number;
+    };
 
     // Operations
     broadcast(msg: any): void;
