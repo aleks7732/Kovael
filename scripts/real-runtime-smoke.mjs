@@ -19,10 +19,6 @@ import * as path from 'node:path';
 import process from 'node:process';
 import { DatabaseSync } from 'node:sqlite';
 import { setTimeout as sleep } from 'node:timers/promises';
-import { AgentCards } from '../dist/AgentCards.js';
-import { AgentHubStore } from '../dist/services/AgentHubStore.js';
-import { MeshOrchestrator } from '../dist/MeshOrchestrator.js';
-import { ChairBridgeProvider } from '../dist/services/ModelProvider.js';
 
 const ROOT = path.resolve(import.meta.dirname, '..');
 const SCRIPT_PATH = path.join(ROOT, 'scripts', 'kovael-agent-inbox.mjs');
@@ -62,6 +58,12 @@ Note:
 `);
     process.exit(0);
 }
+
+// Load compiled packages dynamically ONLY after help check
+const { AgentCards } = await import('../dist/AgentCards.js');
+const { AgentHubStore } = await import('../dist/services/AgentHubStore.js');
+const { MeshOrchestrator } = await import('../dist/MeshOrchestrator.js');
+const { ChairBridgeProvider } = await import('../dist/services/ModelProvider.js');
 const requireReal = args.requireReal || process.env.KOVAEL_REQUIRE_LIVE_CHAIRS === 'true';
 const requestedAgents = args.agents.length > 0 ? args.agents : ['nyx-codex'];
 const timeoutMs = args.timeoutMs ?? 180_000;
@@ -279,14 +281,41 @@ function spawnAdapter(spec, orchestratorPort, hubRoot, timeoutMs) {
     ];
     if (process.env.KOVAEL_API_TOKEN) args.push('--with-token');
 
+    const allowedEnv = {
+        KOVAEL_CHAIR_DISPATCH_SECRET: DISPATCH_SECRET,
+        ...(process.env.KOVAEL_API_TOKEN ? { KOVAEL_TOKEN: process.env.KOVAEL_API_TOKEN } : {}),
+    };
+    const keysToForward = [
+        'PATH',
+        'SystemRoot',
+        'SystemDrive',
+        'windir',
+        'APPDATA',
+        'LOCALAPPDATA',
+        'USERPROFILE',
+        'HOME',
+        'HOMEPATH',
+        'HOMEDRIVE',
+        'KOVAEL_CLAUDE_BIN',
+        'KOVAEL_CODEX_BIN',
+        'KOVAEL_AGENT_HUB_SECRET',
+        'HTTP_PROXY',
+        'HTTPS_PROXY',
+        'NO_PROXY',
+        'http_proxy',
+        'https_proxy',
+        'no_proxy',
+    ];
+    for (const key of keysToForward) {
+        if (process.env[key] !== undefined) {
+            allowedEnv[key] = process.env[key];
+        }
+    }
+
     const stderr = [];
     const child = spawn(process.execPath, args, {
         cwd: ROOT,
-        env: {
-            ...process.env,
-            KOVAEL_CHAIR_DISPATCH_SECRET: DISPATCH_SECRET,
-            ...(process.env.KOVAEL_API_TOKEN ? { KOVAEL_TOKEN: process.env.KOVAEL_API_TOKEN } : {}),
-        },
+        env: allowedEnv,
         stdio: ['ignore', 'ignore', 'pipe'],
         windowsHide: true,
     });

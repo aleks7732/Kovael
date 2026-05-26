@@ -142,7 +142,7 @@ While the automated and deterministic validation using fake adapters is handled 
 npm run validate:real-runtimes
 ```
 
-This gate runs the script `scripts/real-runtime-smoke.mjs` with `--require-real`. If any of the requested real agent runtimes are skipped or their binaries (`codex` or `claude`) are unavailable, the run will fail strictly with exit code `1`. It tracks telemetry, receipts, and hub outbox status but does not qualify or guarantee future cognitive cognition or specific prompt tool behavior.
+This gate runs the script `scripts/real-runtime-smoke.mjs` with `--require-real`. If any of the requested real agent runtimes are skipped or their binaries (`codex` or `claude`) are unavailable, the run will fail strictly with exit code `1`. It tracks telemetry, receipts, and hub outbox status but does not qualify or guarantee future cognitive correctness or specific prompt tool behavior.
 
 ## Quick-start — `kovael-chair` helper
 

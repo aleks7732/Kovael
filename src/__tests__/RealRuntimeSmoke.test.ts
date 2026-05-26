@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { spawnSync } from 'node:child_process';
+import * as fs from 'node:fs';
 import * as path from 'node:path';
 import process from 'node:process';
 
@@ -31,6 +32,32 @@ describe('real-runtime-smoke script behavior', () => {
         expect(result.stdout).toContain('Manual Real-Runtime Smoke Gate for Kovael Chair Adapters');
     });
 
+    it('runs --help hermetically even if compiled dist/ folder is completely missing', () => {
+        const distPath = path.join(ROOT, 'dist');
+        const backupPath = path.join(ROOT, 'dist-backup-vitest-temp');
+        
+        let renamed = false;
+        if (fs.existsSync(distPath)) {
+            fs.renameSync(distPath, backupPath);
+            renamed = true;
+        }
+        
+        try {
+            const result = spawnSync(process.execPath, [SCRIPT_PATH, '--help'], {
+                cwd: ROOT,
+                encoding: 'utf8',
+                windowsHide: true,
+            });
+
+            expect(result.status).toBe(0);
+            expect(result.stdout).toContain('Manual Real-Runtime Smoke Gate for Kovael Chair Adapters');
+        } finally {
+            if (renamed && fs.existsSync(backupPath)) {
+                fs.renameSync(backupPath, distPath);
+            }
+        }
+    });
+
     it('fails with exit code 1 under --require-real when an unsupported agent is requested', () => {
         const result = spawnSync(process.execPath, [
             SCRIPT_PATH,
@@ -46,6 +73,11 @@ describe('real-runtime-smoke script behavior', () => {
         expect(result.stderr).toContain('FAIL --require-real/KOVAEL_REQUIRE_LIVE_CHAIRS forbids skipped requested agents');
         expect(result.stdout).toContain('invalid-agent-xyz (unsupported_safe_runtime)');
         expect(result.stdout).toContain('=== REAL-RUNTIME SMOKE SUMMARY ===');
+        expect(result.stdout).toContain('Requested Agents: invalid-agent-xyz');
+        expect(result.stdout).toContain('Runnable Agents:  none');
+        expect(result.stdout).toContain('Skipped Agents:   invalid-agent-xyz (unsupported_safe_runtime)');
+        expect(result.stdout).toContain('Direct Dispatch:  SKIPPED');
+        expect(result.stdout).toContain('Convene Handoff:  FAIL');
         expect(result.stdout).toContain('Overall Result:   FAIL');
     });
 
@@ -69,6 +101,11 @@ describe('real-runtime-smoke script behavior', () => {
         expect(result.stderr).toContain('FAIL --require-real/KOVAEL_REQUIRE_LIVE_CHAIRS forbids skipped requested agents');
         expect(result.stdout).toContain('shaev (missing non-existent-binary-12345.exe)');
         expect(result.stdout).toContain('=== REAL-RUNTIME SMOKE SUMMARY ===');
+        expect(result.stdout).toContain('Requested Agents: shaev');
+        expect(result.stdout).toContain('Runnable Agents:  none');
+        expect(result.stdout).toContain('Skipped Agents:   shaev (missing non-existent-binary-12345.exe)');
+        expect(result.stdout).toContain('Direct Dispatch:  SKIPPED');
+        expect(result.stdout).toContain('Convene Handoff:  FAIL');
         expect(result.stdout).toContain('Overall Result:   FAIL');
     });
 });
