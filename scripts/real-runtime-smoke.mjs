@@ -6,7 +6,7 @@
  * available safe runtimes, dispatches through ChairBridgeProvider, then runs
  * a strict ConversationBus convene and fails if any fallback path is used.
  *
- * Requires: `npm run build` first (this script imports from dist/).
+ * Requires: `npm run build` first for non-help smoke runs.
  *
  *   node scripts/real-runtime-smoke.mjs
  *   node scripts/real-runtime-smoke.mjs --agents nyx-codex,shaev --require-real
@@ -40,26 +40,26 @@ if (args.help) {
 Usage:
   node scripts/real-runtime-smoke.mjs [options]
 
-This is a manual release gate, not the CI default. It verifies that real local runtimes 
+This is a manual release gate, not the CI default. It verifies that real local runtimes
 are installed, configured, and can successfully complete the live adapter smoke path.
 
 Options:
   --agents <list>      Comma-separated list of agent IDs to test (default: nyx-codex).
                        Supported agents with safe local runtimes: nyx-codex, shaev.
-  --require-real       Strict environment mode. The run fails if any requested runtime 
+  --require-real       Strict environment mode. The run fails if any requested runtime
                        is missing or skipped, rather than silently passing.
   --timeout-ms <ms>    Handoff timeout in milliseconds (default: 180000).
   --help, -h           Show this help message.
 
 Note:
   CI-safe validation remains 'npm run validate:chairs' (which uses fake deterministic adapters).
-  A pass from this smoke gate means the real adapter path worked for the selected agents; 
+  A pass from this smoke gate means the real adapter path worked for the selected agents;
   it does not prove every possible future prompt or tool action will succeed.
 `);
     process.exit(0);
 }
 
-// Load compiled packages dynamically ONLY after help check
+// Load compiled packages dynamically after the help path remains build-free.
 const { AgentCards } = await import('../dist/AgentCards.js');
 const { AgentHubStore } = await import('../dist/services/AgentHubStore.js');
 const { MeshOrchestrator } = await import('../dist/MeshOrchestrator.js');
@@ -443,8 +443,8 @@ function printSummary(requestedAgents, runnable, skipped, directDispatchStatus, 
     process.stdout.write(`Requested Agents: ${requestedAgents.join(', ')}\n`);
     process.stdout.write(`Runnable Agents:  ${runnable.map(r => r.agentId).join(', ') || 'none'}\n`);
     process.stdout.write(`Skipped Agents:   ${skipped.map(s => `${s.agentId} (${s.reason})`).join(', ') || 'none'}\n`);
-    
-    const dispatchDetails = runnable.length > 0 
+
+    const dispatchDetails = runnable.length > 0
         ? runnable.map(r => `${r.agentId}:${directDispatchStatus[r.agentId] || 'FAIL'}`).join(', ')
         : 'SKIPPED';
     process.stdout.write(`Direct Dispatch:  ${dispatchDetails}\n`);

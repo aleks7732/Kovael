@@ -34,14 +34,14 @@ describe('real-runtime-smoke script behavior', () => {
 
     it('runs --help hermetically even if compiled dist/ folder is completely missing', () => {
         const distPath = path.join(ROOT, 'dist');
-        const backupPath = path.join(ROOT, 'dist-backup-vitest-temp');
-        
+        const backupPath = path.join(ROOT, `dist-backup-vitest-${process.pid}-${Date.now()}`);
+
         let renamed = false;
         if (fs.existsSync(distPath)) {
             fs.renameSync(distPath, backupPath);
             renamed = true;
         }
-        
+
         try {
             const result = spawnSync(process.execPath, [SCRIPT_PATH, '--help'], {
                 cwd: ROOT,
