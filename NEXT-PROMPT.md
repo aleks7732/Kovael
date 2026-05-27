@@ -5,33 +5,42 @@
 
 ## Where We Stopped
 
-Main is current through the chair dispatch correctness work:
+Main is current through the agent safety and access-boundary work:
 
 - `67fe0d4` Harden per-agent SQLite hubs (#53)
 - `74683c0` Refine graph cleanup and snapshot normalizers (#54)
 - `f3a6750` Harden chair dispatch and outbox correctness (#55)
+- `a902e41` Clean up release hygiene followups
+- `f01ddd6` Guard Theater trace correlation by cycle id (#57)
+- `b049509` Document manual real-runtime smoke gate (#58)
+- `07b7281` Harden agent access boundaries (#59)
 
-The repo was clean on `main` before starting this follow-up branch:
-
-- Branch: `codex/release-hygiene-followups`
-- Purpose: clear small release-hygiene leftovers after #55
+The repo is expected to be clean on `main` after #59. Kovael now binds to
+loopback by default, protects local agent config/state from semantic ingest,
+and documents SSH local forwarding as the default encrypted remote-access
+posture.
 
 ## Current Follow-Up Scope
 
-- Refresh this stale handoff file so it no longer points at merged PRs.
-- Remove the Node `[DEP0190]` warning caused by `spawn(..., { shell: true })`
-  in the spatial war-room cockpit smoke test.
-- Validate the focused cockpit test and the normal PR gate before merging.
+- Clear the remaining Dependabot PR queue.
+- Keep `validate:real-runtimes` manual-only unless an operator is explicitly
+  ready to validate local `nyx-codex` and `shaev` runtime CLIs.
+- Triage issue #22 when the dependency queue is clear.
 
 ## Remaining Todo
 
-- Decide whether real-runtime smoke for `nyx-codex` and `shaev` should become
-  a documented manual release gate, separate from CI-safe fake-deterministic
-  adapter validation.
-- Add a future SQLite backup/checkpoint helper if operators need one; docs warn
-  not to blindly copy only the main DB file during writes.
-- Consider deferred architecture cleanup PRs:
-  - `codex/theater-trace-correlation`
+- Run `npm run validate:real-runtimes` only when local real runtime CLIs are
+  installed/configured and the operator wants that manual release gate.
+- Merge or close the open Dependabot PRs:
+  - #49 `ws`
+  - #50 root `vite`
+  - #52 root `typescript-eslint`
+  - #48 spatial `vite`
+  - #51 spatial `typescript-eslint`
+- Triage #22: `audit(harden): deep-think pass on iters 01-08 from PR #21`.
+- Add a future SQLite backup/checkpoint helper only if operators need one; docs
+  already warn not to blindly copy only the main DB file during writes.
+- Consider deferred architecture cleanup:
   - `codex/agent-hub-store-split-protocol-dedupe`
 
 ## Useful Commands
