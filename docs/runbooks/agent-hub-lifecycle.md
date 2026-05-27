@@ -8,7 +8,21 @@ authoritative control plane.
 ## Scope
 
 App-managed lifecycle is for trusted local workstations or private mesh hosts.
-It is disabled by default. When enabled, the orchestrator starts local
+It is disabled by default. Kovael binds to `127.0.0.1` by default: run on
+loopback, not on a public interface. Remote operators should use SSH local
+forwarding or an authenticated private mesh instead of a public bind. If
+`KOVAEL_BIND_HOST` is set to a non-loopback address, startup requires
+`KOVAEL_API_TOKEN`.
+
+For simple encrypted remote access, keep the host process on loopback and
+forward only the operator ports:
+
+```bash
+ssh -L 8080:127.0.0.1:8080 user@host
+ssh -L 5173:127.0.0.1:5173 user@host
+```
+
+When enabled, the orchestrator starts local
 `scripts/kovael-agent-inbox.mjs` adapter processes, each adapter claims a chair
 with an `inboxUrl`, and each adapter writes a local SQLite hub:
 
@@ -22,6 +36,17 @@ not a cluster database, not a distributed queue, and not the source of truth
 for chairs, topics, routing, or conversation history. The orchestrator remains
 authoritative for global mesh state.
 
+Desktop and CLI runtimes keep their official authentication and session model.
+Kovael must integrate through supported local CLI, hook, tool, or adapter
+boundaries only. Do not add desktop-app scraping, private session reuse, token
+or cookie extraction, or auth bypasses.
+
+Protected local agent state is outside this lifecycle. Kovael must not edit or
+delete `.claude/`, `.gemini/`, `.codex/`, local memory stores, or local
+settings files. Project-level `CLAUDE.md`, `GEMINI.md`, and `AGENTS.md` are
+repository context files and may be read as project instructions; they are not
+permission to mutate local app state.
+
 ## Preconditions
 
 - Node 22+ is installed.
@@ -33,6 +58,8 @@ authoritative for global mesh state.
 - `KOVAEL_AGENT_HUB_DIR` points at local disk, not a network filesystem.
 - `KOVAEL_AGENT_HUB_SECRET` is set to a 32+ character value before
   `KOVAEL_AGENT_RUNTIMES_ENABLED=true`; managed runtimes require hub encryption.
+- The orchestrator is reachable on loopback only, or through SSH local
+  forwarding / an authenticated private mesh for remote operators.
 
 Do not place hub files on SMB, NFS, cloud-synced folders, or shared volume
 replicas. SQLite WAL semantics and per-agent idempotency are local-process
@@ -157,7 +184,19 @@ npm run validate:chairs
 
 ### Manual Real-Runtime Release Smoke Gate
 
-For a strict, non-deterministic manual gate verifying real local runtime environments (`nyx-codex` and `shaev`) before a release, run:
+For a strict, non-deterministic manual gate verifying real local runtime environments (`nyx-codex` and `shaev`) before a release, complete this checklist.
+
+#### Before Real Runtime Smoke
+
+- Repo is clean except for intentional release changes.
+- Bind posture is loopback (`127.0.0.1` / `localhost`) or an SSH/private-mesh
+  local endpoint; there is no public Kovael bind.
+- Hub encryption is configured with a 32+ character `KOVAEL_AGENT_HUB_SECRET`.
+- Protected-file smoke passes for `.claude/`, `.gemini/`, `.codex/`, local
+  memory/settings files, and project `CLAUDE.md` / `GEMINI.md` / `AGENTS.md`
+  context files: `npm run smoke:local-state-ingest`.
+- `npm run validate:chairs` passes.
+- Then run `npm run validate:real-runtimes`.
 
 ```powershell
 npm run validate:real-runtimes

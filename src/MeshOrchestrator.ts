@@ -41,6 +41,7 @@ import { WebSocketBus } from './services/WebSocketBus.js';
 import { InterAgentChatManager } from './services/InterAgentChatManager.js';
 import { ResourceGovernor, ResourceModeChange } from './services/ResourceGovernor.js';
 import { AgentRuntimeSupervisor, AgentRuntimeSupervisorConfig } from './services/AgentRuntimeSupervisor.js';
+import { RemoteAccessMode, resolveBindHost } from './services/BindHostSecurity.js';
 
 export { HttpTimeouts, DEFAULT_HTTP_TIMEOUTS };
 
@@ -62,6 +63,7 @@ export interface OrchestratorConfig {
     rateLimit?: Partial<RateLimiterConfig>;
     resourceMode?: Partial<OrchestratorResourceModeConfig>;
     agentRuntimes?: Partial<AgentRuntimeSupervisorConfig>;
+    bindHost?: string;
 }
 
 const DEFAULT_RESOURCE_MODE_CONFIG: Required<OrchestratorResourceModeConfig> = {
@@ -91,6 +93,8 @@ export class MeshOrchestrator extends EventEmitter implements OrchestratorContex
     public readonly maxWsMessageBytes: number = 5 * 1024 * 1024;
     public readonly resourceGovernor: ResourceGovernor;
     public readonly agentRuntimeSupervisor: AgentRuntimeSupervisor;
+    public readonly bindHost: string;
+    public readonly remoteAccessMode: RemoteAccessMode;
 
     // Caches and state variables
     public agentCards: any[] = [];
@@ -145,6 +149,9 @@ export class MeshOrchestrator extends EventEmitter implements OrchestratorContex
     constructor(port: number, cfg: OrchestratorConfig = {}) {
         super();
         this.boundPort = port;
+        const bind = resolveBindHost(cfg.bindHost ?? process.env.KOVAEL_BIND_HOST);
+        this.bindHost = bind.bindHost;
+        this.remoteAccessMode = bind.remoteAccessMode;
         this.handshake = new MevHandshake();
         this.apiGate = new ApiTokenGate();
         this.rateLimiter = new RateLimiter(cfg.rateLimit ?? {});
@@ -261,12 +268,17 @@ export class MeshOrchestrator extends EventEmitter implements OrchestratorContex
         this.workflowLoader.start();
         this.chairs.start();
 
-        this.server.listen(port, () => {
+        this.server.listen(port, this.bindHost, () => {
             const addr = this.server.address();
             const boundPort = addr && typeof addr === 'object' ? addr.port : port;
             this.boundPort = boundPort;
             this.conversationBus.orchestratorPort = boundPort;
-            this.log.info('orchestrator_listening', { port: boundPort, surfaces: ['ws', 'sse', '/api/v1/state', '/livez', '/readyz', '/metrics'] });
+            this.log.info('orchestrator_listening', {
+                port: boundPort,
+                bind_host: this.bindHost,
+                remote_access_mode: this.remoteAccessMode,
+                surfaces: ['ws', 'sse', '/api/v1/state', '/livez', '/readyz', '/metrics'],
+            });
             this.agentRuntimeSupervisor.start(boundPort, 'orchestrator_listening');
         });
 

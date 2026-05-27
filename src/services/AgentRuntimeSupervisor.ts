@@ -2,6 +2,7 @@ import { EventEmitter } from 'node:events';
 import { spawn as nodeSpawn, type SpawnOptions } from 'node:child_process';
 import { DatabaseSync } from 'node:sqlite';
 import * as fs from 'node:fs';
+import * as os from 'node:os';
 import * as path from 'node:path';
 import { AgentCards } from '../AgentCards.js';
 import { Logger, rootLogger } from './Logger.js';
@@ -17,6 +18,10 @@ import {
     safePathSegment,
     validateLocalSqlitePath,
 } from './SqlitePathSecurity.js';
+import {
+    inspectProtectedLocalConfigPaths,
+    type ProtectedLocalConfigPathStatus,
+} from './AgentPathProtection.js';
 
 export interface AgentRuntimeSpec {
     agentId: string;
@@ -52,6 +57,20 @@ export interface AgentRuntimeHubSnapshot {
     error?: string;
 }
 
+export interface AgentRuntimePreflightSummary {
+    executablePath: string;
+    adapterExecutablePath: string;
+    runtimeExecutablePath: string;
+    cwd: string;
+    sandboxMode: 'read-only' | 'danger-full-access' | null;
+    permissionMode: 'dontAsk' | null;
+    allowedTools: string[] | null;
+    sessionPersistence: boolean | null;
+    environment: 'stripped';
+    protectedLocalConfigPaths: ProtectedLocalConfigPathStatus[];
+    hubEncryptionActive: boolean;
+}
+
 export interface AgentRuntimeAgentStatus {
     agentId: string;
     provider: string;
@@ -69,6 +88,7 @@ export interface AgentRuntimeAgentStatus {
     exitSignal: NodeJS.Signals | null;
     lastError: string | null;
     lastReason: string | null;
+    preflight: AgentRuntimePreflightSummary;
     hub: AgentRuntimeHubSnapshot;
 }
 
@@ -616,7 +636,22 @@ export class AgentRuntimeSupervisor {
             exitSignal: record.exitSignal,
             lastError: record.lastError,
             lastReason: record.lastReason,
+            preflight: this.preflightFor(record.spec),
             hub: inspectHub(record.hubPath),
+        };
+    }
+
+    private preflightFor(spec: AgentRuntimeSpec): AgentRuntimePreflightSummary {
+        const cwd = spec.cwd ?? this.cwd;
+        return {
+            executablePath: this.nodeBin,
+            adapterExecutablePath: this.nodeBin,
+            runtimeExecutablePath: runtimeExecutablePathFor(spec.runtime, this.env),
+            cwd,
+            ...runtimePolicyFor(spec.runtime),
+            environment: 'stripped',
+            protectedLocalConfigPaths: inspectProtectedLocalConfigPaths(cwd, this.env),
+            hubEncryptionActive: this.hubEncryptionRequired && isValidAgentHubSecret(this.env[AGENT_HUB_SECRET_ENV]),
         };
     }
 
@@ -713,6 +748,48 @@ function positiveTimeout(value: number | undefined): number {
     return typeof value === 'number' && Number.isFinite(value) && value > 0
         ? Math.floor(value)
         : DEFAULT_STOP_TIMEOUT_MS;
+}
+
+function runtimePolicyFor(runtime: AgentRuntimeSpec['runtime']): Pick<
+    AgentRuntimePreflightSummary,
+    'sandboxMode' | 'permissionMode' | 'allowedTools' | 'sessionPersistence'
+> {
+    if (runtime === 'codex') {
+        return {
+            sandboxMode: 'read-only',
+            permissionMode: null,
+            allowedTools: null,
+            sessionPersistence: null,
+        };
+    }
+    if (runtime === 'codex-openclaw') {
+        return {
+            sandboxMode: 'danger-full-access',
+            permissionMode: null,
+            allowedTools: null,
+            sessionPersistence: null,
+        };
+    }
+    return {
+        sandboxMode: null,
+        permissionMode: 'dontAsk',
+        allowedTools: [],
+        sessionPersistence: false,
+    };
+}
+
+function runtimeExecutablePathFor(runtime: AgentRuntimeSpec['runtime'], env: NodeJS.ProcessEnv): string {
+    if (runtime === 'claude-shaev') {
+        return env.KOVAEL_CLAUDE_BIN || (process.platform === 'win32' ? 'claude.exe' : 'claude');
+    }
+
+    if (env.KOVAEL_CODEX_BIN) return env.KOVAEL_CODEX_BIN;
+    if (process.platform === 'win32') {
+        const appData = env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming');
+        const script = path.join(appData, 'npm', 'node_modules', '@openai', 'codex', 'bin', 'codex.js');
+        if (fs.existsSync(script)) return script;
+    }
+    return 'codex';
 }
 
 function inspectHub(hubPath: string): AgentRuntimeHubSnapshot {

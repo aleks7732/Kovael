@@ -82,8 +82,11 @@ npm run build
 npm start
 ```
 
-The orchestrator listens on port `8080` by default when started through
-`dist/boot-mesh.js`.
+The orchestrator listens on port `8080` when started through
+`dist/boot-mesh.js` and binds to `127.0.0.1` by default. Keep local runs on
+loopback. `KOVAEL_BIND_HOST` can override the bind address, but any
+non-loopback bind requires `KOVAEL_API_TOKEN` so API, metrics, and
+WebSocket surfaces stay bearer-token gated.
 
 Start the cockpit in a second shell:
 
@@ -140,6 +143,26 @@ workspace. SQLite WAL sidecars (`-wal` and `-shm`) are runtime files and
 must stay on local disk with the main hub database. See
 [docs/runbooks/agent-hub-lifecycle.md](./docs/runbooks/agent-hub-lifecycle.md)
 for operator setup and validation.
+
+Kovael does not replace desktop app authentication or session models.
+Claude Code, Gemini/Antigravity, Codex, JetBrains, and other desktop
+runtimes keep their official auth/session flows; Kovael integrates through
+their supported local CLI, hook, tool, or adapter boundaries. Do not add
+desktop-app scraping, token extraction, cookie reuse, or auth bypasses.
+
+For remote operator access, keep Kovael bound to loopback on the host and
+forward the ports over SSH:
+
+```bash
+ssh -L 8080:127.0.0.1:8080 user@host
+ssh -L 5173:127.0.0.1:5173 user@host
+```
+
+Kovael also treats local agent state as protected operator data. It must
+not edit or delete `.claude/`, `.gemini/`, `.codex/`, local memory stores,
+or local settings files. Project-level `CLAUDE.md`, `GEMINI.md`, and
+`AGENTS.md` files are repository context that can be indexed or read as
+project instructions; they are not permission to mutate local app state.
 
 Claim a chair from another shell:
 
@@ -330,7 +353,20 @@ CI-safe validation uses fake deterministic adapters:
 npm run validate:chairs
 ```
 
-Before a release where local real runtimes matter, run:
+Before a release where local real runtimes matter, complete this checklist.
+
+#### Before Real Runtime Smoke
+
+- Repo is clean except for the intentional release changes.
+- Orchestrator is bound to loopback (`127.0.0.1` / `localhost`), not a
+  public interface.
+- Hub encryption is configured with a 32+ character
+  `KOVAEL_AGENT_HUB_SECRET`.
+- Protected-file smoke passes for `.claude/`, `.gemini/`, `.codex/`,
+  local memory/settings files, and project context files:
+  `npm run smoke:local-state-ingest`.
+- `npm run validate:chairs` passes.
+- Then run `npm run validate:real-runtimes`.
 
 ```powershell
 npm run validate:real-runtimes
@@ -350,11 +386,12 @@ cockpit, with more than 400 individual `it(...)` cases.
 
 ## Security Posture
 
-Kovael defaults to a localhost-oriented trust posture. Do not expose the
-orchestrator directly to the public internet. Put it behind an
-authenticating reverse proxy and set `KOVAEL_API_TOKEN` for bearer-token
-protection on `/api/v1/*`, `/metrics`, and authenticated WebSocket
-upgrades.
+Kovael defaults to loopback-only access. Do not bind the orchestrator to a
+public interface and do not expose it directly to the public internet.
+Remote use should go through SSH local forwarding or an authenticated
+private mesh. If an operator intentionally sets `KOVAEL_BIND_HOST` to a
+non-loopback address, startup requires `KOVAEL_API_TOKEN` and that token
+protects `/api/v1/*`, `/metrics`, and authenticated WebSocket upgrades.
 
 HTTP hardening currently includes:
 

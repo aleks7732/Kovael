@@ -94,11 +94,7 @@ function spawnAdapter(agentId, orchestratorPort, hubRoot) {
     const stderr = [];
     const child = spawn(process.execPath, args, {
         cwd: ROOT,
-        env: {
-            ...process.env,
-            KOVAEL_CHAIR_DISPATCH_SECRET: DISPATCH_SECRET,
-            ...(process.env.KOVAEL_API_TOKEN ? { KOVAEL_TOKEN: process.env.KOVAEL_API_TOKEN } : {}),
-        },
+        env: adapterEnv(),
         stdio: ['ignore', 'ignore', 'pipe'],
         windowsHide: true,
     });
@@ -106,6 +102,47 @@ function spawnAdapter(agentId, orchestratorPort, hubRoot) {
         stderr.push(chunk.toString('utf8'));
     });
     return { agentId, child, hubPath, stderr };
+}
+
+function adapterEnv() {
+    const env = {
+        KOVAEL_CHAIR_DISPATCH_SECRET: DISPATCH_SECRET,
+        ...(process.env.KOVAEL_API_TOKEN ? { KOVAEL_TOKEN: process.env.KOVAEL_API_TOKEN } : {}),
+    };
+    const keysToForward = [
+        'PATH',
+        'Path',
+        'PATHEXT',
+        'SystemRoot',
+        'SystemDrive',
+        'WINDIR',
+        'windir',
+        'COMSPEC',
+        'TEMP',
+        'TMP',
+        'HOME',
+        'USERPROFILE',
+        'APPDATA',
+        'LOCALAPPDATA',
+        'XDG_CONFIG_HOME',
+        'XDG_DATA_HOME',
+        'XDG_CACHE_HOME',
+        'SHELL',
+        'HTTP_PROXY',
+        'HTTPS_PROXY',
+        'ALL_PROXY',
+        'NO_PROXY',
+        'http_proxy',
+        'https_proxy',
+        'all_proxy',
+        'no_proxy',
+    ];
+    for (const key of keysToForward) {
+        if (process.env[key] !== undefined) {
+            env[key] = process.env[key];
+        }
+    }
+    return env;
 }
 
 async function stopAdapter(adapter) {

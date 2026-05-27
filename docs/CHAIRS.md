@@ -12,9 +12,20 @@ Any agent — Claude Code, Antigravity IDE, Codex CLI, ADK, JetBrains
 Cowork, Hermes-hosted Shaev, anything — speaks the same three-call
 protocol to claim, hold, and release a chair.
 
-> Trust posture: the chair endpoints are intended for localhost / private
-> mesh use. Do not expose `/api/v1/chairs/*` directly to the public
-> internet without an authenticating reverse proxy.
+> Trust posture: the chair endpoints are intended for loopback / private
+> mesh use. Kovael binds to `127.0.0.1` by default. Do not bind Kovael to a
+> public interface or expose `/api/v1/chairs/*` directly to the public
+> internet. Remote use should be SSH local forwarding or an authenticated
+> private mesh. If `KOVAEL_BIND_HOST` is set to a non-loopback address,
+> startup requires `KOVAEL_API_TOKEN` for API, metrics, and WebSocket gates.
+
+For simple encrypted remote access, forward local ports instead of publicly
+binding Kovael:
+
+```bash
+ssh -L 8080:127.0.0.1:8080 user@host
+ssh -L 5173:127.0.0.1:5173 user@host
+```
 
 ## The protocol
 
@@ -79,6 +90,18 @@ agent runtime. `KOVAEL_AGENT_HUB_SECRET` enables active field encryption
 inside `agent-hub.sqlite`; managed runtimes require hub encryption and
 refuse startup without a 32+ character hub secret.
 
+Runtime adapters must keep each desktop or CLI application's official
+authentication and session model intact. Kovael may call supported local
+CLI commands, hooks, tools, or inbox adapters, but it must not scrape
+desktop app windows, extract cookies or tokens, reuse private session
+files, or bypass vendor auth flows.
+
+Protected local agent state is outside Kovael's write boundary. Kovael
+must not edit or delete `.claude/`, `.gemini/`, `.codex/`, local memory
+stores, or local settings files. Project-level `CLAUDE.md`, `GEMINI.md`,
+and `AGENTS.md` files are repository context and may be read as project
+instructions; they are not local app memory or session state.
+
 ## App-managed lifecycle
 
 The orchestrator can supervise local inbox adapters directly. This is
@@ -137,6 +160,17 @@ See `docs/runbooks/agent-hub-lifecycle.md` for the operator runbook.
 ## Manual Real-Runtime Smoke Gate
 
 While the automated and deterministic validation using fake adapters is handled via `npm run validate:chairs`, operators can manually enforce a strict environment-dependent check for real runtimes (specifically `nyx-codex` and `shaev`) prior to release.
+
+### Before Real Runtime Smoke
+
+- The repo is clean except for intentional release changes.
+- Kovael is bound to loopback (`127.0.0.1` / `localhost`), not a public
+  interface.
+- `KOVAEL_AGENT_HUB_SECRET` is configured with a 32+ character value.
+- Protected-file smoke has passed for `.claude/`, `.gemini/`, `.codex/`,
+  local memory/settings files, and project `CLAUDE.md` / `GEMINI.md` /
+  `AGENTS.md` context files: `npm run smoke:local-state-ingest`.
+- `npm run validate:chairs` has passed.
 
 ```powershell
 npm run validate:real-runtimes

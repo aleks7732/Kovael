@@ -2,6 +2,10 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { DatabaseSync } from 'node:sqlite';
 import { Logger, rootLogger } from './Logger.js';
+import {
+    isProtectedAgentDirectoryName,
+    isProtectedAgentFileName,
+} from './AgentPathProtection.js';
 
 /**
  * SemanticIngestor: Recursive crawler for indexing project knowledge.
@@ -36,20 +40,20 @@ export class SemanticIngestor {
         try {
             this.crawl(rootPath);
             this.log.info('ingest_complete');
-        } catch (error: any) {
-            this.log.error('ingest_failed', { error: error.message });
+        } catch (error: unknown) {
+            this.log.error('ingest_failed', { error: this.errorMessage(error) });
         }
     }
 
     /**
      * Directories the crawler MUST NOT enter. These either explode the
      * indexed corpus (node_modules) or contain PII / agent internals that
-     * must not bleed into runtime memory (.notes/.claude are local agent
+     * must not bleed into runtime memory (.notes and protected agent
      * state; .kovael is the per-cycle workspace; .graphify is generated
      * code-graph cache; .tsupgrader holds tooling KB).
      */
     private static readonly SKIP_DIRS: ReadonlySet<string> = new Set([
-        'node_modules', '.git', 'dist', '.notes', '.claude', '.kovael',
+        'node_modules', '.git', 'dist', '.notes', '.kovael',
         '.graphify', '.tsupgrader', '.next', 'build', 'coverage',
     ]);
 
@@ -62,15 +66,25 @@ export class SemanticIngestor {
             const fullPath = path.join(dir, entry.name);
 
             if (entry.isDirectory()) {
-                if (SemanticIngestor.SKIP_DIRS.has(entry.name)) continue;
+                if (this.shouldSkipDirectory(entry.name)) continue;
                 this.crawl(fullPath);
             } else if (entry.isFile()) {
+                if (this.shouldSkipFile(entry.name)) continue;
                 const ext = path.extname(entry.name);
                 if (['.md', '.json', '.ts'].includes(ext)) {
                     this.indexFile(fullPath, ext);
                 }
             }
         }
+    }
+
+    private shouldSkipDirectory(name: string): boolean {
+        const normalizedName = name.toLowerCase();
+        return SemanticIngestor.SKIP_DIRS.has(normalizedName) || isProtectedAgentDirectoryName(normalizedName);
+    }
+
+    private shouldSkipFile(name: string): boolean {
+        return isProtectedAgentFileName(name);
     }
 
     private indexFile(filePath: string, ext: string) {
@@ -85,9 +99,9 @@ export class SemanticIngestor {
             
             stmt.run(sanitizedPath, content, ext, Date.now());
             this.log.info('file_indexed', { path: sanitizedPath });
-        } catch (error: any) {
+        } catch (error: unknown) {
             // Silently fail for individual files to keep the crawl moving, but log sanitized error
-            this.log.error('file_index_failed', { path: this.sanitizePath(filePath), error: error.message });
+            this.log.error('file_index_failed', { path: this.sanitizePath(filePath), error: this.errorMessage(error) });
         }
     }
 
@@ -102,5 +116,13 @@ export class SemanticIngestor {
             return './' + rel.replace(/\\/g, '/');
         }
         return path.basename(filePath);
+    }
+
+    private errorMessage(error: unknown): string {
+        if (error instanceof Error) {
+            return error.message;
+        }
+
+        return String(error);
     }
 }
