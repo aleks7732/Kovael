@@ -9,6 +9,8 @@ export function handleStateSnapshot(
     const agentRuntimeSnapshot = context.agentRuntimeSupervisor.snapshot();
     const snapshot = {
         timestamp: Date.now(),
+        bindHost: context.bindHost,
+        remoteAccessMode: context.remoteAccessMode,
         agentCards: context.agentCards.length,
         connectedClients: context.wss?.clients?.size ?? 0,
         nodes: context.nodeCache.size,

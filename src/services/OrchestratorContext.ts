@@ -24,6 +24,7 @@ import type { RateLimitTracker } from './RateLimitTracker.js';
 import type { TracingBridge } from './Tracing.js';
 import type { ResourceGovernor } from './ResourceGovernor.js';
 import type { AgentRuntimeSupervisor } from './AgentRuntimeSupervisor.js';
+import type { RemoteAccessMode } from './BindHostSecurity.js';
 import type { WebSocketServer } from 'ws';
 
 export interface OrchestratorContext {
@@ -55,6 +56,8 @@ export interface OrchestratorContext {
     readonly resourceGovernor: ResourceGovernor;
     readonly agentRuntimeSupervisor: AgentRuntimeSupervisor;
     readonly wss: WebSocketServer;
+    readonly bindHost: string;
+    readonly remoteAccessMode: RemoteAccessMode;
 
     // --- Inter-agent chat state (accessed by WebSocketBus) ---
     interAgentChatEnabled: boolean;

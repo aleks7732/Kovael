@@ -19,6 +19,17 @@ function countRows(db: DatabaseSync): number {
     return row.n;
 }
 
+function indexedPaths(db: DatabaseSync): string[] {
+    const rows = db
+        .prepare('SELECT file_path FROM semantic_anchors ORDER BY file_path')
+        .all() as { file_path: string }[];
+    return rows.map((row) => row.file_path);
+}
+
+function expectedIndexedPath(filePath: string): string {
+    return `./${path.relative(process.cwd(), filePath).replace(/\\/g, '/')}`;
+}
+
 // -------------------------------------------------------------------------
 // Tests
 // -------------------------------------------------------------------------
@@ -54,7 +65,9 @@ describe('SemanticIngestor — ingest()', () => {
         // Create tmpDir inside process.cwd() so sanitizePath() produces a
         // proper './...' relative path (it falls back to basename when the
         // file lives outside cwd, e.g. on Linux CI where os.tmpdir() → /tmp).
-        tmpDir = fs.mkdtempSync(path.join(process.cwd(), '.si-test-'));
+        const testRoot = path.join(process.cwd(), '.kovael', 'semantic-ingestor-tests');
+        fs.mkdirSync(testRoot, { recursive: true });
+        tmpDir = fs.mkdtempSync(path.join(testRoot, 'case-'));
         db = freshDb();
     });
 
@@ -129,6 +142,46 @@ describe('SemanticIngestor — ingest()', () => {
         await ingestor.ingest(tmpDir);
 
         expect(countRows(db)).toBe(1);
+    });
+
+    it('skips protected local agent state and secret paths', async () => {
+        for (const dirName of ['.claude', '.gemini', '.codex', 'secrets']) {
+            const protectedDir = path.join(tmpDir, dirName, 'nested');
+            fs.mkdirSync(protectedDir, { recursive: true });
+            fs.writeFileSync(path.join(protectedDir, 'private.md'), '# private local state');
+        }
+
+        for (const fileName of [
+            'CLAUDE.local.md',
+            'GEMINI.local.md',
+            'AGENTS.local.md',
+            '.env',
+            '.env.local',
+        ]) {
+            fs.writeFileSync(path.join(tmpDir, fileName), '# private local state');
+        }
+
+        fs.writeFileSync(path.join(tmpDir, 'public.md'), '# public project note');
+        const ingestor = new SemanticIngestor(db);
+
+        await ingestor.ingest(tmpDir);
+
+        expect(indexedPaths(db)).toEqual([expectedIndexedPath(path.join(tmpDir, 'public.md'))]);
+    });
+
+    it('keeps root project context files eligible for ingestion', async () => {
+        for (const fileName of ['CLAUDE.md', 'GEMINI.md', 'AGENTS.md']) {
+            fs.writeFileSync(path.join(tmpDir, fileName), '# public project context');
+        }
+        const ingestor = new SemanticIngestor(db);
+
+        await ingestor.ingest(tmpDir);
+
+        expect(indexedPaths(db)).toEqual([
+            expectedIndexedPath(path.join(tmpDir, 'AGENTS.md')),
+            expectedIndexedPath(path.join(tmpDir, 'CLAUDE.md')),
+            expectedIndexedPath(path.join(tmpDir, 'GEMINI.md')),
+        ]);
     });
 
     it('does not throw when the target directory does not exist', async () => {

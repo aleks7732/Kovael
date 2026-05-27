@@ -7,6 +7,7 @@ import { PassThrough } from 'node:stream';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { AgentRuntimeSupervisor } from '../services/AgentRuntimeSupervisor.js';
 import { Logger } from '../services/Logger.js';
+import { buildAgentRuntimeEnv } from '../services/RuntimeSecurity.js';
 
 class FakeChild extends EventEmitter {
     public pid: number;
@@ -262,6 +263,80 @@ describe('AgentRuntimeSupervisor', () => {
         supervisor.stop('cleanup');
     });
 
+    it('reports runtime preflight status without protected config contents', () => {
+        const cwd = tempDir();
+        const secretText = 'protected-local-secret-should-not-appear';
+        const codexConfigDir = path.join(cwd, '.codex');
+        fs.mkdirSync(codexConfigDir, { recursive: true });
+        fs.writeFileSync(path.join(codexConfigDir, 'config.json'), secretText);
+        let spawnCwd: string | undefined;
+        const supervisor = new AgentRuntimeSupervisor({
+            enabled: true,
+            cwd,
+            hubDir: tempDir(),
+            env: secureEnv(),
+            agents: [{
+                agentId: 'nyx-codex',
+                provider: 'OpenAI · Codex CLI',
+                runtime: 'codex',
+            }],
+            logger,
+            spawn: (_command, _args, options) => {
+                spawnCwd = options.cwd?.toString();
+                return new FakeChild();
+            },
+        });
+
+        supervisor.startAgent('nyx-codex', 18080, { reason: 'preflight_status' });
+
+        const status = supervisor.getAgentStatus('nyx-codex');
+        expect(status?.preflight).toMatchObject({
+            executablePath: process.execPath,
+            cwd,
+            sandboxMode: 'read-only',
+            permissionMode: null,
+            hubEncryptionActive: true,
+            environment: 'stripped',
+        });
+        expect(status?.preflight.protectedLocalConfigPaths).toContainEqual({
+            label: 'workspace:.codex',
+            exists: true,
+        });
+        expect(JSON.stringify(status)).not.toContain(codexConfigDir);
+        expect(JSON.stringify(status)).not.toContain(secretText);
+        expect(spawnCwd).toBe(cwd);
+    });
+
+    it('reports Claude launch preflight with empty tools and no session persistence', () => {
+        const cwd = tempDir();
+        const supervisor = new AgentRuntimeSupervisor({
+            enabled: true,
+            cwd,
+            hubDir: tempDir(),
+            env: secureEnv(),
+            agents: [{
+                agentId: 'shaev',
+                provider: 'VantagePoint Local · Hermes 3',
+                runtime: 'claude-shaev',
+            }],
+            logger,
+            spawn: () => new FakeChild(),
+        });
+
+        const status = supervisor.getAgentStatus('shaev');
+
+        expect(status?.preflight).toMatchObject({
+            executablePath: process.execPath,
+            cwd,
+            sandboxMode: null,
+            permissionMode: 'dontAsk',
+            allowedTools: [],
+            sessionPersistence: false,
+            hubEncryptionActive: true,
+            environment: 'stripped',
+        });
+    });
+
     it('redacts adapter stderr before logging', () => {
         const lines: string[] = [];
         const stderr = new PassThrough();
@@ -292,6 +367,24 @@ describe('AgentRuntimeSupervisor', () => {
         expect(stderrRecord?.line).toContain('KOVAEL_SECRET_CANARY=[REDACTED]');
         expect(stderrRecord?.line).not.toContain('super-secret-value');
         expect(stderrRecord?.line).not.toContain('abcdefghijklmnopqrstuvwxyz0123456789abcdef');
+    });
+
+    it('strips KOVAEL secrets from real runtime child environments', () => {
+        const runtimeEnv = buildAgentRuntimeEnv({
+            PATH: process.env.PATH,
+            KOVAEL_API_TOKEN: 'api-token-must-not-pass',
+            KOVAEL_TOKEN: 'token-must-not-pass',
+            KOVAEL_AGENT_HUB_SECRET: hubSecret,
+            KOVAEL_CHAIR_DISPATCH_SECRET: 'dispatch-secret-must-not-pass',
+            KOVAEL_SECRET_CANARY: 'canary-must-not-pass',
+            KOVAEL_CODEX_BIN: 'codex-locator-must-not-pass-runtime',
+            OPENAI_API_KEY: 'openai-key-must-not-pass',
+            HTTPS_PROXY: 'http://proxy.example:8443',
+        });
+
+        expect(Object.keys(runtimeEnv).filter((key) => key.startsWith('KOVAEL_'))).toEqual([]);
+        expect(runtimeEnv.OPENAI_API_KEY).toBeUndefined();
+        expect(runtimeEnv.HTTPS_PROXY).toBe('http://proxy.example:8443');
     });
 
     it('reports disabled, exited, and failed lifecycle states', () => {

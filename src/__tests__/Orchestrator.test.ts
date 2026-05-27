@@ -3,6 +3,68 @@ import { MeshOrchestrator, DEFAULT_HTTP_TIMEOUTS } from '../MeshOrchestrator.js'
 import { WebSocket } from 'ws';
 import net from 'node:net';
 
+describe('MeshOrchestrator · bind host safety', () => {
+    const TOKEN = 'bind-host-test-token-DO-NOT-USE-IN-PROD';
+
+    it('defaults HTTP and WebSocket surfaces to loopback bind', async () => {
+        const originalBindHost = process.env.KOVAEL_BIND_HOST;
+        delete process.env.KOVAEL_BIND_HOST;
+        const loopback = new MeshOrchestrator(0);
+        try {
+            const port = await loopback.ready();
+
+            expect(loopback.bindHost).toBe('127.0.0.1');
+            expect(loopback.remoteAccessMode).toBe('loopback');
+            const res = await fetch(`http://127.0.0.1:${port}/livez`);
+            expect(res.status).toBe(200);
+        } finally {
+            loopback.close();
+            restoreEnv('KOVAEL_BIND_HOST', originalBindHost);
+        }
+    });
+
+    it('rejects non-loopback bind hosts unless a bearer token is configured', () => {
+        const originalBindHost = process.env.KOVAEL_BIND_HOST;
+        const originalToken = process.env.KOVAEL_API_TOKEN;
+        delete process.env.KOVAEL_BIND_HOST;
+        delete process.env.KOVAEL_API_TOKEN;
+
+        try {
+            expect(() => new MeshOrchestrator(0, { bindHost: '0.0.0.0' }))
+                .toThrow(/requires KOVAEL_API_TOKEN/);
+        } finally {
+            restoreEnv('KOVAEL_BIND_HOST', originalBindHost);
+            restoreEnv('KOVAEL_API_TOKEN', originalToken);
+        }
+    });
+
+    it('accepts non-loopback bind hosts when bearer token gating is enabled', async () => {
+        const originalBindHost = process.env.KOVAEL_BIND_HOST;
+        const originalToken = process.env.KOVAEL_API_TOKEN;
+        delete process.env.KOVAEL_BIND_HOST;
+        process.env.KOVAEL_API_TOKEN = TOKEN;
+        const exposed = new MeshOrchestrator(0, { bindHost: '0.0.0.0' });
+
+        try {
+            const port = await exposed.ready();
+            expect(exposed.bindHost).toBe('0.0.0.0');
+            expect(exposed.remoteAccessMode).toBe('token_gated_bind');
+
+            const missing = await fetch(`http://127.0.0.1:${port}/api/v1/state`);
+            expect(missing.status).toBe(401);
+
+            const accepted = await fetch(`http://127.0.0.1:${port}/api/v1/state`, {
+                headers: { Authorization: `Bearer ${TOKEN}` },
+            });
+            expect(accepted.status).toBe(200);
+        } finally {
+            exposed.close();
+            restoreEnv('KOVAEL_BIND_HOST', originalBindHost);
+            restoreEnv('KOVAEL_API_TOKEN', originalToken);
+        }
+    });
+});
+
 describe('MeshOrchestrator', () => {
     let orchestrator: MeshOrchestrator;
     let boundPort = 0;
@@ -235,6 +297,14 @@ describe('MeshOrchestrator', () => {
         expect(closeResult.success).toBe(true);
     });
 });
+
+function restoreEnv(name: string, value: string | undefined): void {
+    if (value === undefined) {
+        delete process.env[name];
+    } else {
+        process.env[name] = value;
+    }
+}
 
 describe('MeshOrchestrator · health & metrics (loop iter 05)', () => {
     let orch: MeshOrchestrator;
