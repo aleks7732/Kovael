@@ -20,6 +20,12 @@ describe('isAllowedWsOrigin (anti-CSWSH / DNS-rebind)', () => {
     expect(isAllowedWsOrigin('http://rebind.evil', [])).toBe(false);
   });
 
+  it('rejects loopback-lookalike and userinfo tricks', () => {
+    expect(isAllowedWsOrigin('http://localhost.evil.com', [])).toBe(false);
+    expect(isAllowedWsOrigin('http://127.0.0.1.evil.com', [])).toBe(false);
+    expect(isAllowedWsOrigin('http://127.0.0.1@evil.com', [])).toBe(false); // userinfo, host is evil.com
+  });
+
   it('honors an explicit allow-list (for non-loopback binds)', () => {
     expect(isAllowedWsOrigin('https://cockpit.internal', ['https://cockpit.internal'])).toBe(true);
     expect(isAllowedWsOrigin('https://other.internal', ['https://cockpit.internal'])).toBe(false);

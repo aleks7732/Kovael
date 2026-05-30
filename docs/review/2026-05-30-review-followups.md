@@ -16,14 +16,26 @@
   gate; loopback origins (any port) + `KOVAEL_WS_ALLOWED_ORIGINS` allowed; header-less
   non-browser clients allowed. `WebSocketBus.ts`.
 - [x] **MED — Chair URL SSRF egress guard**. New `UrlEgressGuard` blocks link-local /
-  `169.254.169.254` metadata / unspecified for `inboxUrl` (`ModelProvider`, resolves +
-  re-checks every DNS answer); inbox reply `targetUrl` now requires http(s) + loopback.
-  Loopback chairs stay allowed; `KOVAEL_CHAIR_BLOCK_PRIVATE` also blocks RFC1918/ULA.
+  `169.254.169.254` metadata / unspecified for `inboxUrl` (`ModelProvider`); IP families
+  classified via `net.isIP` (closes the **CRITICAL** `::ffff:a9fe:a9fe` IPv4-mapped bypass
+  the adversarial pass found); http hostnames are **pinned to the validated IP** (closes
+  the **HIGH** DNS-rebind TOCTOU); both fetches use `redirect:'manual'`. Inbox reply
+  `targetUrl` requires http(s) + loopback. Loopback chairs stay allowed;
+  `KOVAEL_CHAIR_BLOCK_PRIVATE` also blocks RFC1918/ULA.
+  *Residual (tracked):* https-hostname chairs keep SNI so are validate-only (rare; remote
+  token-gated binds); dispatch is AES-GCM + HMAC so any residual SSRF is blind.
 - [x] **MED — Windows env denylist case-fold**. `isDeniedCommandEnvName` compares
   case-insensitively in supervisor `childEnv` + inbox `buildCommandEnv`.
 - [x] **LOW — `safePathSegment` traversal**. Dot-only/empty segments → `_` (TS + inbox).
 
 ### Deferred (tracked)
+- [D] **LOW — Host header is unvalidated** (WS guard is Origin-only). Mitigated:
+  `resolveBindHost` forces `KOVAEL_API_TOKEN` on any non-loopback bind, so a routable
+  deployment is always bearer-gated. Optional: add a Host allow-list alongside Origin,
+  and extend the Origin/Host check to the `/api/v1/*` HTTP routes.
+- [D] **LOW — raw `args.id` interpolated into a tmpdir path** in the inbox codex runtime
+  (`kovael-agent-inbox.mjs`, pre-existing, not covered by `safePathSegment`). Validate
+  `args.id` once at parse time against `/^[a-zA-Z0-9._-]+$/` (and reject dot-only).
 - [D] **LOW — dispatch key = single-pass unsalted SHA-256** (not a KDF).
   `ChairDispatchSecurity.keyFor`, `kovael-agent-inbox.mjs`. Use HKDF/scrypt + salt
   or enforce 32-byte random secrets. (Reachable only under non-default conditions.)

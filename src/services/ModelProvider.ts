@@ -5,7 +5,7 @@ import {
     verifyChairReplyProof,
 } from './ChairDispatchSecurity.js';
 import { redactSensitiveText } from './RuntimeSecurity.js';
-import { assertSafeChairUrl } from './UrlEgressGuard.js';
+import { resolveSafeChairUrl } from './UrlEgressGuard.js';
 import { readBoolean } from '../common/env-helpers.js';
 
 export interface ChatMessage {
@@ -536,8 +536,9 @@ export class ChairBridgeProvider implements ModelProvider {
         // chair cannot turn the orchestrator into an SSRF proxy. Loopback chairs
         // stay allowed (the inbox is loopback-by-design); KOVAEL_CHAIR_BLOCK_PRIVATE
         // additionally blocks RFC1918/ULA.
+        let dispatchUrl: string;
         try {
-            await assertSafeChairUrl(claim.inboxUrl, {
+            dispatchUrl = await resolveSafeChairUrl(claim.inboxUrl, {
                 blockPrivate: readBoolean(process.env.KOVAEL_CHAIR_BLOCK_PRIVATE, false),
             });
         } catch (err) {
@@ -614,7 +615,7 @@ export class ChairBridgeProvider implements ModelProvider {
                 attempt: 0,
             });
             const dispatchResult = await this.postWithRetry(
-                claim.inboxUrl,
+                dispatchUrl,
                 secured.body,
                 opts.signal,
                 requestId,
