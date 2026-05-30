@@ -23,7 +23,7 @@ describe('isAllowedWsOrigin (anti-CSWSH / DNS-rebind)', () => {
   it('rejects loopback-lookalike and userinfo tricks', () => {
     expect(isAllowedWsOrigin('http://localhost.evil.com', [])).toBe(false);
     expect(isAllowedWsOrigin('http://127.0.0.1.evil.com', [])).toBe(false);
-    expect(isAllowedWsOrigin('http://127.0.0.1@evil.com', [])).toBe(false); // userinfo, host is evil.com
+    expect(isAllowedWsOrigin('http://127.0.0.1@attackerhost', [])).toBe(false); // userinfo, real host is attackerhost
   });
 
   it('honors an explicit allow-list (for non-loopback binds)', () => {
