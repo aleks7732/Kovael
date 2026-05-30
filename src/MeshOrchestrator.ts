@@ -11,6 +11,7 @@ import { Reconciler, ReconcileAction, ReconcilerConfig } from './services/Reconc
 import { WorkspaceManager } from './services/WorkspaceManager.js';
 import { HookRunner, HookResult } from './services/HookRunner.js';
 import { WorkflowLoader, WorkflowDocument } from './services/WorkflowLoader.js';
+import { decodeWorkflowConfig } from './services/WorkflowConfig.js';
 import { RateLimitTracker, AgentRateSnapshot } from './services/RateLimitTracker.js';
 import { ChairRegistry, ChairEvent, ChairRegistryConfig } from './services/ChairRegistry.js';
 import { Logger, rootLogger } from './services/Logger.js';
@@ -383,39 +384,12 @@ export class MeshOrchestrator extends EventEmitter implements OrchestratorContex
                 loaded_at: document.loadedAt,
             });
 
-            const floor = document.frontMatter.routing?.vram_floor_mb;
-            if (typeof floor === 'number') {
-                this.mevBridge.setVramFloor(floor);
-            }
-
-            const primary = document.frontMatter.routing?.primary_architect;
-            if (typeof primary === 'string') {
-                this.mevBridge.setPrimaryArchitect(primary);
-            }
-
-            const fallback = document.frontMatter.routing?.fallback_agent;
-            if (typeof fallback === 'string') {
-                this.mevBridge.setFallbackAgent(fallback);
-            }
-
-            const turns = document.frontMatter.sharding?.keep_recent_turns;
-            if (typeof turns === 'number') {
-                this.mevBridge.setKeepRecentTurns(turns);
-            }
-
-            const retryCfg: Partial<RetryConfig> = {};
-            if (typeof document.frontMatter.retry?.max_attempts === 'number') {
-                retryCfg.maxAttempts = document.frontMatter.retry.max_attempts;
-            }
-            if (typeof document.frontMatter.retry?.backoff_base_ms === 'number') {
-                retryCfg.baseMs = document.frontMatter.retry.backoff_base_ms;
-            }
-            if (typeof document.frontMatter.retry?.backoff_factor === 'number') {
-                retryCfg.factor = document.frontMatter.retry.backoff_factor;
-            }
-            if (Object.keys(retryCfg).length > 0) {
-                this.retryQueue.updateConfig(retryCfg);
-            }
+            const cfg = decodeWorkflowConfig(document.frontMatter);
+            if (cfg.vramFloor !== undefined) this.mevBridge.setVramFloor(cfg.vramFloor);
+            if (cfg.primaryArchitect !== undefined) this.mevBridge.setPrimaryArchitect(cfg.primaryArchitect);
+            if (cfg.fallbackAgent !== undefined) this.mevBridge.setFallbackAgent(cfg.fallbackAgent);
+            if (cfg.keepRecentTurns !== undefined) this.mevBridge.setKeepRecentTurns(cfg.keepRecentTurns);
+            if (Object.keys(cfg.retry).length > 0) this.retryQueue.updateConfig(cfg.retry);
 
             this.broadcast({
                 type: 'workflow_loaded',

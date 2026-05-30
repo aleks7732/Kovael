@@ -3,7 +3,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { ChairRegistry } from '../services/ChairRegistry.js';
 import { PersonaLoader } from '../services/PersonaLoader.js';
 import { ConversationBus } from '../services/ConversationBus.js';
-import { ChairBridgeProvider } from '../services/ModelProvider.js';
+import { ChairBridgeProvider } from '../services/ChairBridgeProvider.js';
 import { openOrchestratorDb } from '../services/OrchestratorDb.js';
 import { createChairReplyProof } from '../services/ChairDispatchSecurity.js';
 

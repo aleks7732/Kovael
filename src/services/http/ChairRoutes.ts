@@ -1,7 +1,7 @@
 import * as http from 'node:http';
 import type { OrchestratorContext } from '../OrchestratorContext.js';
 import { ChairDispatchSecurityError, openChairDispatchBody } from '../ChairDispatchSecurity.js';
-import { ChairBridgeProvider } from '../ModelProvider.js';
+import { ChairBridgeProvider } from '../ChairBridgeProvider.js';
 import { readJsonBody, writeJson } from './HttpApiSupport.js';
 import { createRequestUrl } from './HttpApiSupport.js';
 
