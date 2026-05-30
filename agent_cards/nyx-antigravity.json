@@ -1,0 +1,12 @@
+{
+  "id": "nyx-antigravity",
+  "name": "Nyx-Antigravity",
+  "provider": "Google · Gemini 3 Pro (Antigravity IDE)",
+  "description": "Primary supervisor agent. Full MCP orchestration plus creative suite. Runs inside the Antigravity IDE workspace.",
+  "trustTier": 1,
+  "capabilities": ["comfyui", "blender", "browser", "desktop"],
+  "vram": "32GB (RTX 5090)",
+  "beaconHint": "Workspace startup hook → curl /api/v1/chairs/claim",
+  "portrait": "nyx-antigravity.png",
+  "accentHex": "#d97706"
+}

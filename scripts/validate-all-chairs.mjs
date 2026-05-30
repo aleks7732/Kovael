@@ -11,7 +11,7 @@
  */
 
 import { spawn } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import process from 'node:process';
@@ -21,6 +21,8 @@ import { AgentCards } from '../dist/AgentCards.js';
 import { AgentHubStore } from '../dist/services/AgentHubStore.js';
 import { MeshOrchestrator } from '../dist/MeshOrchestrator.js';
 import { ChairBridgeProvider } from '../dist/services/ModelProvider.js';
+import { parseManifest } from '../dist/services/runtime/ChairManifest.js';
+import { defaultRuntimeRegistry } from '../dist/services/runtime/builtinAdapters.js';
 
 const ROOT = path.resolve(import.meta.dirname, '..');
 const SCRIPT_PATH = path.join(ROOT, 'scripts', 'kovael-agent-inbox.mjs');
@@ -274,6 +276,7 @@ let hubRoot = null;
 const adapters = [];
 
 try {
+    validateManifests();
     orchestrator = new MeshOrchestrator(0);
     const orchestratorPort = await orchestrator.ready();
     const host = `http://127.0.0.1:${orchestratorPort}`;
@@ -441,6 +444,46 @@ try {
 
 function validDispatchSecret(value) {
     return typeof value === 'string' && value.trim().length >= 32;
+}
+
+// Preflight manifest lint: every agent_cards/<id>.json must schema-validate,
+// declare a runtime.kind that resolves in the adapter registry (if any), match
+// its filename, and pair with a personas/<id>.md whose agent_id equals the id.
+// A bad/orphaned manifest fails the gate here, before any live dispatch.
+function validateManifests() {
+    const cardsDir = path.join(ROOT, 'agent_cards');
+    if (!existsSync(cardsDir)) {
+        process.stdout.write('[validate] no agent_cards/ dir — skipping manifest lint\n');
+        return;
+    }
+    const registry = defaultRuntimeRegistry();
+    const errors = [];
+    for (const file of readdirSync(cardsDir).filter((f) => f.endsWith('.json'))) {
+        let raw;
+        try {
+            raw = JSON.parse(readFileSync(path.join(cardsDir, file), 'utf-8'));
+        } catch (err) {
+            errors.push(`${file}: invalid JSON (${err.message})`);
+            continue;
+        }
+        const parsed = parseManifest(raw);
+        if (!parsed.ok) { errors.push(`${file}: ${parsed.error}`); continue; }
+        const m = parsed.manifest;
+        if (path.basename(file, '.json') !== m.id) errors.push(`${file}: filename does not match id '${m.id}'`);
+        if (m.runtime && !registry.resolve(m.runtime.kind)) errors.push(`${file}: unknown runtime.kind '${m.runtime.kind}'`);
+        const personaPath = path.join(ROOT, 'personas', `${m.id}.md`);
+        if (!existsSync(personaPath)) {
+            errors.push(`${file}: missing persona personas/${m.id}.md`);
+        } else {
+            const match = readFileSync(personaPath, 'utf-8').match(/^agent_id:\s*(.+)$/m);
+            const agentId = match ? match[1].trim().replace(/^["']|["']$/g, '') : null;
+            if (agentId !== m.id) errors.push(`${file}: persona agent_id '${agentId}' != manifest id '${m.id}'`);
+        }
+    }
+    if (errors.length > 0) {
+        throw new Error(`agent_cards manifest lint failed:\n  - ${errors.join('\n  - ')}`);
+    }
+    process.stdout.write('[validate] manifest lint passed (schema + registry + persona pairing)\n');
 }
 
 function safePathSegment(value) {

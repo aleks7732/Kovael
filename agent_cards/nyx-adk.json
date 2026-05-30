@@ -1,0 +1,19 @@
+{
+  "id": "nyx-adk",
+  "name": "Nyx-ADK",
+  "provider": "Google · Agent Development Kit (Python)",
+  "description": "Multi-agent framework runtime. Hosts ADK-defined sub-agents; reports collective heartbeat as one chair.",
+  "trustTier": 2,
+  "capabilities": ["python", "google-cloud", "tool-use", "function-calling"],
+  "vram": "0GB (cloud)",
+  "beaconHint": "scripts/kovael_chair.py imported as an ADK tool",
+  "portrait": "nyx-adk.png",
+  "accentHex": "#4f46e5",
+  "runtime": {
+    "kind": "command",
+    "supervised": true,
+    "command": "python",
+    "args": ["-m", "nyx_adk.inbox"],
+    "allowEnv": ["KOVAEL_HOST"]
+  }
+}

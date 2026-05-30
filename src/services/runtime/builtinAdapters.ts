@@ -3,6 +3,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import type { AgentCard } from '../../AgentCards.js';
 import { AdapterRegistry, type RuntimeAdapter, type RuntimePolicy, type RuntimeSpecDraft } from './AdapterRegistry.js';
+import { commandAdapter } from './CommandAdapter.js';
 
 function specFrom(card: AgentCard, runtime: string): RuntimeSpecDraft {
   return {
@@ -48,8 +49,19 @@ const shaevAdapter: RuntimeAdapter = {
 
 export const BUILTIN_ADAPTERS: RuntimeAdapter[] = [codexAdapter, openclawAdapter, shaevAdapter];
 
+let sharedRegistry: AdapterRegistry | null = null;
+
+/**
+ * The shared, lazily-built adapter registry: the three typed built-ins plus the
+ * generic gated `command` adapter. Hoisted to a module singleton so resolution
+ * helpers don't re-instantiate it per call.
+ */
 export function defaultRuntimeRegistry(): AdapterRegistry {
-  const reg = new AdapterRegistry();
-  for (const adapter of BUILTIN_ADAPTERS) reg.register(adapter);
-  return reg;
+  if (!sharedRegistry) {
+    const reg = new AdapterRegistry();
+    for (const adapter of BUILTIN_ADAPTERS) reg.register(adapter);
+    reg.register(commandAdapter);
+    sharedRegistry = reg;
+  }
+  return sharedRegistry;
 }

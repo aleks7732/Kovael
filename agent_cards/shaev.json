@@ -1,0 +1,16 @@
+{
+  "id": "shaev",
+  "name": "Shaev (in Hermes)",
+  "provider": "VantagePoint Local · Hermes 3",
+  "description": "Visual synthesis and identity specialist. Primary architect when VRAM headroom permits. Runs inside the Hermes local agent runtime on the workstation.",
+  "trustTier": 3,
+  "capabilities": ["visual-synthesis", "identity-lock", "lora-training"],
+  "vram": "24GB",
+  "beaconHint": "Hermes pre-turn tool call hits chairs/heartbeat",
+  "portrait": "shaev.png",
+  "accentHex": "#059669",
+  "runtime": {
+    "kind": "claude-shaev",
+    "supervised": true
+  }
+}

@@ -5,6 +5,8 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { AgentCards } from '../AgentCards.js';
 import { defaultRuntimeRegistry } from './runtime/builtinAdapters.js';
+import { loadChairManifests } from './runtime/ChairManifestLoader.js';
+import { isCommandAllowed, COMMAND_ADAPTER_ALLOW_ENV, COMMAND_ENV_DENYLIST } from './runtime/CommandAdapter.js';
 import { Logger, rootLogger } from './Logger.js';
 import {
     AGENT_HUB_SECRET_ENV,
@@ -32,6 +34,10 @@ export interface AgentRuntimeSpec {
     cwd?: string;
     model?: string;
     enabled?: boolean;
+    /** Generic-command runtime fields (runtime === 'command' only). */
+    command?: string;
+    args?: string[];
+    allowEnv?: string[];
 }
 
 export type AgentRuntimeLifecycleState =
@@ -256,7 +262,7 @@ export class AgentRuntimeSupervisor {
         const parkOnIdle = readBoolean(env.KOVAEL_AGENT_RUNTIMES_PARK_ON_IDLE, true);
         const ids = parseAgentIds(env.KOVAEL_AGENT_RUNTIME_IDS);
         const enableElevated = readBoolean(env.KOVAEL_ENABLE_ELEVATED_RUNTIMES, false);
-        const agents = defaultAgentRuntimeSpecs(ids, { enableElevated });
+        const agents = defaultAgentRuntimeSpecs(ids, { enableElevated, cwd, env });
         return new AgentRuntimeSupervisor({
             enabled,
             parkOnIdle,
@@ -449,7 +455,7 @@ export class AgentRuntimeSupervisor {
             const args = this.argsFor(spec, host, record.hubPath);
             const child = this.spawn(this.nodeBin, args, {
                 cwd: spec.cwd ?? this.cwd,
-                env: this.childEnv(),
+                env: this.childEnv(spec),
                 stdio: ['ignore', 'pipe', 'pipe'],
                 windowsHide: true,
             });
@@ -682,6 +688,11 @@ export class AgentRuntimeSupervisor {
         if (spec.model) {
             args.push('--model', spec.model);
         }
+        if (spec.runtime === 'command' && spec.command) {
+            args.push('--command', spec.command);
+            if (spec.args?.length) args.push('--command-args', JSON.stringify(spec.args));
+            if (spec.allowEnv?.length) args.push('--allow-env', spec.allowEnv.join(','));
+        }
         if (this.hubEncryptionRequired) {
             args.push('--require-hub-encryption');
         }
@@ -695,8 +706,22 @@ export class AgentRuntimeSupervisor {
         return path.join(this.hubDir, safePathSegment(agentId), 'agent-hub.sqlite');
     }
 
-    private childEnv(): NodeJS.ProcessEnv {
-        return buildAgentAdapterEnv(this.env, { requireHubEncryption: this.hubEncryptionRequired });
+    private childEnv(spec?: AgentRuntimeSpec): NodeJS.ProcessEnv {
+        const env = buildAgentAdapterEnv(this.env, { requireHubEncryption: this.hubEncryptionRequired });
+        if (spec?.runtime === 'command') {
+            // The inbox re-gates command spawns (KOVAEL_COMMAND_ADAPTER_ALLOW) and
+            // forwards manifest `allowEnv` vars to the child; neither survives the
+            // stripped adapter env, so forward them here for command specs only.
+            // Secret-named vars are never forwarded.
+            const allow = this.env[COMMAND_ADAPTER_ALLOW_ENV];
+            if (allow) env[COMMAND_ADAPTER_ALLOW_ENV] = allow;
+            for (const name of spec.allowEnv ?? []) {
+                if (COMMAND_ENV_DENYLIST.has(name)) continue;
+                const value = this.env[name];
+                if (typeof value === 'string') env[name] = value;
+            }
+        }
+        return env;
     }
 }
 
@@ -706,20 +731,39 @@ const BUILTIN_AGENT_KINDS: Record<string, string> = {
     'nyx-openclaw': 'codex-openclaw',
 };
 
-function defaultAgentRuntimeSpecs(
+export function defaultAgentRuntimeSpecs(
     ids: readonly string[] = DEFAULT_AGENT_IDS,
-    options: { enableElevated?: boolean } = {},
+    options: { enableElevated?: boolean; cwd?: string; env?: NodeJS.ProcessEnv } = {},
 ): AgentRuntimeSpec[] {
     const registry = defaultRuntimeRegistry();
-    const blocked = new Set(options.enableElevated ? [] : ['nyx-openclaw']);
+    const env = options.env ?? process.env;
+    // Prefer manifests (agent_cards/) so a dispatch-capable chair connects by a
+    // manifest drop alone (zero core edits); fall back to the literal built-in
+    // map + AgentCards when the directory is absent.
+    const loaded = loadChairManifests(path.join(options.cwd ?? process.cwd(), 'agent_cards'));
+    const cardById = new Map(loaded.cards.map((card) => [card.id, card]));
     return ids
-        .filter((id) => !blocked.has(id))
         .map((id) => {
-            const kind = BUILTIN_AGENT_KINDS[id];
-            const card = AgentCards[id];
+            const card = cardById.get(id) ?? AgentCards[id];
+            if (!card) return undefined;
+            // A manifest may opt a chair out of supervision explicitly.
+            if (card.runtime?.supervised === false) return undefined;
+            const kind = card.runtime?.kind ?? BUILTIN_AGENT_KINDS[id];
             const adapter = kind ? registry.resolve(kind) : undefined;
-            if (!adapter || !card) return undefined;
-            return adapter.buildSpec(card) as AgentRuntimeSpec;
+            if (!adapter || !adapter.supervised) return undefined;
+            // Elevation gate keyed on the RESOLVED adapter's danger-full-access
+            // policy (and the manifest `elevated` flag) — NOT the chair id. A
+            // manifest must not be able to alias an elevated runtime kind onto a
+            // non-blocked id to escape KOVAEL_ENABLE_ELEVATED_RUNTIMES.
+            const elevated = adapter.policy().sandboxMode === 'danger-full-access' || card.runtime?.elevated === true;
+            if (elevated && !options.enableElevated) return undefined;
+            const spec = adapter.buildSpec(card) as AgentRuntimeSpec;
+            // Generic command chairs stay disabled unless their binary is on the
+            // operator's allow-list (KOVAEL_COMMAND_ADAPTER_ALLOW).
+            if (spec.runtime === 'command' && !isCommandAllowed(spec.command, env)) {
+                return { ...spec, enabled: false };
+            }
+            return spec;
         })
         .filter((spec): spec is AgentRuntimeSpec => spec !== undefined);
 }
@@ -747,7 +791,7 @@ function runtimePolicyFor(runtime: string): Pick<
     'sandboxMode' | 'permissionMode' | 'allowedTools' | 'sessionPersistence'
 > {
     const adapter = defaultRuntimeRegistry().resolve(runtime);
-    if (adapter) return adapter.policy() as Pick<AgentRuntimePreflightSummary, 'sandboxMode' | 'permissionMode' | 'allowedTools' | 'sessionPersistence'>;
+    if (adapter) return adapter.policy();
     return { sandboxMode: null, permissionMode: 'dontAsk', allowedTools: [], sessionPersistence: false };
 }
 

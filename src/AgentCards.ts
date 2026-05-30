@@ -8,6 +8,8 @@
  * compile-time fallback when the directory is missing or empty.
  */
 
+import type { ChairRuntime } from './services/runtime/ChairManifest.js';
+
 export interface AgentCard {
   id: string;
   name: string;
@@ -20,6 +22,12 @@ export interface AgentCard {
   beacon_hint?: string;
   portrait_url?: string;
   accent_hex?: string;
+  /**
+   * Runtime spec carried from `agent_cards/<id>.json`. Present only on
+   * manifest-loaded cards; the compile-time fallback below omits it. Adapters
+   * (e.g. CommandAdapter) read this to build a runtime spec from the card.
+   */
+  runtime?: ChairRuntime;
 }
 
 export const AgentCards: Record<string, AgentCard> = {

@@ -1,0 +1,12 @@
+{
+  "id": "nyx-cli",
+  "name": "Nyx-CLI",
+  "provider": "Anthropic · Gemini CLI (legacy alias)",
+  "description": "Lightweight CLI agent for code analysis and terminal ops. Acts as the fallback architect when Shaev is gated by VRAM or rate-limits.",
+  "trustTier": 1,
+  "capabilities": ["terminal", "filesystem", "git", "recursive-memory"],
+  "vram": "8GB",
+  "beaconHint": "kovael-chair wrapper around CLI invocation",
+  "portrait": "nyx-cli.png",
+  "accentHex": "#0891b2"
+}

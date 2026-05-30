@@ -1,0 +1,19 @@
+{
+  "id": "nyx-cw",
+  "name": "Nyx-Cowork",
+  "provider": "JetBrains · Junie / Cowork plugin",
+  "description": "IDE-resident pair-programmer inside JetBrains tooling. Heartbeats while a workspace is open.",
+  "trustTier": 2,
+  "capabilities": ["filesystem", "git", "refactoring", "inspections"],
+  "vram": "0GB (cloud)",
+  "beaconHint": "IDE startup script invokes kovael-chair on workspace open",
+  "portrait": "nyx-cw.png",
+  "accentHex": "#ea580c",
+  "runtime": {
+    "kind": "command",
+    "supervised": true,
+    "command": "kovael-chair",
+    "args": ["--chair", "nyx-cw"],
+    "allowEnv": ["KOVAEL_HOST"]
+  }
+}

@@ -1,0 +1,17 @@
+{
+  "id": "nyx-openclaw",
+  "name": "Nyx-OpenClaw",
+  "provider": "OpenAI · Codex (elevated sandbox)",
+  "description": "Elevated-permission Codex variant for game development, rapid prototyping, and approved network egress tasks.",
+  "trustTier": 2,
+  "capabilities": ["sandbox-execution", "game-dev-pack", "network-egress"],
+  "vram": "16GB",
+  "beaconHint": "Sandbox boot script claims chair, releases on container exit",
+  "portrait": "nyx-openclaw.png",
+  "accentHex": "#9333ea",
+  "runtime": {
+    "kind": "codex-openclaw",
+    "supervised": true,
+    "elevated": true
+  }
+}

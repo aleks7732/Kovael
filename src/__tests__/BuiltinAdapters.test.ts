@@ -3,9 +3,9 @@ import { defaultRuntimeRegistry } from '../services/runtime/builtinAdapters.js';
 import { AgentCards } from '../AgentCards.js';
 
 describe('builtin adapters', () => {
-  it('registers exactly the three known kinds', () => {
+  it('registers the three typed built-ins plus the generic command adapter', () => {
     expect(defaultRuntimeRegistry().kinds().sort())
-      .toEqual(['claude-shaev', 'codex', 'codex-openclaw']);
+      .toEqual(['claude-shaev', 'codex', 'codex-openclaw', 'command']);
   });
 
   it('codex adapter reproduces the current nyx-codex spec', () => {
