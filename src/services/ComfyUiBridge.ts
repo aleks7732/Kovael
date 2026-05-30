@@ -56,8 +56,12 @@ export interface ComfyStreamDescriptor {
 interface FetchResponseLike {
     ok: boolean;
     status?: number;
+    headers?: { get(name: string): string | null };
     json(): Promise<unknown>;
 }
+
+const COMFYUI_TIMEOUT_MS = 15_000;
+const COMFYUI_MAX_BODY_BYTES = 4 * 1024 * 1024;
 
 type FetchLike = (input: string, init?: RequestInit) => Promise<FetchResponseLike>;
 
@@ -111,14 +115,21 @@ export class ComfyUiBridge {
         if (!this.enabled) {
             result = this.fallback(request, dimensions, palette, workflow);
         } else {
+            const ctrl = new AbortController();
+            const timer = setTimeout(() => ctrl.abort(), COMFYUI_TIMEOUT_MS);
+            timer.unref?.();
             try {
                 const response = await this.fetchImpl(`${this.endpoint}/prompt`, {
                     method: 'POST',
                     headers: { 'content-type': 'application/json' },
                     body: JSON.stringify({ prompt: workflow }),
+                    signal: ctrl.signal,
                 });
+                const declaredLen = Number(response.headers?.get('content-length') ?? '0');
                 if (!response.ok) {
                     result = this.fallback(request, dimensions, palette, workflow, `http_${response.status ?? 'error'}`);
+                } else if (declaredLen > COMFYUI_MAX_BODY_BYTES) {
+                    result = this.fallback(request, dimensions, palette, workflow, 'response_too_large');
                 } else {
                     const body = await response.json();
                     const promptId = readPromptId(body);
@@ -141,6 +152,8 @@ export class ComfyUiBridge {
                     workflow,
                     err instanceof Error ? err.message : String(err),
                 );
+            } finally {
+                clearTimeout(timer);
             }
         }
 

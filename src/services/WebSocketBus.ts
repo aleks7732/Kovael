@@ -35,10 +35,14 @@ export function isAllowedWsOrigin(origin: string | undefined, allowedOrigins: re
     return allowedOrigins.includes(origin);
 }
 
+const DEFAULT_MAX_WS_CLIENTS = 64;
+const WS_BACKPRESSURE_BYTES = 8 * 1024 * 1024; // drop frames for a client this far behind
+
 export class WebSocketBus {
     public readonly wss: WebSocketServer;
     private readonly context: OrchestratorContext;
     private readonly allowedWsOrigins: string[];
+    private readonly maxWsClients: number;
 
     constructor(context: OrchestratorContext, server: http.Server) {
         this.context = context;
@@ -46,6 +50,8 @@ export class WebSocketBus {
             .split(',')
             .map((s) => s.trim())
             .filter(Boolean);
+        const maxParsed = Number.parseInt(process.env.KOVAEL_WS_MAX_CLIENTS ?? '', 10);
+        this.maxWsClients = Number.isFinite(maxParsed) && maxParsed > 0 ? maxParsed : DEFAULT_MAX_WS_CLIENTS;
         this.wss = new WebSocketServer({
             noServer: true,
             maxPayload: this.context.maxWsMessageBytes,
@@ -83,6 +89,16 @@ export class WebSocketBus {
                 kreq.__kovaelGateRejected = true;
                 this.wss.handleUpgrade(req, socket as Socket, head, (ws) => {
                     ws.close(4403, 'forbidden_origin');
+                });
+                return;
+            }
+
+            // Cap concurrent connections so a connection flood cannot exhaust
+            // server memory/sockets.
+            if (this.wss.clients.size >= this.maxWsClients) {
+                kreq.__kovaelGateRejected = true;
+                this.wss.handleUpgrade(req, socket as Socket, head, (ws) => {
+                    ws.close(1013, 'try_again_later');
                 });
                 return;
             }
@@ -126,9 +142,12 @@ export class WebSocketBus {
 
         const frame = JSON.stringify(payload);
         this.wss.clients.forEach((client) => {
-            if (client.readyState === WebSocket.OPEN) {
-                client.send(frame);
-            }
+            if (client.readyState !== WebSocket.OPEN) return;
+            // Backpressure: drop this frame for a client whose send buffer is
+            // already far behind, so one slow reader cannot grow server heap
+            // without bound.
+            if (client.bufferedAmount > WS_BACKPRESSURE_BYTES) return;
+            client.send(frame);
         });
     }
 

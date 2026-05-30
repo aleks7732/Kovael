@@ -284,6 +284,17 @@ class SharedAgentHub {
         this.store.markOutboxDeliveryFailed(id, error, retryAt, maxAttempts);
     }
 
+    // Periodic maintenance so the persistent hub SQLite does not grow without
+    // bound: drop expired cache, terminal outbox, and old receipt rows.
+    maintenance(retentionMs) {
+        const cutoff = Date.now() - retentionMs;
+        return {
+            cache: this.store.pruneExpiredCache(),
+            outbox: this.store.pruneTerminalOutbox(cutoff),
+            receipts: this.store.pruneOldReceipts(cutoff),
+        };
+    }
+
     close() {
         this.store.close();
     }
@@ -834,6 +845,16 @@ async function main() {
     const token = bearerToken(args);
     const hub = await createAgentHub(cfg);
     const outboxDrain = startOutboxDrain(hub, cfg);
+    const maintenanceRetentionMs = readPositiveInt(process.env.KOVAEL_AGENT_HUB_RETENTION_MS, 24 * 60 * 60 * 1000);
+    const maintenanceIntervalMs = readPositiveInt(process.env.KOVAEL_AGENT_HUB_MAINTENANCE_INTERVAL_MS, 60 * 60 * 1000);
+    const maintenanceTimer = setInterval(() => {
+        try {
+            hub.maintenance(maintenanceRetentionMs);
+        } catch (err) {
+            console.error(`kovael-agent-inbox: ${cfg.id} maintenance failed: ${cfg.runtimeSecurity.redactSensitiveText(err)}`);
+        }
+    }, maintenanceIntervalMs);
+    maintenanceTimer.unref();
     const server = await startInbox(cfg, hub, outboxDrain);
     const address = server.address();
     if (!address || typeof address === 'string') throw new Error('failed to bind inbox');
@@ -857,6 +878,7 @@ async function main() {
 
     if (args.probe) {
         await postJson(cfg.host, '/api/v1/chairs/release', { agentId: cfg.id, sessionId }, token).catch(() => null);
+        clearInterval(maintenanceTimer);
         outboxDrain.stop();
         hub.close();
         server.close();
@@ -873,6 +895,7 @@ async function main() {
         } catch (err) {
             console.error(`kovael-agent-inbox: ${cfg.id} release failed (${reason}): ${err.message}`);
         } finally {
+            clearInterval(maintenanceTimer);
             outboxDrain.stop();
             server.close(() => {
                 hub.close();

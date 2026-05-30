@@ -214,4 +214,19 @@ describe('ComfyUiBridge', () => {
             // ignore cleanup errors
         }
     });
+
+    it('falls back without parsing an oversized response body', async () => {
+        const json = vi.fn();
+        const fetchImpl = vi.fn().mockResolvedValue({
+            ok: true,
+            headers: { get: (n: string) => (n === 'content-length' ? String(8 * 1024 * 1024) : null) },
+            json,
+        });
+        const bridge = new ComfyUiBridge({ enabled: true, endpoint: 'http://127.0.0.1:8100', fetchImpl });
+
+        const result = await bridge.renderPortrait({ agentId: 'nyx-codex', prompt: 'x', aspectRatio: '1:1' });
+
+        expect(result.source).toBe('fallback');
+        expect(json).not.toHaveBeenCalled(); // body never parsed past the size cap
+    });
 });
