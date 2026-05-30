@@ -5,59 +5,64 @@
 
 ## Where We Stopped (2026-05-29)
 
-Wave-1 ultramax goal landed: **Open Chair Mesh** — connect all agent chairs +
-leave room for easy expansion; secure, lightweight, with code-bloat + quality
-review baked in.
+**Open Chair Mesh goal — COMPLETE.** Connecting any agent chair is now a
+manifest-driven, zero-core-edit operation, the mesh stays sovereign/loopback/
+encrypted, and net `src/` is *lighter* than before the goal started.
 
-- Deep dive done. Linux verified on native Node 22 (WSL Ubuntu) via a fresh
-  `git archive` of the branch: `tsc` green, **555/555 tests green**. Committed
-  line endings are LF (`git ls-files --eol` → `i/lf`).
-- Deliverables committed on `claude/reverent-archimedes-d14c6d`:
-  - `ULTRAMAX-GOAL.md` — mission brief (NYXCODE-MISSION idiom, Commander's Intent)
-  - `docs/superpowers/specs/2026-05-29-chair-mesh-expansion-design.md` — design
-    spec (D3 hybrid adapter registry; manifest-driven chairs; phased 0–3)
-  - `docs/superpowers/plans/2026-05-29-chair-mesh-expansion-phase-0-1.md` —
-    Phase 0+1 TDD implementation plan (7 tasks, behavior-preserving)
-- **Phase 0+1 IMPLEMENTED** (subagent-driven, TDD) and opened as a PR. New
-  `src/services/runtime/` layer — `AdapterRegistry`, built-in adapters,
-  `ChairManifest` (zod), `ChairManifestLoader`; `AgentRuntimeSupervisor`
-  de-hardcoded (closed `runtime` union → registry-resolved string); orchestrator
-  card-load validated. Full suite **567/567 green on Node 22 Linux** (was 555;
-  +12 new). Behavior preserved for the 3 supervised chairs. **Phases 2 & 3 remain.**
+Three PRs merged to `main` (squash), Node-22 Linux green at every boundary:
 
-## Next Action
+- `#62` (`937f44b`) — **Phase 0+1**: pluggable `RuntimeAdapter`/`AdapterRegistry`,
+  `ChairManifest` (zod) + `ChairManifestLoader`, built-in adapters; supervisor
+  de-hardcoded; `.gitattributes` + Node-22 Linux CI gate.
+- `#63` (`dfbcad7`) — **Phase 2**: gated generic `CommandAdapter` (`command`
+  kind, disabled-by-default, `KOVAEL_COMMAND_ADAPTER_ALLOW` binary allow-list +
+  per-manifest `allowEnv`, array-args-no-shell); `agent_cards/*.json` for all 9
+  chairs (mirror `AgentCards`, parity test-enforced); manifest-driven supervision;
+  `validate-all-chairs` + vitest manifest lint (schema + registry + persona).
+- `#64` (`6d75697`) — **Phase 3**: removed confirmed-dead trio
+  (`BudgetTracker`/`RoutingPolicy`/`EpisodicMemory`); de-duped `readBoolean*` into
+  `src/common/env-helpers.ts`; `backfillV2Columns()` idempotent (schema-version
+  guard); dep audit (sdk+zod stay in `dependencies`).
 
-1. Land the Phase 0+1 PR (watch the new `linux-verify` CI job + pii-guard +
-   secrets-scan).
-2. Author + execute the **Phase 2 plan**: the gated `CommandAdapter` (registers a
-   `command` runtime kind; binary + env allow-lists; disabled by default),
-   `agent_cards/*.json` manifests for all 9 chairs, and a `validate-all-chairs`
-   manifest lint. Depends only on the now-frozen `RuntimeAdapter` interface.
-3. Then the **Phase 3 plan**: bloat remediation (split `AgentHubStore` 1143 LOC;
-   confirm+cut dead `budgetTracker`/`routingPolicy`/`episodicMemory`; de-dup
-   `readBoolean`; idempotent `backfillV2Columns`; dep right-placement). Phase 3
-   is where the net-`src/`-LOC-must-drop acceptance criterion is paid.
+**Acceptance criteria — all met.** Zero-`src`-edit 10th command chair (tested);
+9 manifests; `validate:chairs` schema+registry+persona; `CommandAdapter`
+disabled-by-default + allow-list (tested); security invariants intact (loopback,
+token gate, AES-256-GCM envelopes, HMAC replyProof, SSRF guard, sovereignty —
+no new deps); **net `src/` LOC ≤ baseline**: non-test **13214 → 12878 (−336)**,
+total **23392 → 23232 (−160)**. Final suite **586/586 green on Node 22 Linux**.
 
-Phase-1 cleanup carried forward (minor): hoist `defaultRuntimeRegistry()` to a
-module singleton; tighten `RuntimePolicy` field types to drop the `as Pick` cast.
+## Next Action — Deferred Follow-Up (flagged for human review)
+
+- **Split `src/services/AgentHubStore.ts` (1234 LOC)** into `schema`/`crypto`/
+  `outbox`/`memory` modules behind the same public surface. **Deliberately
+  deferred** from Phase 3: the net-LOC "lighter" acceptance was already met
+  without it, the split *adds* LOC, and it is a high-risk extraction of
+  AES-256-GCM crypto + SQLite where a subtle error could silently regress an
+  encryption invariant — disproportionate for an auto-merged PR. Do it as a
+  focused, human-reviewed, behavior-preserving refactor (public methods/types
+  byte-identical; lean on the existing AgentHubStore encryption/outbox/memory/
+  migration tests as the safety net).
 
 ## Key Facts For The Work
 
-- Expansion seam exists: `MeshOrchestrator.loadAgentCards()` reads
-  `agent_cards/*.json` (`src/MeshOrchestrator.ts:581`); the dir is currently absent.
-- Seam to open: `src/services/AgentRuntimeSupervisor.ts` — closed `runtime`
-  union (L29), literal `byId` (L707), `runtimePolicyFor` (L753),
-  `runtimeExecutablePathFor` (L781).
-- Bloat track (Phase 3): `AgentHubStore.ts` 1143 LOC; likely-dead
-  `budgetTracker`/`routingPolicy`/`episodicMemory` (confirm via
-  `OrchestratorContext` before cutting); dup `readBoolean`/`readBooleanEnv`;
-  `backfillV2Columns` O(N)/boot; `@modelcontextprotocol/sdk`+`zod` dep placement.
-- WSL Linux verify (durable recipe): archive the branch from the MAIN repo
-  (`git -C /mnt/i/Kovael archive <branch>`), NOT the worktree (its `.git` points
-  to a Windows path WSL can't resolve); set WSL `safe.directory`; pipe a base64'd
-  script to avoid PowerShell eating `$vars`; always assert `cd` succeeded.
+- Add a chair: drop `agent_cards/<id>.json` (+ a `personas/<id>.md` with matching
+  `agent_id`). Built-in kind for the 3 supervised; `command` (allow-listed) or
+  omit `runtime` (presence-only) for the rest. Zero `src/` edits.
+- Command runtime gating is defense-in-depth: supervisor sets `enabled:false` for
+  non-allow-listed binaries AND the inbox re-gates at the spawn point; elevation
+  (`danger-full-access`) is gated by the resolved adapter policy + manifest
+  `elevated` flag, NOT by chair id (closed a manifest-aliasing bypass).
+- Env reaching a command child: `childEnv(spec)` forwards
+  `KOVAEL_COMMAND_ADAPTER_ALLOW` + manifest `allowEnv` vars (secret names denied)
+  to the inbox; `runCommand` then forwards `allowEnv` to the grandchild.
+- WSL Linux verify (durable recipe): this WSL shell runs native Node v22 — run the
+  gate directly. Archive the branch from the MAIN repo
+  (`git -C /mnt/i/Kovael archive <branch>`) into a native-ext4 dir (e.g.
+  `$HOME/kvgate`), then `npm ci && npm run build && npm test`. Do NOT `npm ci` in a
+  worktree under `/mnt/i` (drvfs rejects npm's symlink/permission ops). Worktrees:
+  create with WSL git off `origin/main` — they check out LF-clean and git works.
 
-## Prior Follow-Ups (still open from last session)
+## Prior Follow-Ups (still open from earlier sessions)
 
 - Dependabot PRs: #49 `ws`, #50 root `vite`, #52 root `typescript-eslint`,
   #48 spatial `vite`, #51 spatial `typescript-eslint`.
@@ -67,9 +72,9 @@ module singleton; tighten `RuntimePolicy` field types to drop the `as Pick` cast
 
 ## Useful Commands
 
-```powershell
-npx tsc --noEmit; npm test
-node scripts/validate-pr.mjs
-npm run validate:chairs
-git status --short --branch
+```bash
+# WSL Node-22 gate (run from a native-ext4 dir, not /mnt/i):
+git -C /mnt/i/Kovael archive <branch> | (cd "$HOME/kvgate" && tar -x) && \
+  (cd "$HOME/kvgate" && npm ci && npm run build && npm test)
+npm run validate:chairs   # schema + registry + persona lint, then live dispatch
 ```
