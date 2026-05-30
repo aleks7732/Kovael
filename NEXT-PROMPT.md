@@ -18,15 +18,28 @@ review baked in.
     spec (D3 hybrid adapter registry; manifest-driven chairs; phased 0–3)
   - `docs/superpowers/plans/2026-05-29-chair-mesh-expansion-phase-0-1.md` —
     Phase 0+1 TDD implementation plan (7 tasks, behavior-preserving)
-- **No `src/` code changed yet.** The plan is execution-ready.
+- **Phase 0+1 IMPLEMENTED** (subagent-driven, TDD) and opened as a PR. New
+  `src/services/runtime/` layer — `AdapterRegistry`, built-in adapters,
+  `ChairManifest` (zod), `ChairManifestLoader`; `AgentRuntimeSupervisor`
+  de-hardcoded (closed `runtime` union → registry-resolved string); orchestrator
+  card-load validated. Full suite **567/567 green on Node 22 Linux** (was 555;
+  +12 new). Behavior preserved for the 3 supervised chairs. **Phases 2 & 3 remain.**
 
 ## Next Action
 
-Execute the Phase 0+1 plan (registry refactor + manifest validation; preserves
-behavior for the 3 supervised chairs). Choose subagent-driven (recommended) or
-inline (`executing-plans`). Then author the Phase 2 plan (gated `CommandAdapter`
-+ all-9 `agent_cards/*.json` + `validate-all-chairs` manifest lint) and the
-Phase 3 plan (bloat remediation).
+1. Land the Phase 0+1 PR (watch the new `linux-verify` CI job + pii-guard +
+   secrets-scan).
+2. Author + execute the **Phase 2 plan**: the gated `CommandAdapter` (registers a
+   `command` runtime kind; binary + env allow-lists; disabled by default),
+   `agent_cards/*.json` manifests for all 9 chairs, and a `validate-all-chairs`
+   manifest lint. Depends only on the now-frozen `RuntimeAdapter` interface.
+3. Then the **Phase 3 plan**: bloat remediation (split `AgentHubStore` 1143 LOC;
+   confirm+cut dead `budgetTracker`/`routingPolicy`/`episodicMemory`; de-dup
+   `readBoolean`; idempotent `backfillV2Columns`; dep right-placement). Phase 3
+   is where the net-`src/`-LOC-must-drop acceptance criterion is paid.
+
+Phase-1 cleanup carried forward (minor): hoist `defaultRuntimeRegistry()` to a
+module singleton; tighten `RuntimePolicy` field types to drop the `as Pick` cast.
 
 ## Key Facts For The Work
 
