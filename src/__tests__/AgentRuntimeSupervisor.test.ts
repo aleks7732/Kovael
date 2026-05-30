@@ -1,4 +1,3 @@
-import { EventEmitter } from 'node:events';
 import { DatabaseSync } from 'node:sqlite';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
@@ -8,35 +7,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { AgentRuntimeSupervisor } from '../services/AgentRuntimeSupervisor.js';
 import { Logger } from '../services/Logger.js';
 import { buildAgentRuntimeEnv } from '../services/RuntimeSecurity.js';
-
-class FakeChild extends EventEmitter {
-    public pid: number;
-    public killedWith: NodeJS.Signals | undefined;
-    public signals: NodeJS.Signals[] = [];
-    public stdout: NodeJS.ReadableStream | null = null;
-    public stderr: NodeJS.ReadableStream | null = null;
-
-    constructor(
-        pid = 4242,
-        private readonly exitOnKill = true,
-    ) {
-        super();
-        this.pid = pid;
-    }
-
-    public kill(signal?: NodeJS.Signals): boolean {
-        this.killedWith = signal;
-        if (signal) this.signals.push(signal);
-        if (this.exitOnKill) {
-            this.emit('exit', 0, signal ?? null);
-        }
-        return true;
-    }
-
-    public exit(code: number | null = 0, signal: NodeJS.Signals | null = null): void {
-        this.emit('exit', code, signal);
-    }
-}
+import { FakeChild } from './helpers/fakeChild.js';
 
 describe('AgentRuntimeSupervisor', () => {
     const tempDirs: string[] = [];

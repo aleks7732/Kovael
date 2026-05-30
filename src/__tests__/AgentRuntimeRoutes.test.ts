@@ -1,31 +1,10 @@
-import { EventEmitter } from 'node:events';
 import { DatabaseSync } from 'node:sqlite';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { MeshOrchestrator } from '../MeshOrchestrator.js';
-
-class FakeChild extends EventEmitter {
-    public stdout = null;
-    public stderr = null;
-    public signals: NodeJS.Signals[] = [];
-
-    constructor(
-        public pid: number,
-        private readonly exitOnKill = true,
-    ) {
-        super();
-    }
-
-    public kill(signal?: NodeJS.Signals): boolean {
-        if (signal) this.signals.push(signal);
-        if (this.exitOnKill) {
-            this.emit('exit', 0, signal ?? null);
-        }
-        return true;
-    }
-}
+import { FakeChild } from './helpers/fakeChild.js';
 
 describe('Agent runtime control routes', () => {
     const tempDirs: string[] = [];

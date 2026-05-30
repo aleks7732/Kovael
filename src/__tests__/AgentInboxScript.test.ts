@@ -1,4 +1,5 @@
 import { afterEach, beforeAll, describe, expect, it } from 'vitest';
+import { restoreEnv } from './helpers/env.js';
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
 import { DatabaseSync } from 'node:sqlite';
 import * as fs from 'node:fs';
@@ -536,13 +537,6 @@ async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, label: str
     }
 }
 
-function restoreEnv(name: string, value: string | undefined): void {
-    if (value === undefined) {
-        delete process.env[name];
-    } else {
-        process.env[name] = value;
-    }
-}
 
 async function waitForDispatchRecord(
     hubPath: string,

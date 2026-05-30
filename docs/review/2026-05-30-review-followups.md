@@ -100,8 +100,14 @@
   Envelope wire-format + SQL byte-identical (the encryption-roundtrip / v1→v2 migration /
   backfill tests stay green; adversarially verified). outbox/memory stay in the facade
   (splitting them into manager classes is net-zero risk-without-reward).
-- [D] **Test-bloat** shared fixtures: `makeRosterCard`/`makeMessage` (spatial specs);
-  `process.env` save/restore; `mkdtemp/rmSync` temp-dir; `FakeChild` mock.
+- [x] **Test-bloat** (PR #73): extracted the duplicated `FakeChild` child-process
+  mock → `src/__tests__/helpers/fakeChild.ts` (superset; both AgentRuntime tests use
+  it) and the byte-identical `restoreEnv` → `src/__tests__/helpers/env.ts`.
+  - [assessed, deferred] `makeRosterCard`/`makeMessage` (spatial specs) — those tests
+    run in the spatial-war-room package, not root CI, so a refactor can't be
+    runtime-verified here; do it within that package's own test work.
+  - [assessed, marginal] `mkdtemp/rmSync` temp-dir helper — net ~0 LOC after the helper
+    overhead (the `path` import stays); not worth the churn.
 
 ## Notes
 - All items were adversarially verified; several LOC/severity claims from the first
