@@ -2,9 +2,9 @@ import { EventEmitter } from 'node:events';
 import { spawn as nodeSpawn, type SpawnOptions } from 'node:child_process';
 import { DatabaseSync } from 'node:sqlite';
 import * as fs from 'node:fs';
-import * as os from 'node:os';
 import * as path from 'node:path';
 import { AgentCards } from '../AgentCards.js';
+import { defaultRuntimeRegistry } from './runtime/builtinAdapters.js';
 import { Logger, rootLogger } from './Logger.js';
 import {
     AGENT_HUB_SECRET_ENV,
@@ -26,7 +26,7 @@ import {
 export interface AgentRuntimeSpec {
     agentId: string;
     provider: string;
-    runtime: 'codex' | 'codex-openclaw' | 'claude-shaev';
+    runtime: string;
     capabilities?: string[];
     trustTier?: number;
     cwd?: string;
@@ -700,36 +700,28 @@ export class AgentRuntimeSupervisor {
     }
 }
 
+const BUILTIN_AGENT_KINDS: Record<string, string> = {
+    shaev: 'claude-shaev',
+    'nyx-codex': 'codex',
+    'nyx-openclaw': 'codex-openclaw',
+};
+
 function defaultAgentRuntimeSpecs(
     ids: readonly string[] = DEFAULT_AGENT_IDS,
     options: { enableElevated?: boolean } = {},
 ): AgentRuntimeSpec[] {
-    const byId: Record<string, AgentRuntimeSpec> = {
-        shaev: {
-            agentId: 'shaev',
-            provider: AgentCards.shaev.provider,
-            runtime: 'claude-shaev',
-            capabilities: AgentCards.shaev.mcp_capabilities,
-            trustTier: AgentCards.shaev.trust_tier,
-        },
-        'nyx-codex': {
-            agentId: 'nyx-codex',
-            provider: AgentCards['nyx-codex'].provider,
-            runtime: 'codex',
-            capabilities: AgentCards['nyx-codex'].mcp_capabilities,
-            trustTier: AgentCards['nyx-codex'].trust_tier,
-        },
-    };
-    if (options.enableElevated) {
-        byId['nyx-openclaw'] = {
-            agentId: 'nyx-openclaw',
-            provider: AgentCards['nyx-openclaw'].provider,
-            runtime: 'codex-openclaw',
-            capabilities: AgentCards['nyx-openclaw'].mcp_capabilities,
-            trustTier: AgentCards['nyx-openclaw'].trust_tier,
-        };
-    }
-    return ids.map((id) => byId[id]).filter((spec): spec is AgentRuntimeSpec => spec !== undefined);
+    const registry = defaultRuntimeRegistry();
+    const blocked = new Set(options.enableElevated ? [] : ['nyx-openclaw']);
+    return ids
+        .filter((id) => !blocked.has(id))
+        .map((id) => {
+            const kind = BUILTIN_AGENT_KINDS[id];
+            const card = AgentCards[id];
+            const adapter = kind ? registry.resolve(kind) : undefined;
+            if (!adapter || !card) return undefined;
+            return adapter.buildSpec(card) as AgentRuntimeSpec;
+        })
+        .filter((spec): spec is AgentRuntimeSpec => spec !== undefined);
 }
 
 function parseAgentIds(value: string | undefined): string[] {
@@ -750,46 +742,19 @@ function positiveTimeout(value: number | undefined): number {
         : DEFAULT_STOP_TIMEOUT_MS;
 }
 
-function runtimePolicyFor(runtime: AgentRuntimeSpec['runtime']): Pick<
+function runtimePolicyFor(runtime: string): Pick<
     AgentRuntimePreflightSummary,
     'sandboxMode' | 'permissionMode' | 'allowedTools' | 'sessionPersistence'
 > {
-    if (runtime === 'codex') {
-        return {
-            sandboxMode: 'read-only',
-            permissionMode: null,
-            allowedTools: null,
-            sessionPersistence: null,
-        };
-    }
-    if (runtime === 'codex-openclaw') {
-        return {
-            sandboxMode: 'danger-full-access',
-            permissionMode: null,
-            allowedTools: null,
-            sessionPersistence: null,
-        };
-    }
-    return {
-        sandboxMode: null,
-        permissionMode: 'dontAsk',
-        allowedTools: [],
-        sessionPersistence: false,
-    };
+    const adapter = defaultRuntimeRegistry().resolve(runtime);
+    if (adapter) return adapter.policy() as Pick<AgentRuntimePreflightSummary, 'sandboxMode' | 'permissionMode' | 'allowedTools' | 'sessionPersistence'>;
+    return { sandboxMode: null, permissionMode: 'dontAsk', allowedTools: [], sessionPersistence: false };
 }
 
-function runtimeExecutablePathFor(runtime: AgentRuntimeSpec['runtime'], env: NodeJS.ProcessEnv): string {
-    if (runtime === 'claude-shaev') {
-        return env.KOVAEL_CLAUDE_BIN || (process.platform === 'win32' ? 'claude.exe' : 'claude');
-    }
-
-    if (env.KOVAEL_CODEX_BIN) return env.KOVAEL_CODEX_BIN;
-    if (process.platform === 'win32') {
-        const appData = env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming');
-        const script = path.join(appData, 'npm', 'node_modules', '@openai', 'codex', 'bin', 'codex.js');
-        if (fs.existsSync(script)) return script;
-    }
-    return 'codex';
+function runtimeExecutablePathFor(runtime: string, env: NodeJS.ProcessEnv): string {
+    const adapter = defaultRuntimeRegistry().resolve(runtime);
+    if (adapter) return adapter.resolveExecutable(env);
+    return runtime;
 }
 
 function inspectHub(hubPath: string): AgentRuntimeHubSnapshot {

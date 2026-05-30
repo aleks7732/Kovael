@@ -1,0 +1,10 @@
+# Normalize all text to LF in the repo; tools convert on checkout if needed.
+* text=auto eol=lf
+
+# Shell scripts MUST stay LF or they break under bash on Linux.
+*.sh text eol=lf
+*.mjs text eol=lf
+
+# Binary assets — never touch.
+*.png binary
+*.svg -text
