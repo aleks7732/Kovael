@@ -632,6 +632,9 @@ async function sendOutboxReply(row, cfg) {
             headers,
             body: secured.body,
             signal: controller.signal,
+            // No redirect-following: the reply target is a fixed loopback endpoint;
+            // a 3xx must never be chased to another host.
+            redirect: 'manual',
         });
     } finally {
         clearTimeout(timer);

@@ -451,6 +451,10 @@ export class ChairBridgeProvider implements ModelProvider {
                     },
                     body,
                     signal: ctrl.signal,
+                    // Do not follow redirects: a chair could 3xx the dispatch to an
+                    // internal/metadata host, bypassing the egress guard on the
+                    // original URL.
+                    redirect: 'manual',
                 });
             } catch (err) {
                 lastErr = err instanceof Error ? err : new Error(String(err));
