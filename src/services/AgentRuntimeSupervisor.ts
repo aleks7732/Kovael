@@ -6,7 +6,7 @@ import * as path from 'node:path';
 import { AgentCards } from '../AgentCards.js';
 import { defaultRuntimeRegistry } from './runtime/builtinAdapters.js';
 import { loadChairManifests } from './runtime/ChairManifestLoader.js';
-import { isCommandAllowed } from './runtime/CommandAdapter.js';
+import { isCommandAllowed, COMMAND_ADAPTER_ALLOW_ENV, COMMAND_ENV_DENYLIST } from './runtime/CommandAdapter.js';
 import { Logger, rootLogger } from './Logger.js';
 import {
     AGENT_HUB_SECRET_ENV,
@@ -455,7 +455,7 @@ export class AgentRuntimeSupervisor {
             const args = this.argsFor(spec, host, record.hubPath);
             const child = this.spawn(this.nodeBin, args, {
                 cwd: spec.cwd ?? this.cwd,
-                env: this.childEnv(),
+                env: this.childEnv(spec),
                 stdio: ['ignore', 'pipe', 'pipe'],
                 windowsHide: true,
             });
@@ -706,8 +706,22 @@ export class AgentRuntimeSupervisor {
         return path.join(this.hubDir, safePathSegment(agentId), 'agent-hub.sqlite');
     }
 
-    private childEnv(): NodeJS.ProcessEnv {
-        return buildAgentAdapterEnv(this.env, { requireHubEncryption: this.hubEncryptionRequired });
+    private childEnv(spec?: AgentRuntimeSpec): NodeJS.ProcessEnv {
+        const env = buildAgentAdapterEnv(this.env, { requireHubEncryption: this.hubEncryptionRequired });
+        if (spec?.runtime === 'command') {
+            // The inbox re-gates command spawns (KOVAEL_COMMAND_ADAPTER_ALLOW) and
+            // forwards manifest `allowEnv` vars to the child; neither survives the
+            // stripped adapter env, so forward them here for command specs only.
+            // Secret-named vars are never forwarded.
+            const allow = this.env[COMMAND_ADAPTER_ALLOW_ENV];
+            if (allow) env[COMMAND_ADAPTER_ALLOW_ENV] = allow;
+            for (const name of spec.allowEnv ?? []) {
+                if (COMMAND_ENV_DENYLIST.has(name)) continue;
+                const value = this.env[name];
+                if (typeof value === 'string') env[name] = value;
+            }
+        }
+        return env;
     }
 }
 

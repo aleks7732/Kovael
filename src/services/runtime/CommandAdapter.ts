@@ -13,6 +13,20 @@ import type { RuntimeAdapter, RuntimePolicy, RuntimeSpecDraft } from './AdapterR
 
 export const COMMAND_ADAPTER_ALLOW_ENV = 'KOVAEL_COMMAND_ADAPTER_ALLOW';
 
+/**
+ * Env names that must NEVER be forwarded to a command child (or the inbox that
+ * spawns it), even if an operator lists them in a manifest `allowEnv`. Dispatch/
+ * hub/token secrets stay stripped regardless. Mirrored in
+ * scripts/kovael-agent-inbox.mjs (which cannot import this TS module).
+ */
+export const COMMAND_ENV_DENYLIST: ReadonlySet<string> = new Set([
+  'KOVAEL_AGENT_HUB_SECRET',
+  'KOVAEL_CHAIR_DISPATCH_SECRET',
+  'KOVAEL_API_TOKEN',
+  'KOVAEL_TOKEN',
+  'KOVAEL_AGENT_HUB_ENCRYPTION',
+]);
+
 /** Parse the comma-separated binary allow-list. Empty/unset ⇒ adapter disabled. */
 export function parseCommandAllowList(env: NodeJS.ProcessEnv): string[] {
   return (env[COMMAND_ADAPTER_ALLOW_ENV] ?? '')

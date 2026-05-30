@@ -263,6 +263,64 @@ describe('AgentRuntimeSupervisor', () => {
         supervisor.stop('cleanup');
     });
 
+    it('forwards the command allow-list and manifest allowEnv to a command inbox, never secrets', () => {
+        let capturedEnv: NodeJS.ProcessEnv | undefined;
+        const supervisor = new AgentRuntimeSupervisor({
+            enabled: true,
+            cwd: tempDir(),
+            hubDir: tempDir(),
+            env: secureEnv({
+                KOVAEL_COMMAND_ADAPTER_ALLOW: 'node',
+                KOVAEL_HOST: 'http://127.0.0.1:8080',
+                KOVAEL_API_TOKEN: 'must-not-pass-via-allowenv',
+            }),
+            agents: [{
+                agentId: 'nyx-cmd',
+                provider: 'Local · Example',
+                runtime: 'command',
+                command: 'node',
+                args: ['-e', 'process.stdout.write("hi")'],
+                allowEnv: ['KOVAEL_HOST', 'KOVAEL_API_TOKEN'],
+            }],
+            logger,
+            spawn: (_command, _args, options) => {
+                capturedEnv = options.env as NodeJS.ProcessEnv;
+                return new FakeChild();
+            },
+        });
+
+        supervisor.startAgent('nyx-cmd', 18080, { reason: 'command_env_test' });
+
+        expect(capturedEnv?.KOVAEL_COMMAND_ADAPTER_ALLOW).toBe('node');
+        expect(capturedEnv?.KOVAEL_HOST).toBe('http://127.0.0.1:8080');
+        // a denylisted secret name is never forwarded via allowEnv
+        expect(capturedEnv?.KOVAEL_API_TOKEN).toBeUndefined();
+
+        supervisor.stop('cleanup');
+    });
+
+    it('does not leak the command allow-list to non-command inboxes', () => {
+        let capturedEnv: NodeJS.ProcessEnv | undefined;
+        const supervisor = new AgentRuntimeSupervisor({
+            enabled: true,
+            cwd: tempDir(),
+            hubDir: tempDir(),
+            env: secureEnv({ KOVAEL_COMMAND_ADAPTER_ALLOW: 'node' }),
+            agents: [{ agentId: 'nyx-codex', provider: 'OpenAI · Codex CLI', runtime: 'codex' }],
+            logger,
+            spawn: (_command, _args, options) => {
+                capturedEnv = options.env as NodeJS.ProcessEnv;
+                return new FakeChild();
+            },
+        });
+
+        supervisor.startAgent('nyx-codex', 18080, { reason: 'codex_env_test' });
+
+        expect(capturedEnv?.KOVAEL_COMMAND_ADAPTER_ALLOW).toBeUndefined();
+
+        supervisor.stop('cleanup');
+    });
+
     it('reports runtime preflight status without protected config contents', () => {
         const cwd = tempDir();
         const secretText = 'protected-local-secret-should-not-appear';
