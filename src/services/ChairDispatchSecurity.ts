@@ -39,12 +39,17 @@ function currentSecret(): string | null {
     return value && value.length >= 32 ? value : null;
 }
 
+// Fixed, non-secret KDF salt. HKDF-SHA256 (a real extract-then-expand KDF, domain-
+// separated by `info`) replaces the prior single-pass SHA-256, so a weak/low-entropy
+// dispatch secret is not trivially related to the AES key. Deterministic: the
+// orchestrator and the inbox it spawns derive the identical key from the shared
+// secret. Mirrored in scripts/kovael-agent-inbox.mjs.
+const DISPATCH_KDF_SALT = 'kovael-chair-dispatch-kdf';
+
 function keyFor(secret: string): Buffer {
-    return crypto
-        .createHash('sha256')
-        .update(`${SECURITY_VERSION}:payload:`)
-        .update(secret)
-        .digest();
+    return Buffer.from(
+        crypto.hkdfSync('sha256', secret, DISPATCH_KDF_SALT, `${SECURITY_VERSION}:payload`, 32),
+    );
 }
 
 function aadFor(requestId: string, timestamp: number): Buffer {

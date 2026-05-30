@@ -28,30 +28,31 @@
   case-insensitively in supervisor `childEnv` + inbox `buildCommandEnv`.
 - [x] **LOW — `safePathSegment` traversal**. Dot-only/empty segments → `_` (TS + inbox).
 
+### Done — Security hardening 2 (`kovael/security-hardening-2-2026-05`, PR #68)
+- [x] **LOW — dispatch key → HKDF-SHA256** (fixed salt, domain-separated `info`),
+  both `ChairDispatchSecurity.keyFor` + inbox; roundtrip tests confirm compat.
+- [x] **LOW — value-aware `redactSensitiveText`** — exact live-secret-value match
+  (catches the 32–47-char band) + unit test.
+- [x] **LOW — `args.id` parse validation** (inbox) → `/^[a-zA-Z0-9._-]+$/`, reject dot-only.
+- [x] **INFO — cap claim `host` field** (`.slice(0,200)`); **`__proto__` strip** on the
+  untrusted inbox dispatch parse.
+- [assessed, no change] **Host-header validation** — Origin guard already blocks the
+  browser rebind and `resolveBindHost` forces the token on any non-loopback bind, so a
+  Host check adds surface with ~zero gain (review: "no exploit reachable").
+- [assessed, no change] **rate-limit `/metrics`** — intentionally exempt by design
+  (`RateLimiter` doc + test); the compare is already constant-time + hashed, impact
+  negligible. Left as-is to honor the documented decision.
+
 ### Deferred (tracked)
-- [D] **LOW — Host header is unvalidated** (WS guard is Origin-only). Mitigated:
-  `resolveBindHost` forces `KOVAEL_API_TOKEN` on any non-loopback bind, so a routable
-  deployment is always bearer-gated. Optional: add a Host allow-list alongside Origin,
-  and extend the Origin/Host check to the `/api/v1/*` HTTP routes.
-- [D] **LOW — raw `args.id` interpolated into a tmpdir path** in the inbox codex runtime
-  (`kovael-agent-inbox.mjs`, pre-existing, not covered by `safePathSegment`). Validate
-  `args.id` once at parse time against `/^[a-zA-Z0-9._-]+$/` (and reject dot-only).
-- [D] **LOW — dispatch key = single-pass unsalted SHA-256** (not a KDF).
-  `ChairDispatchSecurity.keyFor`, `kovael-agent-inbox.mjs`. Use HKDF/scrypt + salt
-  or enforce 32-byte random secrets. (Reachable only under non-default conditions.)
-- [D] **LOW — `redactSensitiveText` misses 32–47-char secret values** (shape-only).
-  `RuntimeSecurity.ts`. Make value-aware. (No current call site interpolates a raw
-  secret value, so latent.)
 - [D] **LOW — unbounded growth**: hub `prune*` never scheduled; `activeCycles` map;
   `SemanticIngestor` re-indexes whole files each boot (no cap/dedup). Wire a
   maintenance tick + per-file caps + UPSERT.
 - [D] **LOW — no resource caps**: WS `broadcast` no `bufferedAmount` backpressure +
   no max-connections; `HardwareMonitor` `nvidia-smi` no timeout/output-cap (hang
   latches polls); `ComfyUiBridge` fetch no timeout/size-cap.
-- [D] **INFO** (hardening, no defect): rate-limit `/metrics` before bearer compare;
-  cap claim `host` field length; `__proto__` strip on JSON loaders (defense-in-depth);
-  document/enforce secret entropy; gate the WS `?token=` query transport; pin scrypt
-  cost params. **Verified-correct (no action):** AES-256-GCM IV/tag/AAD/scrypt,
+- [D] **INFO** (remaining hardening, no defect): document/enforce secret entropy;
+  gate the WS `?token=` query transport behind an opt-in flag; pin scrypt cost params
+  (N/r/p) explicitly. **Verified-correct (no action):** AES-256-GCM IV/tag/AAD/scrypt,
   constant-time bearer + HMAC reply-proof, loopback bind default.
 
 ## Bloat

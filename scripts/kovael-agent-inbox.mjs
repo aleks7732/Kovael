@@ -94,12 +94,14 @@ function hubEncryptionRequired(args = {}) {
         process.env[AGENT_HUB_ENCRYPTION_ENV]?.trim().toLowerCase() === 'required';
 }
 
+// Mirrors src/services/ChairDispatchSecurity.ts: HKDF-SHA256 with a fixed,
+// non-secret salt — a real KDF, deterministic so both sides derive the same key.
+const DISPATCH_KDF_SALT = 'kovael-chair-dispatch-kdf';
+
 function keyFor(secret) {
-    return crypto
-        .createHash('sha256')
-        .update(`${SECURITY_VERSION}:payload:`)
-        .update(secret)
-        .digest();
+    return Buffer.from(
+        crypto.hkdfSync('sha256', secret, DISPATCH_KDF_SALT, `${SECURITY_VERSION}:payload`, 32),
+    );
 }
 
 function aadFor(requestId, timestamp) {
@@ -178,7 +180,9 @@ function decryptPayload(body) {
         decipher.update(fromB64(body.ciphertext, 'ciphertext')),
         decipher.final(),
     ]).toString('utf8');
-    const parsed = JSON.parse(plaintext);
+    // Defense-in-depth: drop a literal __proto__ key from the untrusted dispatch
+    // payload before it is used as a lookup object.
+    const parsed = JSON.parse(plaintext, (key, val) => (key === '__proto__' ? undefined : val));
     if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
         throw new Error('decrypted chair dispatch payload is not an object');
     }
@@ -789,6 +793,12 @@ async function startInbox(cfg, hub, outboxDrain) {
 async function main() {
     const args = parseArgs(process.argv.slice(2));
     if (!args.id) usageAndExit('--id is required');
+    // Constrain the id to a safe charset once, at the boundary, so the canonical
+    // id is safe everywhere it is interpolated (tmpdir paths, hub paths, logs) —
+    // not only where safePathSegment is applied.
+    if (!/^[a-zA-Z0-9._-]+$/.test(args.id) || /^\.+$/.test(args.id)) {
+        usageAndExit('--id must match [a-zA-Z0-9._-] and not be dot-only');
+    }
     if (!args.provider) usageAndExit('--provider is required');
     if (!args.runtime) usageAndExit('--runtime is required');
 

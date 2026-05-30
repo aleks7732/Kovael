@@ -39,7 +39,7 @@ export async function handleChairRequest(
             provider,
             capabilities: stringItems(body.capabilities, 32),
             trustTier: typeof body.trustTier === 'number' ? body.trustTier : undefined,
-            host: typeof body.host === 'string' ? body.host : undefined,
+            host: typeof body.host === 'string' ? body.host.slice(0, 200) : undefined,
             note: typeof body.note === 'string' ? body.note.slice(0, 200) : undefined,
             inboxUrl: typeof body.inboxUrl === 'string' ? body.inboxUrl.trim() : undefined,
         });

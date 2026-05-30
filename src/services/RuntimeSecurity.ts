@@ -77,8 +77,22 @@ export function buildAgentRuntimeEnv(source: NodeJS.ProcessEnv = process.env): N
     return env;
 }
 
-export function redactSensitiveText(value: unknown): string {
+const SECRET_VALUE_ENV_NAMES = [
+    'KOVAEL_CHAIR_DISPATCH_SECRET',
+    AGENT_HUB_SECRET_ENV,
+    'KOVAEL_API_TOKEN',
+    'KOVAEL_TOKEN',
+] as const;
+
+export function redactSensitiveText(value: unknown, env: NodeJS.ProcessEnv = process.env): string {
     let text = value instanceof Error ? value.message : String(value ?? '');
+    // Value-aware: redact exact occurrences of live secret VALUES first — this
+    // catches the 32–47-char band the shape-based rules below miss (min secret
+    // length is 32; the hex rule needs ≥48 and the token rule ≥64).
+    for (const name of SECRET_VALUE_ENV_NAMES) {
+        const v = env[name];
+        if (typeof v === 'string' && v.length >= 8) text = text.split(v).join('[REDACTED]');
+    }
     text = text.replace(/\b(KOVAEL_[A-Z0-9_]*\s*=\s*)[^\s"'`]+/gi, '$1[REDACTED]');
     text = text.replace(/\b(authorization:\s*bearer\s+)[^\s"'`]+/gi, '$1[REDACTED]');
     text = text.replace(/\bbearer\s+[A-Za-z0-9._~+/-]+=*/gi, 'Bearer [REDACTED]');
