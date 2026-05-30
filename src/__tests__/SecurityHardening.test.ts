@@ -1,6 +1,21 @@
 import { describe, it, expect } from 'vitest';
 import { isDeniedCommandEnvName } from '../services/runtime/CommandAdapter.js';
 import { safePathSegment } from '../services/SqlitePathSecurity.js';
+import { redactSensitiveText } from '../services/RuntimeSecurity.js';
+
+describe('redactSensitiveText (value-aware)', () => {
+  it('redacts an exact secret value in the 32–47-char band the shape rules miss', () => {
+    const secret = 'a'.repeat(40); // alphanumeric, <48 hex, <64 token → shape rules skip it
+    const env = { KOVAEL_API_TOKEN: secret } as NodeJS.ProcessEnv;
+    const out = redactSensitiveText(`dispatch failed: token=${secret} bad`, env);
+    expect(out).not.toContain(secret);
+    expect(out).toContain('[REDACTED]');
+  });
+
+  it('leaves ordinary text intact', () => {
+    expect(redactSensitiveText('hello world', {} as NodeJS.ProcessEnv)).toBe('hello world');
+  });
+});
 
 describe('isDeniedCommandEnvName (case-insensitive — Windows env)', () => {
   it('denies secret names in any case', () => {
