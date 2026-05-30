@@ -27,6 +27,15 @@ export const COMMAND_ENV_DENYLIST: ReadonlySet<string> = new Set([
   'KOVAEL_AGENT_HUB_ENCRYPTION',
 ]);
 
+/**
+ * Case-insensitive denylist check. Windows `process.env` lookup is
+ * case-insensitive, so a manifest `allowEnv` case-variant (e.g. `kovael_token`)
+ * must not slip a secret past the UPPERCASE denylist. Compare case-folded.
+ */
+export function isDeniedCommandEnvName(name: string): boolean {
+  return COMMAND_ENV_DENYLIST.has(name.toUpperCase());
+}
+
 /** Parse the comma-separated binary allow-list. Empty/unset ⇒ adapter disabled. */
 export function parseCommandAllowList(env: NodeJS.ProcessEnv): string[] {
   return (env[COMMAND_ADAPTER_ALLOW_ENV] ?? '')

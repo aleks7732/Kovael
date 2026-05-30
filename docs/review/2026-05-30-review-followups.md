@@ -10,25 +10,32 @@
 
 ## Security
 
-### Done
-_(none yet — see "This PR / Next" below)_
-
-### Planned — Security PR (`kovael/security-hardening-2026-05`)
-- [ ] **HIGH — WS upgrade has no Origin/Host validation** (CSWSH / DNS-rebind into
-  the control plane). `ApiTokenGate.verifyWebSocketUpgrade`, `WebSocketBus` upgrade
-  handler. Fix: allow-list Origin/Host on every upgrade, even when the token gate
-  is off.
-- [ ] **MED — Chair URL SSRF (no IP egress allow-list)**. `inboxUrl` (`ModelProvider`)
-  and reply `targetUrl` (`kovael-agent-inbox.mjs`) are scheme-checked only. Fix:
-  reject loopback/RFC1918/link-local/`169.254.169.254`; re-check post-DNS.
-- [ ] **MED — Windows env denylist case bypass**. `COMMAND_ENV_DENYLIST` is
-  case-sensitive UPPERCASE; Windows `process.env` is case-insensitive → `allowEnv:
-  ["kovael_token"]` leaks a secret. `CommandAdapter.ts`, `AgentRuntimeSupervisor.childEnv`,
-  `kovael-agent-inbox.mjs buildCommandEnv`. Fix: compare `name.toUpperCase()`.
-- [ ] **LOW — `safePathSegment` keeps `..`** → agentId path-traversal.
-  `SqlitePathSecurity.ts`. Fix: reject dot-only/empty segments + constrain ids.
+### Done — Security PR (`kovael/security-hardening-2026-05`, PR #67)
+- [x] **HIGH — WS upgrade Origin validation**. `isAllowedWsOrigin` rejects remote
+  browser origins (CSWSH / DNS-rebind) on every upgrade, independent of the bearer
+  gate; loopback origins (any port) + `KOVAEL_WS_ALLOWED_ORIGINS` allowed; header-less
+  non-browser clients allowed. `WebSocketBus.ts`.
+- [x] **MED — Chair URL SSRF egress guard**. New `UrlEgressGuard` blocks link-local /
+  `169.254.169.254` metadata / unspecified for `inboxUrl` (`ModelProvider`); IP families
+  classified via `net.isIP` (closes the **CRITICAL** `::ffff:a9fe:a9fe` IPv4-mapped bypass
+  the adversarial pass found); http hostnames are **pinned to the validated IP** (closes
+  the **HIGH** DNS-rebind TOCTOU); both fetches use `redirect:'manual'`. Inbox reply
+  `targetUrl` requires http(s) + loopback. Loopback chairs stay allowed;
+  `KOVAEL_CHAIR_BLOCK_PRIVATE` also blocks RFC1918/ULA.
+  *Residual (tracked):* https-hostname chairs keep SNI so are validate-only (rare; remote
+  token-gated binds); dispatch is AES-GCM + HMAC so any residual SSRF is blind.
+- [x] **MED — Windows env denylist case-fold**. `isDeniedCommandEnvName` compares
+  case-insensitively in supervisor `childEnv` + inbox `buildCommandEnv`.
+- [x] **LOW — `safePathSegment` traversal**. Dot-only/empty segments → `_` (TS + inbox).
 
 ### Deferred (tracked)
+- [D] **LOW — Host header is unvalidated** (WS guard is Origin-only). Mitigated:
+  `resolveBindHost` forces `KOVAEL_API_TOKEN` on any non-loopback bind, so a routable
+  deployment is always bearer-gated. Optional: add a Host allow-list alongside Origin,
+  and extend the Origin/Host check to the `/api/v1/*` HTTP routes.
+- [D] **LOW — raw `args.id` interpolated into a tmpdir path** in the inbox codex runtime
+  (`kovael-agent-inbox.mjs`, pre-existing, not covered by `safePathSegment`). Validate
+  `args.id` once at parse time against `/^[a-zA-Z0-9._-]+$/` (and reject dot-only).
 - [D] **LOW — dispatch key = single-pass unsalted SHA-256** (not a KDF).
   `ChairDispatchSecurity.keyFor`, `kovael-agent-inbox.mjs`. Use HKDF/scrypt + salt
   or enforce 32-byte random secrets. (Reachable only under non-default conditions.)
