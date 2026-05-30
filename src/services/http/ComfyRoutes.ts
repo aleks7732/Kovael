@@ -1,31 +1,30 @@
 import * as http from 'node:http';
 import type { OrchestratorContext } from '../OrchestratorContext.js';
 import type { ComfyAspectRatio, LoraMixerUpdate } from '../ComfyUiBridge.js';
-import type { RouteDeps } from './HttpApiSupport.js';
+import { readJsonBody, writeJson } from './HttpApiSupport.js';
 import { createRequestUrl } from './HttpApiSupport.js';
 
 export async function handleComfyRequest(
     context: OrchestratorContext,
     req: http.IncomingMessage,
     res: http.ServerResponse,
-    deps: RouteDeps,
 ): Promise<void> {
     if (req.method !== 'POST') {
-        deps.writeJson(res, 405, { error: 'method_not_allowed' });
+        writeJson(res, 405, { error: 'method_not_allowed' });
         return;
     }
 
     const url = createRequestUrl(req);
     const action = url.pathname.replace(/^\/api\/v1\/comfy\/?/, '') || '';
 
-    const body = await deps.readJsonBody(req, res);
+    const body = await readJsonBody(req, res);
     if (body === null) return;
 
     if (action === 'render' || action === 'mix') {
         const agentId = typeof body.agentId === 'string' ? body.agentId.trim() : '';
         const prompt = typeof body.prompt === 'string' ? body.prompt.trim() : '';
         if (!agentId || !prompt) {
-            deps.writeJson(res, 400, { error: 'missing_required_fields', need: ['agentId', 'prompt'] });
+            writeJson(res, 400, { error: 'missing_required_fields', need: ['agentId', 'prompt'] });
             return;
         }
         try {
@@ -45,7 +44,7 @@ export async function handleComfyRequest(
                       traceId: typeof body.traceId === 'string' ? body.traceId : undefined,
                    });
             const stream = result.promptId ? context.comfyBridge.streamDescriptor(result.promptId) : undefined;
-            deps.writeJson(res, 200, {
+            writeJson(res, 200, {
                 source: result.source,
                 agentId: result.agentId,
                 width: result.width,
@@ -58,7 +57,7 @@ export async function handleComfyRequest(
                 stream,
             });
         } catch (err) {
-            deps.writeJson(res, 500, { error: 'comfy_render_failed', message: err instanceof Error ? err.message : String(err) });
+            writeJson(res, 500, { error: 'comfy_render_failed', message: err instanceof Error ? err.message : String(err) });
         }
         return;
     }
@@ -66,14 +65,14 @@ export async function handleComfyRequest(
     if (action === 'stream-url') {
         const promptId = typeof body.promptId === 'string' ? body.promptId.trim() : '';
         if (!promptId) {
-            deps.writeJson(res, 400, { error: 'missing_required_fields', need: ['promptId'] });
+            writeJson(res, 400, { error: 'missing_required_fields', need: ['promptId'] });
             return;
         }
-        deps.writeJson(res, 200, context.comfyBridge.streamDescriptor(promptId, typeof body.clientId === 'string' ? body.clientId : undefined));
+        writeJson(res, 200, context.comfyBridge.streamDescriptor(promptId, typeof body.clientId === 'string' ? body.clientId : undefined));
         return;
     }
 
-    deps.writeJson(res, 404, { error: 'unknown_comfy_action', action });
+    writeJson(res, 404, { error: 'unknown_comfy_action', action });
 }
 
 const ALLOWED_ASPECT_RATIOS = new Set<ComfyAspectRatio>(['1:1', '16:9', '9:16', '4:3', '3:4', 'portrait', 'landscape', 'theater-card', 'flowchart']);

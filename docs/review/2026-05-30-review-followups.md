@@ -72,17 +72,19 @@
 - [x] Remove dead `TraceSanitizers.__TRACING_INTERNALS__` test-hook export.
 
 ### Deferred (tracked)
-- [D] **`ANX-Schema` (`src/protocols/ANX-Schema.ts`, ~143 LOC)** — code-dead (zero
-  refs), but it is a **named protocol/SOP spec**. Confirm it is not an intentional
-  contract artifact before deleting. *Decision needed.*
-- [D] **Duplication → shared helpers** (medium net value, some harden security):
-  AES-256-GCM envelope (`AgentHubStore` + `ChairDispatchSecurity`) → `src/common/aes-gcm-envelope.ts`;
-  secure-sqlite-file-prep reuse (closes an orchestrator-DB UNC-guard gap);
-  `applyStandardPragmas()` (also hardens `MevBridge` DB); `sha256Hex`, `clampFinite`,
-  `errorMessage` helpers; unify the 3 redaction variants.
-- [D] **Over-abstraction inlines** (mechanical, multi-file): remove the `RouteDeps`
-  DI seam (7 files); inline `CommitteeVoting` into `ConversationBus`; drop the
-  `Tracing.ts` `export *` barrel.
+- [x] **`ANX-Schema` removed** (PR #70) — verified the frontend ANX feature uses its
+  own `ANXDisplay`/`ANXBriefing` (raw-XML over WS) and nothing imports the backend
+  module; only its own test did. Deleted with its test (~143 LOC).
+- [x] **Over-abstraction inlines** (PR #70): removed the `RouteDeps` DI seam (route
+  handlers import `writeJson`/`readJsonBody` directly across 6 files); inlined
+  `CommitteeVoting` into `ConversationBus.conveneCommittee`. Net −202 LOC.
+  - [assessed, low value] `Tracing.ts` `export *` barrel — ~2 LOC for moderate import
+    churn across ~5 consumers; not worth it.
+- [D] **Duplication → shared helpers** (folded into PR-5 where natural):
+  AES-256-GCM envelope + `applyStandardPragmas()` + sqlite-prep reuse will land with
+  the **AgentHubStore split** (that code is restructured there anyway). The
+  `sha256Hex`/`clampFinite`/`errorMessage` helpers are deferred — small LOC and the
+  `clamp`/`error` variants carry semantic differences that make naive merges risky.
 - [D] **God-file splits** (net ~0 LOC; clarity/security isolation): split
   `ModelProvider.ts` (StubMarkov vs ChairBridge); extract a pure
   `evaluateStoppingCriterion` from `ConversationBus.convene`; extract the

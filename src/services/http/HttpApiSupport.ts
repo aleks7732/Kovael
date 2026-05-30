@@ -7,23 +7,6 @@ export const CORS_HEADERS = {
 } as const;
 
 export type JsonBody = Record<string, unknown>;
-export type JsonWriter = (
-    res: http.ServerResponse,
-    status: number,
-    body: unknown,
-    headers?: http.OutgoingHttpHeaders,
-) => void;
-export type JsonBodyReader = (
-    req: http.IncomingMessage,
-    res: http.ServerResponse,
-    maxBytes?: number,
-    timeoutMs?: number,
-) => Promise<JsonBody | null>;
-
-export interface RouteDeps {
-    readJsonBody: JsonBodyReader;
-    writeJson: JsonWriter;
-}
 
 /** Shared JSON response writer with standard CORS + cache headers. */
 export function writeJson(

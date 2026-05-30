@@ -1,22 +1,21 @@
 import * as http from 'node:http';
 import type { OrchestratorContext } from '../OrchestratorContext.js';
-import type { RouteDeps } from './HttpApiSupport.js';
+import { readJsonBody, writeJson } from './HttpApiSupport.js';
 import { createRequestUrl } from './HttpApiSupport.js';
 
 export async function handleTracesRequest(
     context: OrchestratorContext,
     req: http.IncomingMessage,
     res: http.ServerResponse,
-    deps: RouteDeps,
 ): Promise<void> {
     const url = createRequestUrl(req);
     if (req.method === 'POST' && url.pathname === '/api/v1/traces/reroute') {
-        const body = await deps.readJsonBody(req, res, 8 * 1024);
+        const body = await readJsonBody(req, res, 8 * 1024);
         if (body === null) return;
         const source = safeNodeId(body.source);
         const target = safeNodeId(body.target);
         if (!source || !target) {
-            deps.writeJson(res, 400, { error: 'missing_required_fields', need: ['source', 'target'] });
+            writeJson(res, 400, { error: 'missing_required_fields', need: ['source', 'target'] });
             return;
         }
         const event = {
@@ -28,12 +27,12 @@ export async function handleTracesRequest(
             requestedAt: Date.now(),
         };
         context.broadcast(event);
-        deps.writeJson(res, 200, event);
+        writeJson(res, 200, event);
         return;
     }
 
     if (req.method !== 'GET') {
-        deps.writeJson(res, 405, { error: 'method_not_allowed' });
+        writeJson(res, 405, { error: 'method_not_allowed' });
         return;
     }
 
@@ -42,10 +41,10 @@ export async function handleTracesRequest(
         const cycleId = detailMatch[1];
         const trace = context.tracing?.ring?.get(cycleId);
         if (!trace) {
-            deps.writeJson(res, 404, { error: 'trace_not_found', cycleId });
+            writeJson(res, 404, { error: 'trace_not_found', cycleId });
             return;
         }
-        deps.writeJson(res, 200, trace);
+        writeJson(res, 200, trace);
         return;
     }
 
@@ -59,7 +58,7 @@ export async function handleTracesRequest(
         durationMs: trace.endedAt - trace.startedAt,
         spanCount: trace.spans.length,
     }));
-    deps.writeJson(res, 200, { items, stats: context.tracing?.ring?.stats() ?? null });
+    writeJson(res, 200, { items, stats: context.tracing?.ring?.stats() ?? null });
 }
 
 function safeNodeId(value: unknown): string | null {

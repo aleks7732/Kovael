@@ -1,14 +1,13 @@
 import * as http from 'node:http';
 import type { OrchestratorContext } from '../OrchestratorContext.js';
 import { sanitizeTraceparent, sanitizeTracestate } from '../ConsensusEngine.js';
-import type { RouteDeps } from './HttpApiSupport.js';
+import { readJsonBody, writeJson } from './HttpApiSupport.js';
 import { createRequestUrl } from './HttpApiSupport.js';
 
 export async function handleConversationRequest(
     context: OrchestratorContext,
     req: http.IncomingMessage,
     res: http.ServerResponse,
-    deps: RouteDeps,
 ): Promise<void> {
     const url = createRequestUrl(req);
     const pathname = url.pathname;
@@ -23,19 +22,19 @@ export async function handleConversationRequest(
         const topicId = historyMatch[1];
         try {
             const history = context.conversationBus.getHistory(topicId);
-            deps.writeJson(res, 200, history);
+            writeJson(res, 200, history);
         } catch (err) {
-            deps.writeJson(res, 500, { error: 'failed_to_get_history', message: errorMessage(err) });
+            writeJson(res, 500, { error: 'failed_to_get_history', message: errorMessage(err) });
         }
         return;
     }
 
     if (req.method !== 'POST') {
-        deps.writeJson(res, 405, { error: 'method_not_allowed' });
+        writeJson(res, 405, { error: 'method_not_allowed' });
         return;
     }
 
-    const body = await deps.readJsonBody(req, res);
+    const body = await readJsonBody(req, res);
     if (body === null) return;
 
     if (topicMatch) {
@@ -43,7 +42,7 @@ export async function handleConversationRequest(
         const participants = sanitizeParticipants(body.participants);
         const goal = typeof body.goal === 'string' ? body.goal.trim() : '';
         if (!title || participants.length === 0) {
-            deps.writeJson(res, 400, { error: 'missing_required_fields', need: ['title', 'participants'] });
+            writeJson(res, 400, { error: 'missing_required_fields', need: ['title', 'participants'] });
             return;
         }
         try {
@@ -53,9 +52,9 @@ export async function handleConversationRequest(
                     context.log.error('convene_loop_failed', { topicId: topic.id, error: errorMessage(err) });
                 });
             }
-            deps.writeJson(res, 200, topic);
+            writeJson(res, 200, topic);
         } catch (err) {
-            deps.writeJson(res, 500, { error: 'failed_to_create_topic', message: errorMessage(err) });
+            writeJson(res, 500, { error: 'failed_to_create_topic', message: errorMessage(err) });
         }
         return;
     }
@@ -65,7 +64,7 @@ export async function handleConversationRequest(
         const senderId = typeof body.senderId === 'string' ? body.senderId.trim() : '';
         const content = typeof body.content === 'string' ? body.content.trim() : '';
         if (!senderId || !content) {
-            deps.writeJson(res, 400, { error: 'missing_required_fields', need: ['senderId', 'content'] });
+            writeJson(res, 400, { error: 'missing_required_fields', need: ['senderId', 'content'] });
             return;
         }
         try {
@@ -75,9 +74,9 @@ export async function handleConversationRequest(
                 context.log.error('convene_loop_failed', { topicId, error: errorMessage(err) });
             });
 
-            deps.writeJson(res, 200, msg);
+            writeJson(res, 200, msg);
         } catch (err) {
-            deps.writeJson(res, 500, { error: 'failed_to_post_message', message: errorMessage(err) });
+            writeJson(res, 500, { error: 'failed_to_post_message', message: errorMessage(err) });
         }
         return;
     }
@@ -86,7 +85,7 @@ export async function handleConversationRequest(
         const topicId = committeeMatch[1];
         const goal = typeof body.goal === 'string' ? body.goal.trim() : '';
         if (!goal) {
-            deps.writeJson(res, 400, { error: 'missing_required_fields', need: ['goal'] });
+            writeJson(res, 400, { error: 'missing_required_fields', need: ['goal'] });
             return;
         }
         try {
@@ -98,10 +97,10 @@ export async function handleConversationRequest(
                 traceparent: sanitizeTraceparent(typeof req.headers.traceparent === 'string' ? req.headers.traceparent : undefined),
                 tracestate: sanitizeTracestate(typeof req.headers.tracestate === 'string' ? req.headers.tracestate : undefined),
             });
-            deps.writeJson(res, 200, verdict);
+            writeJson(res, 200, verdict);
         } catch (err) {
             const code = errorCode(err) === 'committee_topic_not_active' ? 404 : 500;
-            deps.writeJson(res, code, {
+            writeJson(res, code, {
                 error: code === 404 ? 'committee_topic_not_active' : 'failed_to_convene_committee',
             });
         }
@@ -112,14 +111,14 @@ export async function handleConversationRequest(
         const topicId = closeMatch[1];
         try {
             context.conversationBus.closeTopic(topicId);
-            deps.writeJson(res, 200, { success: true });
+            writeJson(res, 200, { success: true });
         } catch (err) {
-            deps.writeJson(res, 500, { error: 'failed_to_close_topic', message: errorMessage(err) });
+            writeJson(res, 500, { error: 'failed_to_close_topic', message: errorMessage(err) });
         }
         return;
     }
 
-    deps.writeJson(res, 404, { error: 'unknown_conversation_action' });
+    writeJson(res, 404, { error: 'unknown_conversation_action' });
 }
 
 function safeConsensusThreshold(value: unknown, fallback: number, min: number, max: number): number {

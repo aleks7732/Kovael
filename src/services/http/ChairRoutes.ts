@@ -2,36 +2,35 @@ import * as http from 'node:http';
 import type { OrchestratorContext } from '../OrchestratorContext.js';
 import { ChairDispatchSecurityError, openChairDispatchBody } from '../ChairDispatchSecurity.js';
 import { ChairBridgeProvider } from '../ModelProvider.js';
-import type { RouteDeps } from './HttpApiSupport.js';
+import { readJsonBody, writeJson } from './HttpApiSupport.js';
 import { createRequestUrl } from './HttpApiSupport.js';
 
 export async function handleChairRequest(
     context: OrchestratorContext,
     req: http.IncomingMessage,
     res: http.ServerResponse,
-    deps: RouteDeps,
 ): Promise<void> {
     const url = createRequestUrl(req);
     const action = url.pathname.replace(/^\/api\/v1\/chairs\/?/, '') || '';
 
     if (req.method === 'GET' && (action === '' || action === 'snapshot')) {
-        deps.writeJson(res, 200, { chairs: context.chairs.snapshot(), stats: context.chairs.stats() });
+        writeJson(res, 200, { chairs: context.chairs.snapshot(), stats: context.chairs.stats() });
         return;
     }
 
     if (req.method !== 'POST') {
-        deps.writeJson(res, 405, { error: 'method_not_allowed' });
+        writeJson(res, 405, { error: 'method_not_allowed' });
         return;
     }
 
-    let body = await deps.readJsonBody(req, res, action === 'reply' ? 256 * 1024 : undefined);
+    let body = await readJsonBody(req, res, action === 'reply' ? 256 * 1024 : undefined);
     if (body === null) return;
 
     if (action === 'claim') {
         const agentId = typeof body.agentId === 'string' ? body.agentId.trim() : '';
         const provider = typeof body.provider === 'string' ? body.provider.trim() : '';
         if (!agentId || !provider) {
-            deps.writeJson(res, 400, { error: 'missing_required_fields', need: ['agentId', 'provider'] });
+            writeJson(res, 400, { error: 'missing_required_fields', need: ['agentId', 'provider'] });
             return;
         }
         const claim = context.chairs.claim({
@@ -43,7 +42,7 @@ export async function handleChairRequest(
             note: typeof body.note === 'string' ? body.note.slice(0, 200) : undefined,
             inboxUrl: typeof body.inboxUrl === 'string' ? body.inboxUrl.trim() : undefined,
         });
-        deps.writeJson(res, 200, {
+        writeJson(res, 200, {
             agentId: claim.agentId,
             sessionId: claim.sessionId,
             ttlMs: context.chairs.config().offlineMs,
@@ -56,7 +55,7 @@ export async function handleChairRequest(
         const agentId = typeof body.agentId === 'string' ? body.agentId.trim() : '';
         const sessionId = typeof body.sessionId === 'string' ? body.sessionId.trim() : '';
         if (!agentId || !sessionId) {
-            deps.writeJson(res, 400, { error: 'missing_required_fields', need: ['agentId', 'sessionId'] });
+            writeJson(res, 400, { error: 'missing_required_fields', need: ['agentId', 'sessionId'] });
             return;
         }
         const claim = context.chairs.heartbeat(
@@ -65,10 +64,10 @@ export async function handleChairRequest(
             typeof body.note === 'string' ? body.note.slice(0, 200) : undefined,
         );
         if (!claim) {
-            deps.writeJson(res, 409, { error: 'unknown_or_superseded_session' });
+            writeJson(res, 409, { error: 'unknown_or_superseded_session' });
             return;
         }
-        deps.writeJson(res, 200, { status: claim.status, lastBeaconAt: claim.lastBeaconAt });
+        writeJson(res, 200, { status: claim.status, lastBeaconAt: claim.lastBeaconAt });
         return;
     }
 
@@ -76,11 +75,11 @@ export async function handleChairRequest(
         const agentId = typeof body.agentId === 'string' ? body.agentId.trim() : '';
         const sessionId = typeof body.sessionId === 'string' ? body.sessionId.trim() : '';
         if (!agentId || !sessionId) {
-            deps.writeJson(res, 400, { error: 'missing_required_fields', need: ['agentId', 'sessionId'] });
+            writeJson(res, 400, { error: 'missing_required_fields', need: ['agentId', 'sessionId'] });
             return;
         }
         const ok = context.chairs.release(agentId, sessionId, 'client_release');
-        deps.writeJson(res, 200, { released: ok });
+        writeJson(res, 200, { released: ok });
         return;
     }
 
@@ -89,10 +88,10 @@ export async function handleChairRequest(
             body = openChairDispatchBody(body);
         } catch (err) {
             if (err instanceof ChairDispatchSecurityError) {
-                deps.writeJson(res, err.status, { error: err.code });
+                writeJson(res, err.status, { error: err.code });
                 return;
             }
-            deps.writeJson(res, 401, { error: 'invalid_chair_dispatch_security' });
+            writeJson(res, 401, { error: 'invalid_chair_dispatch_security' });
             return;
         }
         const topicId = typeof body.topicId === 'string' ? body.topicId.trim() : '';
@@ -104,7 +103,7 @@ export async function handleChairRequest(
         const status = body.status === 'failed' ? 'failed' : 'succeeded';
         const error = typeof body.error === 'string' ? body.error : undefined;
         if (!requestId || !agentId || !claimSessionId || !replyProof) {
-            deps.writeJson(res, 400, {
+            writeJson(res, 400, {
                 error: 'missing_required_fields',
                 need: ['requestId', 'agentId', 'claimSessionId', 'replyProof'],
             });
@@ -121,14 +120,14 @@ export async function handleChairRequest(
             error,
         });
         if (!result.ok) {
-            deps.writeJson(res, result.status, { error: result.code });
+            writeJson(res, result.status, { error: result.code });
             return;
         }
-        deps.writeJson(res, 200, { success: true, receipt: result.receipt });
+        writeJson(res, 200, { success: true, receipt: result.receipt });
         return;
     }
 
-    deps.writeJson(res, 404, { error: 'unknown_chair_action', action });
+    writeJson(res, 404, { error: 'unknown_chair_action', action });
 }
 
 function stringItems(value: unknown, maxItems: number): string[] {
