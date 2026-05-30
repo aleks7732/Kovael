@@ -7,13 +7,15 @@ import { PersonaLoader } from './PersonaLoader.js';
 import {
     ChatMessage,
     ModelProvider,
-    StubMarkovProvider,
+    TokenUsage,
+} from './ModelProvider.js';
+import { StubMarkovProvider } from './StubMarkovProvider.js';
+import {
     ChairBridgeProvider,
     ChairBridgeReplyFailure,
     ChairBridgeDispatchFailure,
     type ChairDispatchTelemetryEvent,
-    TokenUsage,
-} from './ModelProvider.js';
+} from './ChairBridgeProvider.js';
 import {
     CommitteeOptions,
     CommitteeVerdict,

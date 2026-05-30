@@ -85,10 +85,14 @@
   the **AgentHubStore split** (that code is restructured there anyway). The
   `sha256Hex`/`clampFinite`/`errorMessage` helpers are deferred — small LOC and the
   `clamp`/`error` variants carry semantic differences that make naive merges risky.
-- [D] **God-file splits** (net ~0 LOC; clarity/security isolation): split
-  `ModelProvider.ts` (StubMarkov vs ChairBridge); extract a pure
-  `evaluateStoppingCriterion` from `ConversationBus.convene`; extract the
-  frontmatter→config decode from `MeshOrchestrator.wireWorkflowLoader`.
+- [x] **God-file splits** (PR #71): `ModelProvider.ts` (714 LOC) split into
+  `ModelProvider.ts` (26, shared types) + `StubMarkovProvider.ts` (110) +
+  `ChairBridgeProvider.ts` (585) — isolates the security-sensitive dispatch code
+  from the test-stub generator; importers rewired directly (no barrel). Extracted a
+  pure, unit-tested `decodeWorkflowConfig` from `MeshOrchestrator.wireWorkflowLoader`.
+  - [assessed, deferred] `evaluateStoppingCriterion` from `ConversationBus.convene` —
+    not cleanly pure (inline `emit`/`break`/RNG in the core loop); extracting risks
+    altering round-table stopping behavior. Warrants a focused, human-reviewed pass.
 - [D] **`AgentHubStore.ts` (1234 LOC) module split** — `schema`/`crypto`/`outbox`/
   `memory` behind the same public surface. (Already deferred from chair-mesh Phase 3:
   high-risk AES-GCM/SQLite extraction; do as a focused, human-reviewed refactor.)

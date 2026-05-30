@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { StubMarkovProvider } from '../services/ModelProvider.js';
+import { StubMarkovProvider } from '../services/StubMarkovProvider.js';
 import type { ModelProviderOptions } from '../services/ModelProvider.js';
 
 // -------------------------------------------------------------------------

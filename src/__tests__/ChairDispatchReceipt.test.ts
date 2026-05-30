@@ -5,7 +5,7 @@ import {
     ChairBridgeProvider,
     type ChairDispatchTelemetryEvent,
     type ChairReplySubmission,
-} from '../services/ModelProvider.js';
+} from '../services/ChairBridgeProvider.js';
 import { createChairReplyProof } from '../services/ChairDispatchSecurity.js';
 
 describe('ChairBridgeProvider request receipts', () => {
