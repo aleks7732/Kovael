@@ -499,7 +499,11 @@ async function runFakeDeterministic(payload, cfg) {
 }
 
 function safePathSegment(value) {
-    return value.replace(/[^a-zA-Z0-9._-]/g, '_');
+    const cleaned = value.replace(/[^a-zA-Z0-9._-]/g, '_');
+    // Neutralize path-significant segments ('', '.', '..', all-dots) to prevent
+    // an --id from traversing out of its hub directory.
+    if (cleaned === '' || /^\.+$/.test(cleaned)) return '_';
+    return cleaned;
 }
 
 function defaultAgentHubRoot() {
@@ -543,7 +547,10 @@ function buildCommandEnv(cfg) {
     // operator-allow-listed, non-secret vars the child explicitly needs.
     const env = cfg.runtimeSecurity.buildAgentRuntimeEnv(process.env);
     for (const name of cfg.allowEnv || []) {
-        if (COMMAND_ENV_DENYLIST.has(name)) continue;
+        // Case-insensitive: Windows process.env lookup ignores case, so a
+        // case-variant (e.g. kovael_token) must not slip a secret past the
+        // UPPERCASE denylist.
+        if (COMMAND_ENV_DENYLIST.has(name.toUpperCase())) continue;
         const value = process.env[name];
         if (typeof value === 'string') env[name] = value;
     }
@@ -584,9 +591,31 @@ async function runRuntime(payload, cfg) {
     throw new Error(`unknown runtime: ${cfg.runtime}`);
 }
 
+const LOOPBACK_REPLY_HOSTS = new Set(['127.0.0.1', 'localhost', '::1']);
+
+// The reply target is, by design, the local orchestrator. Require http(s) + a
+// loopback host so a forged/poisoned replyUrl cannot exfiltrate to or probe an
+// arbitrary host from the inbox's network position.
+function assertLoopbackHttpUrl(urlString) {
+    let u;
+    try {
+        u = new URL(urlString);
+    } catch {
+        throw new Error('reply targetUrl is not a valid URL');
+    }
+    if (u.protocol !== 'http:' && u.protocol !== 'https:') {
+        throw new Error(`reply targetUrl uses disallowed protocol "${u.protocol}"`);
+    }
+    const host = u.hostname.replace(/^\[|\]$/g, '');
+    if (!LOOPBACK_REPLY_HOSTS.has(host)) {
+        throw new Error(`reply targetUrl host "${u.hostname}" is not loopback`);
+    }
+}
+
 async function sendOutboxReply(row, cfg) {
     if (!row || row.kind !== 'reply') return;
     if (!row.targetUrl) throw new Error('outbox reply did not include targetUrl');
+    assertLoopbackHttpUrl(row.targetUrl);
     const requestId = typeof row.payload?.requestId === 'string' ? row.payload.requestId : row.requestId;
     const secured = encryptPayload(row.payload, requestId);
     const headers = {

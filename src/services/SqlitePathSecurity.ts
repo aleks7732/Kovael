@@ -31,7 +31,11 @@ export function defaultAgentHubDir(
 }
 
 export function safePathSegment(value: string): string {
-    return value.replace(/[^a-zA-Z0-9._-]/g, '_');
+    const cleaned = value.replace(/[^a-zA-Z0-9._-]/g, '_');
+    // Neutralize path-significant segments ('', '.', '..', all-dots) so an agentId
+    // cannot traverse out of its hub directory via path.join.
+    if (cleaned === '' || /^\.+$/.test(cleaned)) return '_';
+    return cleaned;
 }
 
 export function validateLocalSqlitePath(dbPath: string): SqlitePathSafetyResult {

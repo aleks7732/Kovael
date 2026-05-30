@@ -12,12 +12,40 @@ interface KovaelUpgradeRequest extends http.IncomingMessage {
     __kovaelSelectedSubprotocol?: string;
 }
 
+const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '::1', '[::1]']);
+
+/**
+ * Anti-CSWSH / DNS-rebind guard for WebSocket upgrades. Browsers always send an
+ * `Origin` header; non-browser clients (cockpit node ws, tests) send none. A
+ * header-less request is allowed (not a cross-site vector). A browser Origin is
+ * allowed only when its host is loopback (the local cockpit, any port) or the
+ * exact origin is operator-allow-listed (KOVAEL_WS_ALLOWED_ORIGINS) — so a remote
+ * page (including one DNS-rebound to 127.0.0.1) cannot ride the loopback control
+ * plane. This applies even when the bearer gate is disabled.
+ */
+export function isAllowedWsOrigin(origin: string | undefined, allowedOrigins: readonly string[]): boolean {
+    if (!origin) return true;
+    let hostname: string;
+    try {
+        hostname = new URL(origin).hostname;
+    } catch {
+        return false; // malformed Origin header → reject
+    }
+    if (LOOPBACK_HOSTS.has(hostname)) return true;
+    return allowedOrigins.includes(origin);
+}
+
 export class WebSocketBus {
     public readonly wss: WebSocketServer;
     private readonly context: OrchestratorContext;
+    private readonly allowedWsOrigins: string[];
 
     constructor(context: OrchestratorContext, server: http.Server) {
         this.context = context;
+        this.allowedWsOrigins = (process.env.KOVAEL_WS_ALLOWED_ORIGINS ?? '')
+            .split(',')
+            .map((s) => s.trim())
+            .filter(Boolean);
         this.wss = new WebSocketServer({
             noServer: true,
             maxPayload: this.context.maxWsMessageBytes,
@@ -45,6 +73,16 @@ export class WebSocketBus {
                 kreq.__kovaelRateLimitRejected = true;
                 this.wss.handleUpgrade(req, socket as Socket, head, (ws) => {
                     ws.close(4429, 'rate_limited');
+                });
+                return;
+            }
+
+            // Reject cross-site browser upgrades (CSWSH / DNS-rebind) before auth,
+            // independent of the bearer gate.
+            if (!isAllowedWsOrigin(req.headers.origin, this.allowedWsOrigins)) {
+                kreq.__kovaelGateRejected = true;
+                this.wss.handleUpgrade(req, socket as Socket, head, (ws) => {
+                    ws.close(4403, 'forbidden_origin');
                 });
                 return;
             }

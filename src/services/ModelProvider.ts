@@ -5,6 +5,8 @@ import {
     verifyChairReplyProof,
 } from './ChairDispatchSecurity.js';
 import { redactSensitiveText } from './RuntimeSecurity.js';
+import { assertSafeChairUrl } from './UrlEgressGuard.js';
+import { readBoolean } from '../common/env-helpers.js';
 
 export interface ChatMessage {
     role: 'system' | 'user' | 'assistant';
@@ -525,18 +527,17 @@ export class ChairBridgeProvider implements ModelProvider {
             throw new Error(`Chair Bridge failure: Agent "${agentId}" is offline or has no inboxUrl registered.`);
         }
 
-        // Guard against SSRF — only allow http/https URLs to prevent
-        // exfiltration via file://, data:, or other exotic protocols.
+        // Guard against SSRF: http(s) only, and reject link-local / cloud-metadata
+        // (169.254.169.254) / unspecified egress targets so an attacker-registered
+        // chair cannot turn the orchestrator into an SSRF proxy. Loopback chairs
+        // stay allowed (the inbox is loopback-by-design); KOVAEL_CHAIR_BLOCK_PRIVATE
+        // additionally blocks RFC1918/ULA.
         try {
-            const parsed = new URL(claim.inboxUrl);
-            if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
-                throw new Error(`Chair Bridge failure: Agent "${agentId}" inboxUrl uses disallowed protocol "${parsed.protocol}".`);
-            }
+            await assertSafeChairUrl(claim.inboxUrl, {
+                blockPrivate: readBoolean(process.env.KOVAEL_CHAIR_BLOCK_PRIVATE, false),
+            });
         } catch (err) {
-            if (err instanceof TypeError) {
-                throw new Error(`Chair Bridge failure: Agent "${agentId}" inboxUrl is not a valid URL.`);
-            }
-            throw err;
+            throw new Error(`Chair Bridge failure: Agent "${agentId}" inboxUrl rejected: ${(err as Error).message}`);
         }
 
         const requestId = crypto.randomUUID();

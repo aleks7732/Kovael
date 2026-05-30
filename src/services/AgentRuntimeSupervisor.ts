@@ -6,7 +6,7 @@ import * as path from 'node:path';
 import { AgentCards } from '../AgentCards.js';
 import { defaultRuntimeRegistry } from './runtime/builtinAdapters.js';
 import { loadChairManifests } from './runtime/ChairManifestLoader.js';
-import { isCommandAllowed, COMMAND_ADAPTER_ALLOW_ENV, COMMAND_ENV_DENYLIST } from './runtime/CommandAdapter.js';
+import { isCommandAllowed, COMMAND_ADAPTER_ALLOW_ENV, isDeniedCommandEnvName } from './runtime/CommandAdapter.js';
 import { readBoolean } from '../common/env-helpers.js';
 import { Logger, rootLogger } from './Logger.js';
 import {
@@ -717,7 +717,7 @@ export class AgentRuntimeSupervisor {
             const allow = this.env[COMMAND_ADAPTER_ALLOW_ENV];
             if (allow) env[COMMAND_ADAPTER_ALLOW_ENV] = allow;
             for (const name of spec.allowEnv ?? []) {
-                if (COMMAND_ENV_DENYLIST.has(name)) continue;
+                if (isDeniedCommandEnvName(name)) continue;
                 const value = this.env[name];
                 if (typeof value === 'string') env[name] = value;
             }
