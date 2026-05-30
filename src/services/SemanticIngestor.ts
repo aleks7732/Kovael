@@ -88,15 +88,24 @@ export class SemanticIngestor {
     }
 
     private indexFile(filePath: string, ext: string) {
+        const MAX_FILE_BYTES = 512 * 1024;
         try {
+            const size = fs.statSync(filePath).size;
+            if (size > MAX_FILE_BYTES) {
+                this.log.info('file_index_skipped_large', { path: this.sanitizePath(filePath), bytes: size });
+                return;
+            }
             const content = fs.readFileSync(filePath, 'utf-8');
             const sanitizedPath = this.sanitizePath(filePath);
-            
+
+            // Idempotent re-ingest: replace any prior row for this path so repeated
+            // boots cannot accumulate duplicate anchors (unbounded disk growth).
+            this.db.prepare('DELETE FROM semantic_anchors WHERE file_path = ?').run(sanitizedPath);
             const stmt = this.db.prepare(`
                 INSERT INTO semantic_anchors (file_path, content, extension, last_indexed)
                 VALUES (?, ?, ?, ?)
             `);
-            
+
             stmt.run(sanitizedPath, content, ext, Date.now());
             this.log.info('file_indexed', { path: sanitizedPath });
         } catch (error: unknown) {

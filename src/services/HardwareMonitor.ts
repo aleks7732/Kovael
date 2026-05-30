@@ -16,6 +16,8 @@ const SMI_ARGS = [
     '--query-gpu=memory.free,memory.used,memory.total,utilization.gpu',
     '--format=csv,noheader,nounits',
 ];
+const SMI_TIMEOUT_MS = 5_000;
+const SMI_MAX_OUTPUT_BYTES = 256 * 1024;
 
 /**
  * HardwareMonitor: VRAM-aware sensor for the Sovereign Mesh.
@@ -84,16 +86,27 @@ export class HardwareMonitor extends EventEmitter {
             return;
         }
 
-        child.stdout.on('data', (chunk) => { stdout += chunk.toString(); });
-        child.stderr.on('data', (chunk) => { stderr += chunk.toString(); });
+        // Kill a hung/streaming nvidia-smi so it cannot permanently latch inFlight
+        // (freezing all future polls) or stream unbounded stdout into memory.
+        const killTimer = setTimeout(() => {
+            try { child.kill('SIGKILL'); } catch { /* already gone */ }
+        }, SMI_TIMEOUT_MS);
+        killTimer.unref?.();
+
+        const cap = (buf: string, chunk: Buffer): string =>
+            buf.length >= SMI_MAX_OUTPUT_BYTES ? buf : buf + chunk.toString();
+        child.stdout.on('data', (chunk) => { stdout = cap(stdout, chunk); });
+        child.stderr.on('data', (chunk) => { stderr = cap(stderr, chunk); });
 
         child.on('error', () => {
+            clearTimeout(killTimer);
             this.inFlight = false;
             if (!this.running || generation !== this.generation) return;
             this.publishUnavailable('nvidia-smi_missing');
         });
 
         child.on('close', (code) => {
+            clearTimeout(killTimer);
             this.inFlight = false;
             if (!this.running || generation !== this.generation) return;
             if (code !== 0) {

@@ -73,6 +73,9 @@ const DEFAULT_RESOURCE_MODE_CONFIG: Required<OrchestratorResourceModeConfig> = {
     idleTraceRetain: 20,
 };
 
+/** Upper bound on the live phase-event map; the oldest cycle is evicted past this. */
+const MAX_ACTIVE_CYCLES = 512;
+
 export class MeshOrchestrator extends EventEmitter implements OrchestratorContext {
     public readonly memoryDb: DatabaseSync;
     public readonly chairs: ChairRegistry;
@@ -510,6 +513,13 @@ export class MeshOrchestrator extends EventEmitter implements OrchestratorContex
     private wireMevBridge() {
         this.mevBridge.on('phase_change', (evt: PhaseEvent) => {
             this.activeCycles.set(evt.cycleId, evt);
+            // Bound the map (LRU-evict the oldest) so a long-running session — where
+            // a connected WS client keeps idle-mode's clear() from firing — cannot
+            // grow activeCycles per-cycle without bound.
+            if (this.activeCycles.size > MAX_ACTIVE_CYCLES) {
+                const oldest = this.activeCycles.keys().next().value;
+                if (oldest !== undefined) this.activeCycles.delete(oldest);
+            }
             this.broadcast({
                 type: 'phase_change',
                 nodeId: evt.routedAgent || 'triad',

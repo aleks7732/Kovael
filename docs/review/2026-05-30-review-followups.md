@@ -44,12 +44,15 @@
   negligible. Left as-is to honor the documented decision.
 
 ### Deferred (tracked)
-- [D] **LOW — unbounded growth**: hub `prune*` never scheduled; `activeCycles` map;
-  `SemanticIngestor` re-indexes whole files each boot (no cap/dedup). Wire a
-  maintenance tick + per-file caps + UPSERT.
-- [D] **LOW — no resource caps**: WS `broadcast` no `bufferedAmount` backpressure +
-  no max-connections; `HardwareMonitor` `nvidia-smi` no timeout/output-cap (hang
-  latches polls); `ComfyUiBridge` fetch no timeout/size-cap.
+- [x] **LOW — unbounded growth** (PR #69): inbox runs a periodic `maintenance()`
+  tick (`pruneTerminalOutbox`/`pruneExpiredCache`/`pruneOldReceipts`, 24h retention);
+  `activeCycles` is LRU-bounded (512); `SemanticIngestor` skips >512 KB files and
+  DELETE-then-INSERTs (idempotent re-ingest, no duplicate rows).
+- [x] **LOW — resource caps** (PR #69): WS `broadcast` drops frames for backpressured
+  clients (`bufferedAmount` > 8 MB) + caps concurrent clients (`KOVAEL_WS_MAX_CLIENTS`,
+  default 64, 1013 on overflow); `HardwareMonitor` kills a hung `nvidia-smi` (5 s) +
+  caps captured output; `ComfyUiBridge` fetch has an AbortController timeout (15 s) +
+  content-length size cap (4 MB).
 - [D] **INFO** (remaining hardening, no defect): document/enforce secret entropy;
   gate the WS `?token=` query transport behind an opt-in flag; pin scrypt cost params
   (N/r/p) explicitly. **Verified-correct (no action):** AES-256-GCM IV/tag/AAD/scrypt,
