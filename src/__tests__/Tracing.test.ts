@@ -1,6 +1,5 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { TracingBridge, TraceRingBuffer, CycleTrace, FinishedSpan } from '../services/Tracing.js';
-import { renderTraceFlowchartHtml } from '../services/TraceComfyBridge.js';
 import { MevBridge } from '../MevBridge.js';
 import { MeshOrchestrator } from '../MeshOrchestrator.js';
 import { setTimeout as sleep } from 'node:timers/promises';
@@ -97,98 +96,6 @@ describe('TraceRingBuffer', () => {
         expect(JSON.stringify(stored).length).toBeLessThanOrEqual(2400);
         expect(stored!.spans[0].events.length).toBeLessThanOrEqual(2);
         expect(stored!.spans[0].attributes.giant).toMatch(/\[truncated/);
-    });
-});
-
-describe('TraceComfyBridge flowchart renderer', () => {
-    it('emits escaped SVG/HTML with token tooltips and active intervals', () => {
-        const trace: CycleTrace = {
-            cycleId: 'cycle-1',
-            traceId: 'trace-1',
-            rootSpanId: 'root',
-            startedAt: 1000,
-            endedAt: 1600,
-            spans: [
-                {
-                    traceId: 'trace-1',
-                    spanId: 'root',
-                    name: 'cycle.run',
-                    kind: 1,
-                    startTimeUnixNano: 1_000_000_000,
-                    endTimeUnixNano: 1_600_000_000,
-                    durationMs: 600,
-                    attributes: { 'kovael.cycle.id': 'cycle-1' },
-                    status: { code: 1 },
-                    events: [],
-                },
-                {
-                    traceId: 'trace-1',
-                    spanId: 'span-1',
-                    parentSpanId: 'root',
-                    name: 'triad.operator',
-                    kind: 1,
-                    startTimeUnixNano: 1_100_000_000,
-                    endTimeUnixNano: 1_300_000_000,
-                    durationMs: 200,
-                    attributes: {
-                        'kovael.agent.id': 'shaev<script>',
-                        'kovael.gen_ai.response.estimated_input_tokens': 120,
-                        'kovael.gen_ai.response.estimated_output_tokens': 64,
-                        'kovael.verifier.confidence': 0.82,
-                    },
-                    status: { code: 1 },
-                    events: [],
-                },
-            ],
-        };
-
-        const html = renderTraceFlowchartHtml(trace);
-        expect(html).toContain('<svg');
-        expect(html).toContain('triad.operator');
-        expect(html).toContain('input: 120');
-        expect(html).toContain('output: 64');
-        expect(html).toContain('confidence: 82%');
-        expect(html).toContain('active: 200ms');
-        expect(html).toContain('shaev&lt;script&gt;');
-        expect(html).not.toContain('shaev<script>');
-    });
-
-    it('blocks flowchart script injection attacks in cycleId, agentId, and span.name', () => {
-        const trace: CycleTrace = {
-            cycleId: 'cycle-1<script>alert("xss")</script>',
-            traceId: 'trace-1`onload=alert(1)`',
-            rootSpanId: 'root',
-            startedAt: 1000,
-            endedAt: 1600,
-            spans: [
-                {
-                    traceId: 'trace-1`onload=alert(1)`',
-                    spanId: 'root',
-                    name: 'cycle.run</text><script>console.log("xss")</script>',
-                    kind: 1,
-                    startTimeUnixNano: 1_000_000_000,
-                    endTimeUnixNano: 1_600_000_000,
-                    durationMs: 600,
-                    attributes: {
-                        'kovael.cycle.id': 'cycle-1<script>alert("xss")</script>',
-                        'kovael.agent.id': 'malicious/operator',
-                    },
-                    status: { code: 1 },
-                    events: [],
-                },
-            ],
-        };
-
-        const html = renderTraceFlowchartHtml(trace);
-        // Script tags should be fully escaped
-        expect(html).not.toContain('<script>');
-        expect(html).toContain('&lt;script&gt;alert(&quot;xss&quot;)&lt;&#x2F;script&gt;');
-        // Backticks should be escaped
-        expect(html).not.toContain('`');
-        expect(html).toContain('&#x60;onload=alert(1)&#x60;');
-        // Slashes should be escaped
-        expect(html).not.toContain('malicious/operator');
-        expect(html).toContain('malicious&#x2F;operator');
     });
 });
 

@@ -21,11 +21,6 @@ const PROTECTED_AGENT_FILE_NAMES: ReadonlySet<string> = new Set(
     PROTECTED_AGENT_FILE_NAME_LIST.map((name) => name.toLowerCase()),
 );
 
-export interface ProtectedAgentPathPresence {
-    present: boolean;
-    entries: string[];
-}
-
 export interface ProtectedLocalConfigPathStatus {
     label: string;
     exists: boolean;
@@ -38,59 +33,6 @@ export function isProtectedAgentDirectoryName(name: string): boolean {
 export function isProtectedAgentFileName(name: string): boolean {
     const normalized = name.toLowerCase();
     return PROTECTED_AGENT_FILE_NAMES.has(normalized) || normalized.startsWith('.env.');
-}
-
-export function isProtectedAgentPath(candidatePath: string, rootPath = process.cwd()): boolean {
-    const resolvedRoot = path.resolve(rootPath);
-    const resolvedCandidate = path.resolve(candidatePath);
-    const relative = path.relative(resolvedRoot, resolvedCandidate);
-    const segments = relative
-        .split(path.sep)
-        .filter((segment) => segment.length > 0 && segment !== '..')
-        .map((segment) => segment.toLowerCase());
-
-    if (segments.some((segment) => PROTECTED_AGENT_DIRECTORY_NAMES.has(segment))) {
-        return true;
-    }
-
-    return isProtectedAgentFileName(path.basename(resolvedCandidate));
-}
-
-export function findProtectedAgentPathPresence(rootPath: string): ProtectedAgentPathPresence {
-    const root = path.resolve(rootPath);
-    const entries: string[] = [];
-
-    for (const name of PROTECTED_AGENT_DIRECTORY_NAME_LIST) {
-        const candidate = path.join(root, name);
-        if (fs.existsSync(candidate)) {
-            entries.push(`${name}/`);
-        }
-    }
-
-    for (const name of PROTECTED_AGENT_FILE_NAME_LIST) {
-        const candidate = path.join(root, name);
-        if (fs.existsSync(candidate)) {
-            entries.push(name);
-        }
-    }
-
-    try {
-        for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
-            if (entry.isFile() && entry.name.toLowerCase().startsWith('.env.')) {
-                entries.push(entry.name);
-            }
-        }
-    } catch {
-        return {
-            present: entries.length > 0,
-            entries: entries.sort(),
-        };
-    }
-
-    return {
-        present: entries.length > 0,
-        entries: Array.from(new Set(entries)).sort(),
-    };
 }
 
 export function inspectProtectedLocalConfigPaths(

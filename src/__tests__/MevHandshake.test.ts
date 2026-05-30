@@ -1,16 +1,11 @@
 import { describe, it, expect, vi } from 'vitest';
 import { MevHandshake } from '../services/MevHandshake.js';
-import type { Blueprint } from '../services/MevHandshake.js';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { EventEmitter } from 'node:events';
 
 // -------------------------------------------------------------------------
 // Mocks
 // -------------------------------------------------------------------------
-
-interface WrittenChunk {
-    data: string;
-}
 
 function mockReq(url: string): IncomingMessage {
     const emitter = new EventEmitter() as IncomingMessage;
@@ -51,15 +46,8 @@ function mockRes(): MockRes {
     return res;
 }
 
-const BLUEPRINT: Blueprint = {
-    id: 'bp-001',
-    schema: 'anx-v1',
-    content: { objective: 'test' },
-    status: 'pending',
-};
-
 // -------------------------------------------------------------------------
-// handleRequest
+// handleRequest — the only wired surface (SSE keep-alive endpoint)
 // -------------------------------------------------------------------------
 
 describe('MevHandshake — handleRequest', () => {
@@ -100,97 +88,22 @@ describe('MevHandshake — handleRequest', () => {
         expect(res.ended).toBe(true);
     });
 
-    it('removes client from set when request closes', () => {
-        const hs = new MevHandshake();
-        const req = mockReq('/mev/handshake');
-        const res = mockRes();
+    it('clears the keep-alive heartbeat after the request closes', () => {
+        vi.useFakeTimers();
+        try {
+            const hs = new MevHandshake();
+            const req = mockReq('/mev/handshake');
+            const res = mockRes();
 
-        hs.handleRequest(req as IncomingMessage, res as unknown as ServerResponse);
-        const chunksBefore = res.chunks.length;
+            hs.handleRequest(req as IncomingMessage, res as unknown as ServerResponse);
+            req.emit('close');
+            const afterClose = res.chunks.length;
 
-        // Simulate client disconnect
-        req.emit('close');
-
-        // broadcast should no longer reach this client
-        hs.broadcastBlueprint(BLUEPRINT);
-        expect(res.chunks.length).toBe(chunksBefore);
-    });
-});
-
-// -------------------------------------------------------------------------
-// broadcastBlueprint
-// -------------------------------------------------------------------------
-
-describe('MevHandshake — broadcastBlueprint', () => {
-    it('sends blueprint_validation event to all connected clients', () => {
-        const hs = new MevHandshake();
-
-        const req1 = mockReq('/mev/handshake');
-        const res1 = mockRes();
-        const req2 = mockReq('/mev/handshake');
-        const res2 = mockRes();
-
-        hs.handleRequest(req1 as IncomingMessage, res1 as unknown as ServerResponse);
-        hs.handleRequest(req2 as IncomingMessage, res2 as unknown as ServerResponse);
-
-        const before1 = res1.chunks.length;
-        const before2 = res2.chunks.length;
-
-        hs.broadcastBlueprint(BLUEPRINT);
-
-        const new1 = res1.chunks.slice(before1).join('');
-        const new2 = res2.chunks.slice(before2).join('');
-
-        for (const chunk of [new1, new2]) {
-            expect(chunk).toContain('event: blueprint_validation');
-            expect(chunk).toContain('"id":"bp-001"');
-            expect(chunk).toContain('"status":"pending"');
-            expect(chunk).toContain('timestamp');
+            // Past two heartbeat intervals — a cleared interval writes nothing more.
+            vi.advanceTimersByTime(60_000);
+            expect(res.chunks.length).toBe(afterClose);
+        } finally {
+            vi.useRealTimers();
         }
-    });
-
-    it('does not throw when there are no connected clients', () => {
-        const hs = new MevHandshake();
-        expect(() => hs.broadcastBlueprint(BLUEPRINT)).not.toThrow();
-    });
-
-    it('includes a timestamp field injected by the broadcaster', () => {
-        const hs = new MevHandshake();
-        const req = mockReq('/mev/handshake');
-        const res = mockRes();
-        hs.handleRequest(req as IncomingMessage, res as unknown as ServerResponse);
-
-        const before = res.chunks.length;
-        hs.broadcastBlueprint(BLUEPRINT);
-
-        const chunk = res.chunks.slice(before).join('');
-        const match = chunk.match(/"timestamp":(\d+)/);
-        expect(match).not.toBeNull();
-        expect(Number(match![1])).toBeGreaterThan(0);
-    });
-});
-
-// -------------------------------------------------------------------------
-// validateSynchronous
-// -------------------------------------------------------------------------
-
-describe('MevHandshake — validateSynchronous', () => {
-    it('returns true', async () => {
-        const hs = new MevHandshake();
-        const result = await hs.validateSynchronous(BLUEPRINT);
-        expect(result).toBe(true);
-    });
-
-    it('broadcasts the blueprint as part of validation', async () => {
-        const hs = new MevHandshake();
-        const req = mockReq('/mev/handshake');
-        const res = mockRes();
-        hs.handleRequest(req as IncomingMessage, res as unknown as ServerResponse);
-
-        const before = res.chunks.length;
-        await hs.validateSynchronous({ ...BLUEPRINT, id: 'bp-validate' });
-
-        const chunk = res.chunks.slice(before).join('');
-        expect(chunk).toContain('"id":"bp-validate"');
     });
 });
