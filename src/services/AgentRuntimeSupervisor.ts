@@ -7,6 +7,7 @@ import { AgentCards } from '../AgentCards.js';
 import { defaultRuntimeRegistry } from './runtime/builtinAdapters.js';
 import { loadChairManifests } from './runtime/ChairManifestLoader.js';
 import { isCommandAllowed, COMMAND_ADAPTER_ALLOW_ENV, COMMAND_ENV_DENYLIST } from './runtime/CommandAdapter.js';
+import { readBoolean } from '../common/env-helpers.js';
 import { Logger, rootLogger } from './Logger.js';
 import {
     AGENT_HUB_SECRET_ENV,
@@ -771,13 +772,6 @@ export function defaultAgentRuntimeSpecs(
 function parseAgentIds(value: string | undefined): string[] {
     if (!value?.trim()) return [...DEFAULT_AGENT_IDS];
     return value.split(',').map((part) => part.trim()).filter(Boolean);
-}
-
-function readBoolean(value: string | undefined, fallback: boolean): boolean {
-    const normalized = value?.trim().toLowerCase();
-    if (normalized === '1' || normalized === 'true' || normalized === 'yes' || normalized === 'on') return true;
-    if (normalized === '0' || normalized === 'false' || normalized === 'no' || normalized === 'off') return false;
-    return fallback;
 }
 
 function positiveTimeout(value: number | undefined): number {

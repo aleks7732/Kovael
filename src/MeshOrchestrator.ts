@@ -27,6 +27,7 @@ import { HealthEndpoints } from './services/HealthEndpoints.js';
 import { openOrchestratorDb } from './services/OrchestratorDb.js';
 import { TracingBridge } from './services/Tracing.js';
 import { CycleLog } from './services/CycleLog.js';
+import { readBooleanEnv } from './common/env-helpers.js';
 import { CircuitBreaker, ChairCircuitEvent } from './services/CircuitBreaker.js';
 import { LearningMatrix } from './services/LearningMatrix.js';
 import { SelfHealer, SelfHealEvent } from './services/SelfHealer.js';
@@ -837,13 +838,6 @@ function resolveResourceModeConfig(
         ),
         ...overrides,
     };
-}
-
-function readBooleanEnv(name: string, fallback: boolean): boolean {
-    const value = process.env[name]?.trim().toLowerCase();
-    if (value === '1' || value === 'true' || value === 'yes' || value === 'on') return true;
-    if (value === '0' || value === 'false' || value === 'no' || value === 'off') return false;
-    return fallback;
 }
 
 function readPositiveIntEnv(name: string, fallback: number): number {
