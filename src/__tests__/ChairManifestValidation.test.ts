@@ -46,3 +46,23 @@ describe('agent_cards manifest lint (PR gate)', () => {
     });
   }
 });
+
+// Negative path (acceptance #4): the lint must REJECT bad/orphaned input, not
+// merely accept the good fixtures that ship in agent_cards/.
+describe('manifest lint rejects bad input', () => {
+  it('rejects manifests missing required fields or with invalid types', () => {
+    expect(parseManifest({ name: 'no id' }).ok).toBe(false);
+    expect(parseManifest({ id: 'x', name: 'x', provider: 'p', trustTier: 1.5 }).ok).toBe(false); // non-int tier
+    expect(parseManifest({ id: 'x', name: 'x', provider: 'p', trustTier: 1, runtime: { kind: '' } }).ok).toBe(false); // empty kind
+  });
+
+  it('surfaces an unresolvable runtime kind (schema-valid but no adapter)', () => {
+    const parsed = parseManifest({ id: 'x', name: 'x', provider: 'p', trustTier: 1, runtime: { kind: 'no-such-kind' } });
+    expect(parsed.ok).toBe(true);
+    if (parsed.ok) expect(registry.resolve(parsed.manifest.runtime!.kind)).toBeUndefined();
+  });
+
+  it('detects a persona-orphaned id', () => {
+    expect(personaAgentId('definitely-not-a-real-chair-xyz')).toBeNull();
+  });
+});

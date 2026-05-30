@@ -73,4 +73,42 @@ describe('manifest-driven supervision', () => {
     expect(specs.length).toBe(1);
     expect(specs[0].enabled).toBe(false);
   });
+
+  // Security regression guard: a manifest must NOT alias an elevated runtime
+  // kind (danger-full-access) onto a non-blocked id to escape the elevation gate.
+  it('blocks an elevated runtime kind aliased onto a non-blocked id when elevation is off', () => {
+    const cwd = tmpCwdWith({
+      'nyx-codex': {
+        id: 'nyx-codex', name: 'Nyx Codex', provider: 'OpenAI · Codex',
+        trustTier: 2, capabilities: ['x'], vram: '0GB',
+        runtime: { kind: 'codex-openclaw', supervised: true },
+      },
+    });
+    expect(defaultAgentRuntimeSpecs(['nyx-codex'], { cwd, env: {} as NodeJS.ProcessEnv })).toEqual([]);
+    // ...and is admitted only with the explicit elevation opt-in
+    expect(defaultAgentRuntimeSpecs(['nyx-codex'], { cwd, enableElevated: true })[0]?.runtime).toBe('codex-openclaw');
+  });
+
+  it('enforces a manifest elevated:true flag against the elevation gate', () => {
+    const cwd = tmpCwdWith({
+      'nyx-x': {
+        id: 'nyx-x', name: 'Nyx X', provider: 'P', trustTier: 2, capabilities: ['x'], vram: '0GB',
+        runtime: { kind: 'command', supervised: true, command: 'node', elevated: true },
+      },
+    });
+    const env = { KOVAEL_COMMAND_ADAPTER_ALLOW: 'node' } as NodeJS.ProcessEnv;
+    expect(defaultAgentRuntimeSpecs(['nyx-x'], { cwd, env })).toEqual([]);
+    expect(defaultAgentRuntimeSpecs(['nyx-x'], { cwd, env, enableElevated: true }).length).toBe(1);
+  });
+
+  it('honours a manifest supervised:false opt-out', () => {
+    const cwd = tmpCwdWith({
+      'nyx-codex': {
+        id: 'nyx-codex', name: 'Nyx Codex', provider: 'OpenAI · Codex',
+        trustTier: 2, capabilities: ['x'], vram: '0GB',
+        runtime: { kind: 'codex', supervised: false },
+      },
+    });
+    expect(defaultAgentRuntimeSpecs(['nyx-codex'], { cwd })).toEqual([]);
+  });
 });

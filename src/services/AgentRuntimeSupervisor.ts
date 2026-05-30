@@ -723,20 +723,26 @@ export function defaultAgentRuntimeSpecs(
 ): AgentRuntimeSpec[] {
     const registry = defaultRuntimeRegistry();
     const env = options.env ?? process.env;
-    const blocked = new Set(options.enableElevated ? [] : ['nyx-openclaw']);
     // Prefer manifests (agent_cards/) so a dispatch-capable chair connects by a
     // manifest drop alone (zero core edits); fall back to the literal built-in
     // map + AgentCards when the directory is absent.
     const loaded = loadChairManifests(path.join(options.cwd ?? process.cwd(), 'agent_cards'));
     const cardById = new Map(loaded.cards.map((card) => [card.id, card]));
     return ids
-        .filter((id) => !blocked.has(id))
         .map((id) => {
             const card = cardById.get(id) ?? AgentCards[id];
             if (!card) return undefined;
+            // A manifest may opt a chair out of supervision explicitly.
+            if (card.runtime?.supervised === false) return undefined;
             const kind = card.runtime?.kind ?? BUILTIN_AGENT_KINDS[id];
             const adapter = kind ? registry.resolve(kind) : undefined;
             if (!adapter || !adapter.supervised) return undefined;
+            // Elevation gate keyed on the RESOLVED adapter's danger-full-access
+            // policy (and the manifest `elevated` flag) — NOT the chair id. A
+            // manifest must not be able to alias an elevated runtime kind onto a
+            // non-blocked id to escape KOVAEL_ENABLE_ELEVATED_RUNTIMES.
+            const elevated = adapter.policy().sandboxMode === 'danger-full-access' || card.runtime?.elevated === true;
+            if (elevated && !options.enableElevated) return undefined;
             const spec = adapter.buildSpec(card) as AgentRuntimeSpec;
             // Generic command chairs stay disabled unless their binary is on the
             // operator's allow-list (KOVAEL_COMMAND_ADAPTER_ALLOW).
