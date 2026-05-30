@@ -27,9 +27,6 @@ import { HealthEndpoints } from './services/HealthEndpoints.js';
 import { openOrchestratorDb } from './services/OrchestratorDb.js';
 import { TracingBridge } from './services/Tracing.js';
 import { CycleLog } from './services/CycleLog.js';
-import { BudgetTracker } from './services/BudgetTracker.js';
-import { RoutingPolicy } from './services/RoutingPolicy.js';
-import { EpisodicMemory } from './services/EpisodicMemory.js';
 import { CircuitBreaker, ChairCircuitEvent } from './services/CircuitBreaker.js';
 import { LearningMatrix } from './services/LearningMatrix.js';
 import { SelfHealer, SelfHealEvent } from './services/SelfHealer.js';
@@ -133,9 +130,6 @@ export class MeshOrchestrator extends EventEmitter implements OrchestratorContex
     public rateLimits: RateLimitTracker;
     public tracing?: TracingBridge;
     private cycleLog: CycleLog;
-    private budgetTracker: BudgetTracker;
-    private routingPolicy: RoutingPolicy;
-    private episodicMemory: EpisodicMemory;
     private hardware: HardwareMonitor;
     private readonly activeChairDispatches: Set<string> = new Set();
 
@@ -196,9 +190,6 @@ export class MeshOrchestrator extends EventEmitter implements OrchestratorContex
         });
 
         this.cycleLog = new CycleLog(this.memoryDb);
-        this.budgetTracker = new BudgetTracker();
-        this.routingPolicy = new RoutingPolicy();
-        this.episodicMemory = new EpisodicMemory(this.memoryDb);
         this.circuitBreaker = new CircuitBreaker();
         this.learningMatrix = new LearningMatrix();
         this.selfHealer = new SelfHealer({
