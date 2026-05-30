@@ -645,6 +645,9 @@ export class AgentHubStore {
                 updated_at INTEGER NOT NULL
             );
         `);
+        // Captured before the schema_version stamp below so we can skip the
+        // one-time v2 backfill scan on hubs that are already current.
+        const priorSchemaVersion = this.metaValue('schema_version');
         this.encryptionKey = this.initializeEncryptionKey();
 
         this.db.exec(`
@@ -725,7 +728,12 @@ export class AgentHubStore {
         this.ensureMemoryColumn('access_count', 'INTEGER NOT NULL DEFAULT 0');
         this.ensureMemoryColumn('value_sha256', 'TEXT');
         this.ensureMemoryColumn('size_bytes', 'INTEGER');
-        this.backfillV2Columns();
+        // The backfill is an O(N) full-table scan; only needed when migrating an
+        // older/unstamped hub up to the current schema. Skip it once current to
+        // avoid re-scanning every dispatch + memory row on every boot.
+        if (priorSchemaVersion !== SCHEMA_VERSION) {
+            this.backfillV2Columns();
+        }
 
         this.db.exec(`
             CREATE INDEX IF NOT EXISTS idx_agent_dispatches_status
