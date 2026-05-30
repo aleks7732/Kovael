@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
+import { restoreEnv } from './helpers/env.js';
 import { MeshOrchestrator, DEFAULT_HTTP_TIMEOUTS } from '../MeshOrchestrator.js';
 import { WebSocket } from 'ws';
 import net from 'node:net';
@@ -298,13 +299,6 @@ describe('MeshOrchestrator', () => {
     });
 });
 
-function restoreEnv(name: string, value: string | undefined): void {
-    if (value === undefined) {
-        delete process.env[name];
-    } else {
-        process.env[name] = value;
-    }
-}
 
 describe('MeshOrchestrator · health & metrics (loop iter 05)', () => {
     let orch: MeshOrchestrator;
