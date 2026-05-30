@@ -116,10 +116,6 @@ function asEnvelope(body: Record<string, unknown>): ChairDispatchEnvelope {
     };
 }
 
-export function chairDispatchSecurityEnabled(): boolean {
-    return currentSecret() !== null;
-}
-
 export function secureChairDispatchBody(payload: Record<string, unknown>, requestId: string): {
     body: string;
     headers: Record<string, string>;

@@ -1,0 +1,89 @@
+# Review Follow-ups — Bloat + Security (2026-05-30)
+
+> **Durable tracker** for the whole-codebase bloat + security review (each finding
+> was produced by a dimension specialist and independently refuted/confirmed by a
+> separate skeptic). This file is the source of truth so any IDE/session can pick
+> up the backlog. Update the status boxes as items land.
+>
+> Status: `[x]` done · `[~]` in progress · `[ ]` planned · `[D]` deferred (needs a
+> decision or a focused, higher-risk pass).
+
+## Security
+
+### Done
+_(none yet — see "This PR / Next" below)_
+
+### Planned — Security PR (`kovael/security-hardening-2026-05`)
+- [ ] **HIGH — WS upgrade has no Origin/Host validation** (CSWSH / DNS-rebind into
+  the control plane). `ApiTokenGate.verifyWebSocketUpgrade`, `WebSocketBus` upgrade
+  handler. Fix: allow-list Origin/Host on every upgrade, even when the token gate
+  is off.
+- [ ] **MED — Chair URL SSRF (no IP egress allow-list)**. `inboxUrl` (`ModelProvider`)
+  and reply `targetUrl` (`kovael-agent-inbox.mjs`) are scheme-checked only. Fix:
+  reject loopback/RFC1918/link-local/`169.254.169.254`; re-check post-DNS.
+- [ ] **MED — Windows env denylist case bypass**. `COMMAND_ENV_DENYLIST` is
+  case-sensitive UPPERCASE; Windows `process.env` is case-insensitive → `allowEnv:
+  ["kovael_token"]` leaks a secret. `CommandAdapter.ts`, `AgentRuntimeSupervisor.childEnv`,
+  `kovael-agent-inbox.mjs buildCommandEnv`. Fix: compare `name.toUpperCase()`.
+- [ ] **LOW — `safePathSegment` keeps `..`** → agentId path-traversal.
+  `SqlitePathSecurity.ts`. Fix: reject dot-only/empty segments + constrain ids.
+
+### Deferred (tracked)
+- [D] **LOW — dispatch key = single-pass unsalted SHA-256** (not a KDF).
+  `ChairDispatchSecurity.keyFor`, `kovael-agent-inbox.mjs`. Use HKDF/scrypt + salt
+  or enforce 32-byte random secrets. (Reachable only under non-default conditions.)
+- [D] **LOW — `redactSensitiveText` misses 32–47-char secret values** (shape-only).
+  `RuntimeSecurity.ts`. Make value-aware. (No current call site interpolates a raw
+  secret value, so latent.)
+- [D] **LOW — unbounded growth**: hub `prune*` never scheduled; `activeCycles` map;
+  `SemanticIngestor` re-indexes whole files each boot (no cap/dedup). Wire a
+  maintenance tick + per-file caps + UPSERT.
+- [D] **LOW — no resource caps**: WS `broadcast` no `bufferedAmount` backpressure +
+  no max-connections; `HardwareMonitor` `nvidia-smi` no timeout/output-cap (hang
+  latches polls); `ComfyUiBridge` fetch no timeout/size-cap.
+- [D] **INFO** (hardening, no defect): rate-limit `/metrics` before bearer compare;
+  cap claim `host` field length; `__proto__` strip on JSON loaders (defense-in-depth);
+  document/enforce secret entropy; gate the WS `?token=` query transport; pin scrypt
+  cost params. **Verified-correct (no action):** AES-256-GCM IV/tag/AAD/scrypt,
+  constant-time bearer + HMAC reply-proof, loopback bind default.
+
+## Bloat
+
+### Done — this PR (`kovael/bloat-cleanup-2026-05`) — net −540 LOC (−210 non-test src)
+- [x] Delete **`TraceComfyBridge`** (dead trace-flowchart renderer) + its test +
+  the flowchart `describe` block in `Tracing.test.ts`.
+- [x] Remove dead `AgentPathProtection` exports (`isProtectedAgentPath`,
+  `findProtectedAgentPathPresence`, `ProtectedAgentPathPresence`).
+- [x] Remove dead `ChairDispatchSecurity.chairDispatchSecurityEnabled`.
+- [x] Remove dead `MevHandshake` Blueprint cluster (`validateSynchronous`,
+  `broadcastBlueprint`, `Blueprint`); keep the wired `handleRequest` SSE endpoint
+  (its cleanup is now covered by a heartbeat-clear test).
+- [x] Remove dead `TraceSanitizers.__TRACING_INTERNALS__` test-hook export.
+
+### Deferred (tracked)
+- [D] **`ANX-Schema` (`src/protocols/ANX-Schema.ts`, ~143 LOC)** — code-dead (zero
+  refs), but it is a **named protocol/SOP spec**. Confirm it is not an intentional
+  contract artifact before deleting. *Decision needed.*
+- [D] **Duplication → shared helpers** (medium net value, some harden security):
+  AES-256-GCM envelope (`AgentHubStore` + `ChairDispatchSecurity`) → `src/common/aes-gcm-envelope.ts`;
+  secure-sqlite-file-prep reuse (closes an orchestrator-DB UNC-guard gap);
+  `applyStandardPragmas()` (also hardens `MevBridge` DB); `sha256Hex`, `clampFinite`,
+  `errorMessage` helpers; unify the 3 redaction variants.
+- [D] **Over-abstraction inlines** (mechanical, multi-file): remove the `RouteDeps`
+  DI seam (7 files); inline `CommitteeVoting` into `ConversationBus`; drop the
+  `Tracing.ts` `export *` barrel.
+- [D] **God-file splits** (net ~0 LOC; clarity/security isolation): split
+  `ModelProvider.ts` (StubMarkov vs ChairBridge); extract a pure
+  `evaluateStoppingCriterion` from `ConversationBus.convene`; extract the
+  frontmatter→config decode from `MeshOrchestrator.wireWorkflowLoader`.
+- [D] **`AgentHubStore.ts` (1234 LOC) module split** — `schema`/`crypto`/`outbox`/
+  `memory` behind the same public surface. (Already deferred from chair-mesh Phase 3:
+  high-risk AES-GCM/SQLite extraction; do as a focused, human-reviewed refactor.)
+- [D] **Test-bloat** shared fixtures: `makeRosterCard`/`makeMessage` (spatial specs);
+  `process.env` save/restore; `mkdtemp/rmSync` temp-dir; `FakeChild` mock.
+
+## Notes
+- All items were adversarially verified; several LOC/severity claims from the first
+  pass were corrected down by the verifiers (reflected above).
+- Verify recipe: `git -C /mnt/i/Kovael archive <branch>` into a native-ext4 dir,
+  `npm ci && npm run build && npm test` on WSL Node 22.

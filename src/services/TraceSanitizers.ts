@@ -132,14 +132,3 @@ export function finiteNumber(input: number): number {
 export function jsonByteLength(input: unknown): number {
     return Buffer.byteLength(JSON.stringify(input), 'utf8');
 }
-
-export const __TRACING_INTERNALS__ = {
-    ATTR_GEN_AI_SYSTEM,
-    ATTR_GEN_AI_REQUEST_MODEL,
-    ATTR_KOVAEL_INPUT_TOKENS_EST,
-    ATTR_KOVAEL_OUTPUT_TOKENS_EST,
-    ATTR_KOVAEL_TOKEN_COUNT_ESTIMATED,
-    ATTR_KOVAEL_CYCLE_ID,
-    ATTR_KOVAEL_TASK_HASH,
-    ATTR_KOVAEL_AGENT_ID,
-};
