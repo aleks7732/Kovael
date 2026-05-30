@@ -42,6 +42,7 @@ import { InterAgentChatManager } from './services/InterAgentChatManager.js';
 import { ResourceGovernor, ResourceModeChange } from './services/ResourceGovernor.js';
 import { AgentRuntimeSupervisor, AgentRuntimeSupervisorConfig } from './services/AgentRuntimeSupervisor.js';
 import { RemoteAccessMode, resolveBindHost } from './services/BindHostSecurity.js';
+import { loadChairManifests } from './services/runtime/ChairManifestLoader.js';
 
 export { HttpTimeouts, DEFAULT_HTTP_TIMEOUTS };
 
@@ -580,21 +581,10 @@ export class MeshOrchestrator extends EventEmitter implements OrchestratorContex
 
     private loadAgentCards() {
         const cardsDir = path.join(process.cwd(), 'agent_cards');
-        if (fs.existsSync(cardsDir)) {
-            const files = fs.readdirSync(cardsDir);
-            this.agentCards = files
-                .filter(f => f.endsWith('.json'))
-                .map(f => {
-                    const content = fs.readFileSync(path.join(cardsDir, f), 'utf-8');
-                    return JSON.parse(content);
-                });
-            this.log.info('agent_cards_loaded', { count: this.agentCards.length });
-        }
-        
-        if (this.agentCards.length === 0) {
-            this.agentCards = Object.values(AgentCards);
-            this.log.info('agent_cards_loaded_fallback', { count: this.agentCards.length });
-        }
+        const result = loadChairManifests(cardsDir);
+        this.agentCards = result.cards;
+        for (const err of result.errors) this.log.warn('agent_cards_invalid', { error: err });
+        this.log.info(result.source === 'manifests' ? 'agent_cards_loaded' : 'agent_cards_loaded_fallback', { count: this.agentCards.length });
     }
 
     private initializeBus() {
