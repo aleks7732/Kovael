@@ -1,0 +1,16 @@
+{
+  "id": "nyx-codex",
+  "name": "Nyx-Codex",
+  "provider": "OpenAI · Codex CLI",
+  "description": "Standard-sandbox Codex CLI. Used for narrow code edits and quick repo questions where elevated permissions are not required.",
+  "trustTier": 2,
+  "capabilities": ["filesystem", "git", "shell"],
+  "vram": "0GB (cloud)",
+  "beaconHint": "Post-exec hook calls scripts/kovael-chair.mjs",
+  "portrait": "nyx-codex.png",
+  "accentHex": "#7c3aed",
+  "runtime": {
+    "kind": "codex",
+    "supervised": true
+  }
+}

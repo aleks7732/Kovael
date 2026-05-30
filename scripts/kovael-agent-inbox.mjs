@@ -512,11 +512,75 @@ function defaultAgentHubRoot() {
     return path.join(dataHome, 'kovael', 'agents');
 }
 
+// Env vars that must NEVER be forwarded to a generic command child, even if an
+// operator lists them in a manifest allowEnv. Dispatch/hub/token secrets stay
+// stripped regardless.
+const COMMAND_ENV_DENYLIST = new Set([
+    'KOVAEL_AGENT_HUB_SECRET',
+    'KOVAEL_CHAIR_DISPATCH_SECRET',
+    'KOVAEL_API_TOKEN',
+    'KOVAEL_TOKEN',
+    'KOVAEL_AGENT_HUB_ENCRYPTION',
+]);
+
+function parseCsvArg(value) {
+    if (typeof value !== 'string') return [];
+    return value.split(',').map((s) => s.trim()).filter(Boolean);
+}
+
+function parseCommandArgsArg(value) {
+    if (typeof value !== 'string' || value.length === 0) return [];
+    try {
+        const parsed = JSON.parse(value);
+        return Array.isArray(parsed) ? parsed.filter((x) => typeof x === 'string') : [];
+    } catch {
+        return [];
+    }
+}
+
+function buildCommandEnv(cfg) {
+    // Minimal, secret-free base (PATH/proxy only); then add back ONLY the
+    // operator-allow-listed, non-secret vars the child explicitly needs.
+    const env = cfg.runtimeSecurity.buildAgentRuntimeEnv(process.env);
+    for (const name of cfg.allowEnv || []) {
+        if (COMMAND_ENV_DENYLIST.has(name)) continue;
+        const value = process.env[name];
+        if (typeof value === 'string') env[name] = value;
+    }
+    return env;
+}
+
+async function runCommand(payload, cfg) {
+    const command = cfg.command;
+    if (!command) throw new Error('command runtime requires --command');
+    // Hard gate: the binary must be on the operator's allow-list. Unset/empty
+    // ⇒ disabled. This is the spawn-point check; the supervisor also drops
+    // non-allow-listed command chairs before they ever reach here.
+    const allow = parseCsvArg(process.env.KOVAEL_COMMAND_ADAPTER_ALLOW);
+    if (!allow.includes(command)) {
+        throw new Error(`command_adapter_blocked: '${command}' is not in KOVAEL_COMMAND_ADAPTER_ALLOW`);
+    }
+    const baseArgs = Array.isArray(cfg.commandArgs) ? cfg.commandArgs : [];
+    const args = [...baseArgs, promptFor(cfg.id, payload)];
+    const result = await spawnCapture(command, args, {
+        cwd: cfg.cwd,
+        env: buildCommandEnv(cfg),
+        timeoutMs: cfg.timeoutMs,
+    });
+    const text = result.stdout.trim();
+    if (result.code !== 0) {
+        throw new Error(`command exited ${result.code}: ${result.stderr || result.stdout}`);
+    }
+    if (!text) throw new Error('command returned an empty response');
+    return text;
+}
+
 async function runRuntime(payload, cfg) {
     if (cfg.runtime === 'fake-deterministic') return await runFakeDeterministic(payload, cfg);
     if (cfg.runtime === 'codex') return await runCodex(payload, cfg, 'read-only');
     if (cfg.runtime === 'codex-openclaw') return await runCodex(payload, cfg, 'danger-full-access');
     if (cfg.runtime === 'claude-shaev') return await runClaudeShaev(payload, cfg);
+    if (cfg.runtime === 'command') return await runCommand(payload, cfg);
     throw new Error(`unknown runtime: ${cfg.runtime}`);
 }
 
@@ -704,6 +768,9 @@ async function main() {
         port: args.port ?? 0,
         cwd: args.cwd || process.cwd(),
         model: args.model,
+        command: args.command,
+        commandArgs: parseCommandArgsArg(args['command-args']),
+        allowEnv: parseCsvArg(args['allow-env']),
         codexBin: args['codex-bin'],
         claudeBin: args['claude-bin'],
         timeoutMs: args.timeoutMs ?? DEFAULT_RUNTIME_TIMEOUT_MS,

@@ -11,16 +11,20 @@ export interface ManifestLoadResult {
 }
 
 function manifestToCard(m: ChairManifest): AgentCard {
-  return {
+  const card: AgentCard = {
     id: m.id,
     name: m.name,
     provider: m.provider,
-    description: '',
+    description: m.description ?? '',
     mcp_capabilities: m.capabilities,
     vram_requirements: m.vram,
     trust_tier: m.trustTier,
-    portrait_url: m.portrait ? `/agents/${m.portrait}` : undefined,
   };
+  if (m.beaconHint !== undefined) card.beacon_hint = m.beaconHint;
+  if (m.portrait !== undefined) card.portrait_url = `/agents/${m.portrait}`;
+  if (m.accentHex !== undefined) card.accent_hex = m.accentHex;
+  if (m.runtime !== undefined) card.runtime = m.runtime;
+  return card;
 }
 
 export function loadChairManifests(cardsDir: string): ManifestLoadResult {

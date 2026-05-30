@@ -1,0 +1,12 @@
+{
+  "id": "nyx-agcli",
+  "name": "Nyx-AGCLI",
+  "provider": "Google · Antigravity CLI",
+  "description": "Headless companion to the Antigravity IDE — long-running tasks dispatched from the cockpit when the IDE is idle.",
+  "trustTier": 1,
+  "capabilities": ["terminal", "filesystem", "git", "browser"],
+  "vram": "0GB (cloud)",
+  "beaconHint": "Session-start hook in .agcli/init",
+  "portrait": "nyx-agcli.png",
+  "accentHex": "#0284c7"
+}

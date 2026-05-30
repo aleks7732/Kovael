@@ -8,11 +8,15 @@ export interface RuntimeSpecDraft {
   trustTier?: number;
   cwd?: string;
   model?: string;
+  /** Generic-command runtime fields (CommandAdapter only). */
+  command?: string;
+  args?: string[];
+  allowEnv?: string[];
 }
 
 export interface RuntimePolicy {
-  sandboxMode: string | null;
-  permissionMode: string | null;
+  sandboxMode: 'read-only' | 'danger-full-access' | null;
+  permissionMode: 'dontAsk' | null;
   allowedTools: string[] | null;
   sessionPersistence: boolean | null;
 }

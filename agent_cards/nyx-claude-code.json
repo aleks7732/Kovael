@@ -1,0 +1,12 @@
+{
+  "id": "nyx-claude-code",
+  "name": "Nyx-Claude-Code",
+  "provider": "Anthropic · Claude Code CLI",
+  "description": "Sovereign-tier code reasoner. Sandboxed by the Claude Code harness; pipes architecture decisions, reviews, and large refactors.",
+  "trustTier": 1,
+  "capabilities": ["filesystem", "git", "bash", "web-fetch", "agents"],
+  "vram": "0GB (cloud)",
+  "beaconHint": "One-shot Bash curl on session start; release on /exit",
+  "portrait": "nyx-claude-code.png",
+  "accentHex": "#c2410c"
+}
