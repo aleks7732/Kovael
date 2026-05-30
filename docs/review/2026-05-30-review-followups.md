@@ -93,9 +93,13 @@
   - [assessed, deferred] `evaluateStoppingCriterion` from `ConversationBus.convene` —
     not cleanly pure (inline `emit`/`break`/RNG in the core loop); extracting risks
     altering round-table stopping behavior. Warrants a focused, human-reviewed pass.
-- [D] **`AgentHubStore.ts` (1234 LOC) module split** — `schema`/`crypto`/`outbox`/
-  `memory` behind the same public surface. (Already deferred from chair-mesh Phase 3:
-  high-risk AES-GCM/SQLite extraction; do as a focused, human-reviewed refactor.)
+- [x] **`AgentHubStore.ts` split** (PR #72): extracted `AgentHubCrypto.ts` (AES-256-GCM
+  seal/open + parseEnvelope + scrypt `deriveEncryptionKey`, pure functions taking the
+  key) and `AgentHubSchema.ts` (`runMigrations`/`ensureColumn`/`columnExists` +
+  `SCHEMA_VERSION`); AgentHubStore 1242→998 LOC behind the **identical public surface**.
+  Envelope wire-format + SQL byte-identical (the encryption-roundtrip / v1→v2 migration /
+  backfill tests stay green; adversarially verified). outbox/memory stay in the facade
+  (splitting them into manager classes is net-zero risk-without-reward).
 - [D] **Test-bloat** shared fixtures: `makeRosterCard`/`makeMessage` (spatial specs);
   `process.env` save/restore; `mkdtemp/rmSync` temp-dir; `FakeChild` mock.
 

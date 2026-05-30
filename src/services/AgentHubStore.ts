@@ -9,6 +9,13 @@ import {
     redactSensitiveText,
 } from './RuntimeSecurity.js';
 import { prepareLocalSqliteFile } from './SqlitePathSecurity.js';
+import {
+    aadFor as aad,
+    deriveEncryptionKey,
+    openSensitive,
+    sealSensitive,
+} from './AgentHubCrypto.js';
+import { runMigrations } from './AgentHubSchema.js';
 
 export type AgentDispatchStatus = 'accepted' | 'running' | 'succeeded' | 'failed';
 export type AgentOutboxKind = 'reply' | 'receipt';
@@ -157,12 +164,6 @@ interface MemoryRow {
     kind: AgentMemoryKind;
     expires_at: number | null;
 }
-
-const SCHEMA_VERSION = '2';
-const ENCRYPTED_VALUE_MARKER = '__kovaelEncrypted';
-const ENCRYPTED_VALUE_VERSION = 1;
-const ENCRYPTION_AAD_VERSION = 'kovael-agent-hub-field-v1';
-const ENCRYPTION_ALG = 'A256GCM';
 
 /**
  * AgentHubStore is a local, per-agent edge log. It is intentionally not a
@@ -638,132 +639,26 @@ export class AgentHubStore {
     }
 
     private migrate(): void {
-        this.db.exec(`
-            CREATE TABLE IF NOT EXISTS agent_hub_meta (
-                key TEXT PRIMARY KEY,
-                value TEXT NOT NULL,
-                updated_at INTEGER NOT NULL
-            );
-        `);
-        // Captured before the schema_version stamp below so we can skip the
-        // one-time v2 backfill scan on hubs that are already current.
-        const priorSchemaVersion = this.metaValue('schema_version');
-        this.encryptionKey = this.initializeEncryptionKey();
-
-        this.db.exec(`
-            CREATE TABLE IF NOT EXISTS agent_dispatches (
-                request_id TEXT PRIMARY KEY,
-                topic_id TEXT NOT NULL,
-                agent_id TEXT NOT NULL,
-                status TEXT NOT NULL CHECK(status IN ('accepted', 'running', 'succeeded', 'failed')),
-                received_at INTEGER NOT NULL,
-                started_at INTEGER,
-                completed_at INTEGER,
-                payload_json TEXT NOT NULL,
-                payload_sha256 TEXT NOT NULL,
-                reply_url TEXT,
-                reply_content TEXT,
-                error TEXT,
-                duplicate_count INTEGER NOT NULL DEFAULT 0,
-                last_seen_at INTEGER,
-                runtime_attempts INTEGER NOT NULL DEFAULT 0,
-                last_runtime_started_at INTEGER,
-                replay_after INTEGER
-            );
-
-            CREATE TABLE IF NOT EXISTS agent_memory (
-                key TEXT PRIMARY KEY,
-                value_json TEXT NOT NULL,
-                updated_at INTEGER NOT NULL,
-                kind TEXT NOT NULL DEFAULT 'memory' CHECK(kind IN ('memory', 'cache')),
-                created_at INTEGER,
-                expires_at INTEGER,
-                last_accessed_at INTEGER,
-                access_count INTEGER NOT NULL DEFAULT 0,
-                value_sha256 TEXT,
-                size_bytes INTEGER
-            );
-
-            CREATE TABLE IF NOT EXISTS agent_outbox (
-                id TEXT PRIMARY KEY,
-                request_id TEXT NOT NULL,
-                kind TEXT NOT NULL CHECK(kind IN ('reply', 'receipt')),
-                dedupe_key TEXT NOT NULL UNIQUE,
-                target_url TEXT NOT NULL,
-                payload_body TEXT NOT NULL,
-                payload_sha256 TEXT NOT NULL,
-                status TEXT NOT NULL CHECK(status IN ('pending', 'sending', 'sent', 'failed', 'dead')),
-                attempts INTEGER NOT NULL DEFAULT 0,
-                next_attempt_at INTEGER,
-                last_error TEXT,
-                created_at INTEGER NOT NULL,
-                updated_at INTEGER NOT NULL,
-                sent_at INTEGER,
-                FOREIGN KEY(request_id) REFERENCES agent_dispatches(request_id) ON DELETE CASCADE
-            );
-
-            CREATE TABLE IF NOT EXISTS agent_receipts (
-                id TEXT PRIMARY KEY,
-                request_id TEXT,
-                kind TEXT NOT NULL,
-                payload_body TEXT NOT NULL,
-                prev_hash TEXT,
-                receipt_hash TEXT NOT NULL,
-                created_at INTEGER NOT NULL,
-                FOREIGN KEY(request_id) REFERENCES agent_dispatches(request_id) ON DELETE SET NULL
-            );
-        `);
-
-        this.ensureDispatchColumn('payload_sha256', 'TEXT');
-        this.ensureDispatchColumn('reply_url', 'TEXT');
-        this.ensureDispatchColumn('duplicate_count', 'INTEGER NOT NULL DEFAULT 0');
-        this.ensureDispatchColumn('last_seen_at', 'INTEGER');
-        this.ensureDispatchColumn('runtime_attempts', 'INTEGER NOT NULL DEFAULT 0');
-        this.ensureDispatchColumn('last_runtime_started_at', 'INTEGER');
-        this.ensureDispatchColumn('replay_after', 'INTEGER');
-        this.ensureMemoryColumn('kind', "TEXT NOT NULL DEFAULT 'memory'");
-        this.ensureMemoryColumn('created_at', 'INTEGER');
-        this.ensureMemoryColumn('expires_at', 'INTEGER');
-        this.ensureMemoryColumn('last_accessed_at', 'INTEGER');
-        this.ensureMemoryColumn('access_count', 'INTEGER NOT NULL DEFAULT 0');
-        this.ensureMemoryColumn('value_sha256', 'TEXT');
-        this.ensureMemoryColumn('size_bytes', 'INTEGER');
-        // The backfill is an O(N) full-table scan; only needed when migrating an
-        // older/unstamped hub up to the current schema. Skip it once current to
-        // avoid re-scanning every dispatch + memory row on every boot.
-        if (priorSchemaVersion !== SCHEMA_VERSION) {
-            this.backfillV2Columns();
-        }
-
-        this.db.exec(`
-            CREATE INDEX IF NOT EXISTS idx_agent_dispatches_status
-                ON agent_dispatches(status, received_at);
-            CREATE INDEX IF NOT EXISTS idx_agent_dispatches_replay
-                ON agent_dispatches(status, replay_after);
-            CREATE INDEX IF NOT EXISTS idx_agent_outbox_status
-                ON agent_outbox(status, next_attempt_at);
-            CREATE INDEX IF NOT EXISTS idx_agent_memory_expiry
-                ON agent_memory(kind, expires_at);
-            CREATE INDEX IF NOT EXISTS idx_agent_receipts_request
-                ON agent_receipts(request_id, created_at);
-        `);
-
-        const stamp = this.now();
-        const meta = this.db.prepare(`
-            INSERT INTO agent_hub_meta (key, value, updated_at)
-            VALUES (?, ?, ?)
-            ON CONFLICT(key) DO UPDATE SET
-                value = excluded.value,
-                updated_at = excluded.updated_at
-        `);
-        meta.run('schema_version', SCHEMA_VERSION, stamp);
-        meta.run('agent_id', this.agentId, stamp);
+        runMigrations(this.db, {
+            now: this.now,
+            agentId: this.agentId,
+            initializeKey: () => {
+                this.encryptionKey = this.initializeEncryptionKey();
+            },
+            encode: (value, authenticatedData) => this.encodeSensitive(value, authenticatedData),
+            decode: (value, authenticatedData) => this.decodeSensitive(value, authenticatedData),
+            aad,
+            sha256,
+            stableStringify,
+            safeJsonObject,
+            stringOrNull,
+        });
     }
 
     private initializeEncryptionKey(): Buffer | null {
         if (!this.encryptionSecret) return null;
         const salt = this.metaValue('encryption_salt') ?? this.createEncryptionSalt();
-        return crypto.scryptSync(this.encryptionSecret, Buffer.from(salt, 'base64url'), 32);
+        return deriveEncryptionKey(this.encryptionSecret, salt);
     }
 
     private createEncryptionSalt(): string {
@@ -780,84 +675,6 @@ export class AgentHubStore {
         const row = this.db.prepare('SELECT value FROM agent_hub_meta WHERE key = ?')
             .get(key) as { value: string } | undefined;
         return row?.value ?? null;
-    }
-
-    private ensureDispatchColumn(name: string, definition: string): void {
-        if (!this.columnExists('agent_dispatches', name)) {
-            this.db.exec(`ALTER TABLE agent_dispatches ADD COLUMN ${name} ${definition}`);
-        }
-    }
-
-    private ensureMemoryColumn(name: string, definition: string): void {
-        if (!this.columnExists('agent_memory', name)) {
-            this.db.exec(`ALTER TABLE agent_memory ADD COLUMN ${name} ${definition}`);
-        }
-    }
-
-    private columnExists(table: string, name: string): boolean {
-        const rows = this.db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
-        return rows.some((row) => row.name === name);
-    }
-
-    private backfillV2Columns(): void {
-        const dispatchRows = this.db.prepare(`
-            SELECT request_id, payload_json, payload_sha256, reply_url, last_seen_at
-            FROM agent_dispatches
-        `).all() as Array<{
-            request_id: string;
-            payload_json: string;
-            payload_sha256: string | null;
-            reply_url: string | null;
-            last_seen_at: number | null;
-        }>;
-        const updateDispatch = this.db.prepare(`
-            UPDATE agent_dispatches
-            SET payload_sha256 = COALESCE(payload_sha256, ?),
-                reply_url = COALESCE(reply_url, ?),
-                duplicate_count = COALESCE(duplicate_count, 0),
-                last_seen_at = COALESCE(last_seen_at, received_at),
-                runtime_attempts = COALESCE(runtime_attempts, 0)
-            WHERE request_id = ?
-        `);
-        for (const row of dispatchRows) {
-            const payloadJson = this.decodeSensitive(row.payload_json, aad('agent_dispatches', row.request_id, 'payload_json'));
-            const payload = safeJsonObject(payloadJson);
-            updateDispatch.run(
-                row.payload_sha256 ?? sha256(stableStringify(payload)),
-                row.reply_url ?? stringOrNull(payload.replyUrl),
-                row.request_id,
-            );
-        }
-
-        const memoryRows = this.db.prepare(`
-            SELECT key, value_json, updated_at, created_at, value_sha256, size_bytes
-            FROM agent_memory
-        `).all() as Array<{
-            key: string;
-            value_json: string;
-            updated_at: number;
-            created_at: number | null;
-            value_sha256: string | null;
-            size_bytes: number | null;
-        }>;
-        const updateMemory = this.db.prepare(`
-            UPDATE agent_memory
-            SET kind = COALESCE(kind, 'memory'),
-                created_at = COALESCE(created_at, ?),
-                access_count = COALESCE(access_count, 0),
-                value_sha256 = COALESCE(value_sha256, ?),
-                size_bytes = COALESCE(size_bytes, ?)
-            WHERE key = ?
-        `);
-        for (const row of memoryRows) {
-            const valueJson = this.decodeSensitive(row.value_json, aad('agent_memory', row.key, 'value_json'));
-            updateMemory.run(
-                row.created_at ?? row.updated_at,
-                row.value_sha256 ?? sha256(valueJson),
-                row.size_bytes ?? Buffer.byteLength(valueJson),
-                row.key,
-            );
-        }
     }
 
     private requireDispatchRow(requestId: string): DispatchRow {
@@ -1088,41 +905,11 @@ export class AgentHubStore {
     }
 
     private encodeSensitive(value: string, authenticatedData: string): string {
-        if (!this.encryptionKey) return value;
-        const iv = crypto.randomBytes(12);
-        const cipher = crypto.createCipheriv('aes-256-gcm', this.encryptionKey, iv);
-        cipher.setAAD(Buffer.from(authenticatedData, 'utf8'));
-        const ciphertext = Buffer.concat([
-            cipher.update(Buffer.from(value, 'utf8')),
-            cipher.final(),
-        ]);
-        return JSON.stringify({
-            [ENCRYPTED_VALUE_MARKER]: true,
-            v: ENCRYPTED_VALUE_VERSION,
-            alg: ENCRYPTION_ALG,
-            iv: iv.toString('base64url'),
-            ciphertext: ciphertext.toString('base64url'),
-            tag: cipher.getAuthTag().toString('base64url'),
-        });
+        return sealSensitive(this.encryptionKey, value, authenticatedData);
     }
 
     private decodeSensitive(value: string, authenticatedData: string): string {
-        const envelope = parseEncryptedEnvelope(value);
-        if (!envelope) return value;
-        if (!this.encryptionKey) {
-            throw new Error(`encrypted agent hub value requires ${AGENT_HUB_SECRET_ENV}`);
-        }
-        const decipher = crypto.createDecipheriv(
-            'aes-256-gcm',
-            this.encryptionKey,
-            Buffer.from(envelope.iv, 'base64url'),
-        );
-        decipher.setAAD(Buffer.from(authenticatedData, 'utf8'));
-        decipher.setAuthTag(Buffer.from(envelope.tag, 'base64url'));
-        return Buffer.concat([
-            decipher.update(Buffer.from(envelope.ciphertext, 'base64url')),
-            decipher.final(),
-        ]).toString('utf8');
+        return openSensitive(this.encryptionKey, value, authenticatedData);
     }
 
     private withTransaction<T>(fn: () => T): T {
@@ -1185,10 +972,6 @@ function sha256(value: string): string {
     return crypto.createHash('sha256').update(value).digest('hex');
 }
 
-function aad(table: string, id: string, column: string): string {
-    return `${ENCRYPTION_AAD_VERSION}\n${table}\n${id}\n${column}`;
-}
-
 function stableStringify(value: unknown): string {
     return JSON.stringify(stableValue(value));
 }
@@ -1212,31 +995,4 @@ function safeJsonObject(raw: string): Record<string, unknown> {
     } catch {
         return {};
     }
-}
-
-function parseEncryptedEnvelope(value: string): {
-    iv: string;
-    ciphertext: string;
-    tag: string;
-} | null {
-    try {
-        const parsed = JSON.parse(value) as Record<string, unknown>;
-        if (
-            parsed?.[ENCRYPTED_VALUE_MARKER] === true &&
-            parsed.v === ENCRYPTED_VALUE_VERSION &&
-            parsed.alg === ENCRYPTION_ALG &&
-            typeof parsed.iv === 'string' &&
-            typeof parsed.ciphertext === 'string' &&
-            typeof parsed.tag === 'string'
-        ) {
-            return {
-                iv: parsed.iv,
-                ciphertext: parsed.ciphertext,
-                tag: parsed.tag,
-            };
-        }
-    } catch {
-        return null;
-    }
-    return null;
 }
