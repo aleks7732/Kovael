@@ -18,8 +18,9 @@ import {
     CommitteeOptions,
     CommitteeVerdict,
     CommitteeVote,
+    evaluateCommittee,
+    synthesizeVotes,
 } from './ConsensusEngine.js';
-import { conveneCommitteeVote } from './CommitteeVoting.js';
 
 function requireLiveChairs(): boolean {
     return process.env.KOVAEL_REQUIRE_LIVE_CHAIRS === 'true';
@@ -653,15 +654,39 @@ export class ConversationBus extends EventEmitter {
         goal: string,
         opts: CommitteeOptions & { votes?: CommitteeVote[] } = {},
     ): CommitteeVerdict {
-        return conveneCommitteeVote(
-            {
-                topicFor: (id) => this.activeTopics.get(id),
-                emitBusEvent: (event) => this.emit('bus_event', event),
-                postSummary: (id, content) => this.postMessage(id, 'committee', 'system', content),
-            },
+        const active = this.activeTopics.get(topicId);
+        if (!active) {
+            throw Object.assign(new Error('committee_topic_not_active'), { code: 'committee_topic_not_active' });
+        }
+        const participants = [...active.participants];
+        const votes = opts.votes ?? synthesizeVotes(goal, participants, opts.traceparent, opts.tracestate);
+        this.emit('bus_event', {
+            type: 'committee.started',
             topicId,
-            goal,
-            opts,
+            goalPreview: goal.slice(0, 160),
+            participants,
+            traceparent: opts.traceparent,
+            tracestate: opts.tracestate,
+        });
+        for (const vote of votes) {
+            this.emit('bus_event', { type: 'committee.vote', topicId, vote });
+        }
+        const verdict = evaluateCommittee(votes, {
+            ...opts,
+            activeParticipants: participants,
+            sidecarCandidates: opts.sidecarCandidates ?? ['nyx-openclaw', 'shaev', 'nyx-codex'],
+        });
+        this.emit('bus_event', {
+            type: verdict.status === 'accepted' ? 'committee.verdict' : 'committee.failed',
+            topicId,
+            verdict,
+        });
+        this.postMessage(
+            topicId,
+            'committee',
+            'system',
+            `Committee ${verdict.status}: support=${verdict.supportScore}, confidence=${verdict.confidenceMean}`,
         );
+        return verdict;
     }
 }

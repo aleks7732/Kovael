@@ -257,8 +257,8 @@ portraits under [packages/spatial-war-room/public/agents/](./packages/spatial-wa
 - [src/MevBridge.ts](./src/MevBridge.ts) owns the triad pipeline and is
   wired through post-construction setters by the composition root.
 - [src/services/ConversationBus.ts](./src/services/ConversationBus.ts)
-  owns topics, history, convene loops, and committee delegation through
-  [src/services/CommitteeVoting.ts](./src/services/CommitteeVoting.ts).
+  owns topics, history, convene loops, and committee voting
+  (`conveneCommittee`).
 - [src/services/Tracing.ts](./src/services/Tracing.ts) wraps the OTel
   SDK, while [TraceRingBuffer](./src/services/TraceRingBuffer.ts) and
   [TraceSanitizers](./src/services/TraceSanitizers.ts) keep trace
